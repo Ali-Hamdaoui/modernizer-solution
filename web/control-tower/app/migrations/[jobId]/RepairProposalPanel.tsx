@@ -66,7 +66,8 @@ function isMainInvocation(invocation: V2LlmInvocationEntry): boolean {
 
 function isReviewerInvocation(invocation: V2LlmInvocationEntry): boolean {
   return normalized(invocation.role) === "reviewer" ||
-    normalized(invocation.responsibility) === "repair_review";
+    normalized(invocation.responsibility) === "repair_review" ||
+    normalized(invocation.responsibility) === "repair_review_self_repair";
 }
 
 function isMainSchemaInvalid(invocation: V2LlmInvocationEntry | null | undefined): boolean {
@@ -376,6 +377,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
 
   // approve_failed is a terminal read-only state
   const isApproveFailed = proposal.status === "approve_failed";
+  const isApplyCheckFailed = proposal.reason_code === "PATCH_CHECK_FAILED";
 
   const approveAllowed = !isApproveFailed && proposal.allowed_actions.includes("approve_sandbox_apply");
   const revisionAllowed = !isApproveFailed && proposal.allowed_actions.some((action) => (
@@ -433,8 +435,12 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
 
           {isApproveFailed && (
             <div className="failure-summary" data-testid="approve-failed-summary">
-              <strong>Reviewed Repair Apply Failed</strong>
-              <p className="meta">Reviewer accepted and backend tried to apply, but the sandbox apply failed. The reviewed diff is still viewable. No build/test rerun was started.</p>
+              <strong>{isApplyCheckFailed ? "Reviewed Repair Apply-Check Failed" : "Reviewed Repair Apply Failed"}</strong>
+              <p className="meta">
+                {isApplyCheckFailed
+                  ? "Backend apply-check failed; new proposal required. No build/test rerun was started."
+                  : "Reviewer accepted and backend tried to apply, but the sandbox apply failed. The reviewed diff is still viewable. No build/test rerun was started."}
+              </p>
               {proposal.reason_code && (
                 <p className="meta warning-text" data-testid="apply-reason-code">Reason code: {proposal.reason_code}</p>
               )}
@@ -765,10 +771,7 @@ export function ReviewedRepairMaterializationFailed({
     ["main", "proposer", "primary"].includes(invocation.role.toLowerCase()) ||
     invocation.responsibility.toLowerCase() === "repair_proposal"
   ));
-  const reviewerInvocation = sorted.find((invocation) => (
-    invocation.role.toLowerCase() === "reviewer" ||
-    invocation.responsibility.toLowerCase() === "repair_review"
-  ));
+  const reviewerInvocation = sorted.find(isReviewerInvocation);
 
   const mainModelStatus = mainInvocation
     ? mainInvocation.status.replace(/_/g, " ")
@@ -798,10 +801,13 @@ export function ReviewedRepairMaterializationFailed({
   const title = diagnostic?.title?.trim() || "Reviewed Repair Materialization Failed";
   const summary = diagnostic?.message?.trim() || "Backend could not materialize a reviewed diff for user approval.";
   const isMalformedDiff = reasonCode === "MALFORMED_DIFF";
+  const isPatchCheckFailed = reasonCode === "PATCH_CHECK_FAILED";
   const isDuplicateMainBlocked = reasonCode === "duplicate_main_blocked";
   const blockedByReasonCode = diagnostic?.blocked_by_reason_code?.trim() ?? "";
   const blockedByStructIssue = diagnostic?.blocked_by_struct_issue?.trim() ?? "";
   const hasBlockedBy = blockedByReasonCode !== "";
+  const reviewerAcceptContractIssue = diagnostic?.reviewer_accept_contract_issue?.trim() ?? "";
+  const reviewedDiffChecksum = diagnostic?.reviewed_diff_checksum?.trim() ?? "";
   const reviewerStatusFromDiag = diagnostic?.reviewer_status?.trim() ?? null;
   const mainStatusFromDiag = diagnostic?.main_status?.trim() ?? null;
   const contextChecksum = diagnostic?.context_checksum || reviewerInvocation?.context_checksum || mainInvocation?.context_checksum || null;
@@ -810,6 +816,8 @@ export function ReviewedRepairMaterializationFailed({
   const effectiveReviewerStatus = reviewerStatusFromDiag ?? reviewerModelStatus;
   const failureSummaryText = isMalformedDiff
     ? "Latest reviewed diff failed structural validation"
+    : isPatchCheckFailed
+      ? "Backend apply-check failed; new proposal required."
     : hasBlockedBy
       ? "Backend encountered a secondary blocking condition after the primary diagnostic was raised."
       : summary;
@@ -817,7 +825,9 @@ export function ReviewedRepairMaterializationFailed({
     ? "Reviewer accepted the repair, but backend structural validation rejected the reviewed diff before user approval."
     : null;
   const noValidationPath = diagnostic
-    ? "No backend validation or apply path is available until a valid reviewed diff is materialized."
+    ? (isPatchCheckFailed
+      ? "No build/test rerun was started because the reviewed diff was not applicable."
+      : "No backend validation or apply path is available until a valid reviewed diff is materialized.")
     : null;
 
   return (
@@ -837,6 +847,11 @@ export function ReviewedRepairMaterializationFailed({
             {hasBlockedBy && (
               <p className="meta warning-text" data-testid="blocked-by-message">
                 Blocked by: {blockedByReasonCode}{blockedByStructIssue ? `: ${blockedByStructIssue}` : ""}
+              </p>
+            )}
+            {isPatchCheckFailed && diagnostic?.apply_check_stderr_summary && (
+              <p className="meta warning-text" data-testid="apply-check-summary">
+                {diagnostic.apply_check_stderr_summary}
               </p>
             )}
             {noValidationPath && <p className="meta warning-text">{noValidationPath}</p>}
@@ -891,6 +906,12 @@ export function ReviewedRepairMaterializationFailed({
                 <strong data-testid="materialization-detail">{detail}</strong>
               </div>
             )}
+            {reviewerAcceptContractIssue && (
+              <div className="table-row">
+                <span className="meta">Reviewer accept contract</span>
+                <strong data-testid="reviewer-accept-contract-issue">{reviewerAcceptContractIssue}</strong>
+              </div>
+            )}
             {blockedByReasonCode && (
               <div className="table-row">
                 <span className="meta">Blocked by</span>
@@ -907,6 +928,12 @@ export function ReviewedRepairMaterializationFailed({
               <div className="table-row">
                 <span className="meta">Context checksum</span>
                 <strong className="checksum">{contextChecksum}</strong>
+              </div>
+            )}
+            {reviewedDiffChecksum && (
+              <div className="table-row">
+                <span className="meta">Reviewed diff checksum</span>
+                <strong className="checksum">{reviewedDiffChecksum}</strong>
               </div>
             )}
             <div className="table-row">

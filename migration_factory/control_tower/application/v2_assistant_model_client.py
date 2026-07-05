@@ -235,10 +235,10 @@ class V2AssistantModelClient:
         )
         routed = router.route(
             request,
-            invoke=lambda deployment, provider="azure_openai": self._answer_with_deployment(
+            invoke=lambda deployment, provider="azure_openai", prompt_override=None: self._answer_with_deployment(
                 role=role,
                 deployment=deployment,
-                prompt=prompt,
+                prompt=prompt_override if prompt_override is not None else prompt,
                 fallback=fallback,
                 conversation_history=conversation_history,
                 output_schema_name=output_schema_name,
@@ -258,7 +258,7 @@ class V2AssistantModelClient:
         output_schema_name: str | None = None,
         require_schema: bool = False,
     ) -> V2AssistantModelResult:
-        role_config = ModelRoleConfigLoader.try_load_role(role.value)
+        role_config = _model_role_config(role)
         provider_alias = (role_config.provider_alias if role_config else "azure_openai")
 
         if provider_alias == "mistral":
@@ -304,7 +304,8 @@ class V2AssistantModelClient:
                 deployment=deployment,
                 prompt=prompt,
                 role=role,
-                timeout=30,
+                max_completion_tokens=role_config.max_output_tokens if role_config else None,
+                timeout=role_config.timeout_seconds if role_config else 30,
                 conversation_history=conversation_history,
                 output_schema_name=output_schema_name,
                 require_schema=require_schema,
@@ -369,8 +370,8 @@ class V2AssistantModelClient:
             success=True,
             redacted_summary="Azure OpenAI assistant invocation succeeded.",
             failure_reason="",
-            response_format_requested=require_schema,
-            response_format_used=require_schema,
+            response_format_requested=bool(require_schema),
+            response_format_used=bool(require_schema and (role_config.supports_json_object if role_config else True)),
             prompt_tokens=usage_data.get("prompt_tokens"),
             completion_tokens=usage_data.get("completion_tokens"),
             total_tokens=usage_data.get("total_tokens"),
@@ -593,6 +594,7 @@ class V2AssistantModelClient:
                 api_key=api_key,
                 deployment=deployment,
                 prompt=prompt,
+                role=role,
                 max_completion_tokens=max_completion_tokens,
                 timeout=timeout,
                 conversation_history=conversation_history,
@@ -671,6 +673,7 @@ class V2AssistantModelClient:
             api_key=api_key,
             deployment=deployment,
             messages=self._build_messages(prompt=prompt, conversation_history=conversation_history),
+            role=role,
             max_completion_tokens=_role_max_output_tokens(role, max_completion_tokens),
             timeout=timeout,
             output_schema_name=output_schema_name,
@@ -685,6 +688,7 @@ class V2AssistantModelClient:
         api_key: str,
         deployment: str,
         prompt: str,
+        role: V2ModelRole = V2ModelRole.ASSISTANT,
         max_completion_tokens: int = 20000,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
@@ -697,6 +701,7 @@ class V2AssistantModelClient:
                 prompt=prompt,
                 conversation_history=conversation_history,
             ),
+            role=role,
             max_output_tokens=max_completion_tokens,
             timeout=timeout,
         )
@@ -764,6 +769,7 @@ class V2AssistantModelClient:
                             api_key=api_key,
                             deployment=deployment,
                             messages=[{"role": "user", "content": "Reply with OK."}],
+                            role=V2ModelRole.ASSISTANT,
                             max_completion_tokens=100,
                             timeout=timeout,
                         )
@@ -807,16 +813,19 @@ class V2AssistantModelClient:
         messages: list[dict[str, str]],
         max_completion_tokens: int,
         timeout: int,
+        role: V2ModelRole = V2ModelRole.ASSISTANT,
         output_schema_name: str | None = None,
         require_schema: bool = False,
     ) -> tuple[str, dict[str, int | None]]:
+        role_config = _model_role_config(role)
+        supports_json_object = role_config.supports_json_object if role_config else True
         # Safe log: response_format usage for diagnostics
         _log_response_format_event(
             endpoint=endpoint,
             deployment=deployment,
-            require_schema=require_schema,
+            require_schema=bool(require_schema and supports_json_object),
             schema_name=output_schema_name or "",
-            role="assistant",
+            role=role.value,
         )
 
         url = f"{endpoint.rstrip('/')}/chat/completions"
@@ -825,29 +834,29 @@ class V2AssistantModelClient:
             "messages": messages,
             "max_completion_tokens": max_completion_tokens,
         }
-        # When require_schema is true, use JSON mode so the model returns valid JSON.
-        # JSON mode requires a system message indicating JSON output.
+        # Schema-required calls always get prompt-enforced JSON. Only roles that
+        # advertise JSON mode support receive response_format=json_object.
         if require_schema:
-            payload["response_format"] = {"type": "json_object"}
-            # Ensure the system message instructs JSON-only output when using json_object mode.
             if messages and messages[0].get("role") == "system":
                 existing = str(messages[0].get("content", ""))
-                if "json" not in existing.lower():
-                    messages[0]["content"] = (
-                        "You are a JSON-only assistant. Return only valid JSON. "
-                        "No markdown, no prose, no code fences. " + existing
-                    )
+                json_instruction = (
+                    "You are a JSON-only assistant. Return only valid JSON. "
+                    "No markdown, no prose, no code fences. "
+                )
+                if "json-only assistant" not in existing.lower():
+                    messages[0]["content"] = json_instruction + existing
+        if require_schema and supports_json_object:
+            payload["response_format"] = {"type": "json_object"}
         # Only add one of temperature / reasoning_effort when explicitly configured.
         # Sending an unsupported parameter to a model that does not recognise it
         # causes a 400 "badly formed" rejection at the Azure infrastructure layer.
-        reasoning_effort = os.environ.get("AI_MIGRATION_MAIN_REASONING_EFFORT", "").strip()
-        if not reasoning_effort:
-            reasoning_effort = os.environ.get("AZURE_OPENAI_REASONING_EFFORT", "").strip()
-        if reasoning_effort:
+        reasoning_effort = (role_config.reasoning_effort or "").strip() if role_config else ""
+        if role_config and role_config.supports_reasoning_effort and reasoning_effort:
             payload["reasoning_effort"] = reasoning_effort
         else:
             temperature = os.environ.get("AZURE_OPENAI_TEMPERATURE", "").strip()
-            if temperature:
+            supports_temperature = role_config.supports_temperature if role_config else True
+            if supports_temperature and temperature:
                 try:
                     payload["temperature"] = float(temperature)
                 except ValueError:
@@ -876,6 +885,7 @@ class V2AssistantModelClient:
         input_items: list[dict[str, object]],
         max_output_tokens: int,
         timeout: int,
+        role: V2ModelRole = V2ModelRole.ASSISTANT,
     ) -> str:
         url = f"{endpoint.rstrip('/')}/responses"
         payload: dict[str, object] = {
@@ -885,10 +895,9 @@ class V2AssistantModelClient:
         }
         if max_output_tokens > 0:
             payload["max_output_tokens"] = max_output_tokens
-        reasoning_effort = os.environ.get("AI_MIGRATION_MAIN_REASONING_EFFORT", "").strip()
-        if not reasoning_effort:
-            reasoning_effort = os.environ.get("AZURE_OPENAI_REASONING_EFFORT", "").strip()
-        if reasoning_effort:
+        role_config = _model_role_config(role)
+        reasoning_effort = (role_config.reasoning_effort or "").strip() if role_config else ""
+        if role_config and role_config.supports_reasoning_effort and reasoning_effort:
             payload["reasoning"] = {"effort": reasoning_effort}
         request = urllib.request.Request(
             url,
@@ -1201,6 +1210,9 @@ def _looks_like_timeout(value: str) -> bool:
 
 def _role_max_output_tokens(role: V2ModelRole, default_tokens: int = 20000) -> int:
     """Read role-specific max output tokens from env var or return default."""
+    role_config = _model_role_config(role)
+    if role_config is not None and role_config.max_output_tokens > 0:
+        return role_config.max_output_tokens
     role_env_map = {
         V2ModelRole.PROPOSER: "AI_MIGRATION_MAIN_MAX_OUTPUT_TOKENS",
         V2ModelRole.REVIEWER: "AI_MIGRATION_REVIEWER_MAX_OUTPUT_TOKENS",
@@ -1212,6 +1224,16 @@ def _role_max_output_tokens(role: V2ModelRole, default_tokens: int = 20000) -> i
         if value and value.isdigit():
             return int(value)
     return default_tokens
+
+
+def _model_role_config(role: V2ModelRole):
+    if role in (V2ModelRole.PROPOSER, V2ModelRole.ASSISTANT):
+        return ModelRoleConfigLoader.try_load_role("main")
+    if role == V2ModelRole.REVIEWER:
+        return ModelRoleConfigLoader.try_load_role("reviewer")
+    if role == V2ModelRole.FALLBACK:
+        return ModelRoleConfigLoader.try_load_role("fallback")
+    return ModelRoleConfigLoader.try_load_role("main")
 
 
 def _azure_api_version() -> str:

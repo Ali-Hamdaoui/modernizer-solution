@@ -100,7 +100,9 @@ class ModelRoleConfigLoader:
             "supports_json_object": _get_env_bool(
                 f"{prefix}_SUPPORTS_JSON_OBJECT", True
             ),
-            "supports_reasoning_effort": bool(raw_reasoning),
+            "supports_reasoning_effort": _get_env_bool(
+                f"{prefix}_SUPPORTS_REASONING_EFFORT", bool(raw_reasoning)
+            ),
             "supports_temperature": _get_env_bool(
                 f"{prefix}_SUPPORTS_TEMPERATURE", True
             ),

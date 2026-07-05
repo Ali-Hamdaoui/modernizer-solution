@@ -1277,10 +1277,25 @@ export type RepairMaterializationUnavailable = {
   reviewer_status?: string | null;
   main_status?: string | null;
   context_checksum?: string | null;
+  reviewed_diff_checksum?: string | null;
+  reviewer_accept_contract_issue?: string | null;
   main_output_checksum?: string | null;
   reviewer_output_checksum?: string | null;
   retry_reason?: string | null;
   next_action?: string | null;
+  schema_repair_attempted?: boolean;
+  schema_repair_succeeded?: boolean;
+  schema_repair_failure_reason?: string | null;
+  schema_repair_parse_failure_category?: string | null;
+  applicability_status?: string | null;
+  applicability_reason_code?: string | null;
+  applicability_checked_at?: string | null;
+  reviewer_applicability_repair_attempted?: boolean;
+  reviewer_applicability_repair_succeeded?: boolean;
+  reviewer_self_repair_attempted?: boolean;
+  reviewer_self_repair_succeeded?: boolean;
+  reviewer_mechanical_validation_issue?: string | null;
+  apply_check_stderr_summary?: string | null;
 };
 
 export type RepairProposalCurrentResponse = {

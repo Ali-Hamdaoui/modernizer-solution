@@ -5,9 +5,10 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 
 RunCallable = Callable[..., subprocess.CompletedProcess]
@@ -35,6 +36,8 @@ class PatchApplyResult:
     created_paths: list[str]
     errors: list[str]
     reason_code: str = ""
+    stdout: str = ""
+    stderr: str = ""
 
 
 def _resolve_git_executable() -> str | None:
@@ -116,6 +119,8 @@ def validate_unified_diff_structure(diff_text: str) -> str | None:
             # new-side: context + addition lines
             if new_count != context_lines + addition_lines:
                 return "hunk_new_count_mismatch"
+            if context_lines == 0:
+                return "hunk_missing_context"
             continue
         if not line.strip():
             i += 1
@@ -136,6 +141,41 @@ def validate_unified_diff_structure(diff_text: str) -> str | None:
     if not has_hunk:
         return "missing_hunk"
     return None
+
+
+def _normalize_patch_bytes(diff: str) -> bytes:
+    text = str(diff).replace("\r\n", "\n").replace("\r", "\n")
+    if not text.endswith("\n"):
+        text += "\n"
+    return text.encode("utf-8")
+
+
+def _normalize_patch_text(diff: str) -> str:
+    return _normalize_patch_bytes(diff).decode("utf-8")
+
+
+def _extract_touched_paths_from_diff(diff_text: str) -> list[str]:
+    paths: list[str] = []
+    for line in diff_text.splitlines():
+        if line.startswith("diff --git "):
+            parts = line.split()
+            for raw in parts[2:4]:
+                path = _strip_diff_path_prefix(raw)
+                if path != "/dev/null" and path not in paths:
+                    paths.append(path)
+        elif line.startswith("--- ") or line.startswith("+++ "):
+            raw = line[4:].split("\t", 1)[0].strip()
+            path = _strip_diff_path_prefix(raw)
+            if path != "/dev/null" and path not in paths:
+                paths.append(path)
+    return paths
+
+
+def _strip_diff_path_prefix(raw: str) -> str:
+    path = raw.strip().strip('"')
+    if path.startswith("a/") or path.startswith("b/"):
+        return path[2:]
+    return path
 
 
 def _check_path_safety(path: str) -> str | None:
@@ -200,9 +240,9 @@ def apply_patch_to_sandbox(
     repairs_dir.mkdir(parents=True, exist_ok=True)
     patch_path = repairs_dir / f"patch_attempt_{attempt}.diff"
 
-    # Normalize newline: only ensure one final newline, preserve rest
-    patch_text = unified_diff if unified_diff.endswith("\n") else unified_diff + "\n"
-    patch_path.write_text(patch_text, encoding="utf-8")
+    patch_bytes = _normalize_patch_bytes(unified_diff)
+    patch_text = patch_bytes.decode("utf-8")
+    patch_path.write_bytes(patch_bytes)
 
     snapshot_dir = repairs_dir / "snapshots" / f"attempt_{attempt}"
     snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -282,6 +322,8 @@ def apply_patch_to_sandbox(
             created_paths=created_paths,
             errors=[reason],
             reason_code=reason_code,
+            stdout=str(check.stdout or ""),
+            stderr=str(check.stderr or ""),
         )
 
     # 5. git apply
@@ -310,6 +352,8 @@ def apply_patch_to_sandbox(
             created_paths=created_paths,
             errors=[reason],
             reason_code=reason_code,
+            stdout=str(applied.stdout or ""),
+            stderr=str(applied.stderr or ""),
         )
 
     return PatchApplyResult(
@@ -323,6 +367,132 @@ def apply_patch_to_sandbox(
         created_paths=created_paths,
         errors=[],
         reason_code="",
+        stdout=str(applied.stdout or ""),
+        stderr=str(applied.stderr or ""),
+    )
+
+
+def check_patch_applicability(
+    *,
+    sandbox_path: str | Path,
+    unified_diff: str,
+    touched_paths: Sequence[str] | None = None,
+    run_dir: str | Path | None = None,
+    attempt: int | str | None = None,
+    timeout_seconds: int = 60,
+    run: RunCallable = subprocess.run,
+) -> PatchApplyResult:
+    sandbox = Path(sandbox_path).resolve()
+    if run_dir is not None:
+        checks_dir = Path(run_dir) / "repairs"
+    else:
+        checks_dir = Path(tempfile.gettempdir()) / "modernizer_patch_checks"
+    checks_dir.mkdir(parents=True, exist_ok=True)
+    suffix = str(attempt or "preproposal").replace("/", "_").replace("\\", "_")
+    patch_path = checks_dir / f"patch_apply_check_{suffix}.diff"
+
+    patch_bytes = _normalize_patch_bytes(unified_diff)
+    patch_text = patch_bytes.decode("utf-8")
+    patch_path.write_bytes(patch_bytes)
+
+    resolved_touched_paths = list(touched_paths or _extract_touched_paths_from_diff(patch_text))
+    snapshot_dir = checks_dir
+    before_hashes = _hash_files(sandbox, resolved_touched_paths) if sandbox.is_dir() else {}
+
+    struct_issue = validate_unified_diff_structure(patch_text)
+    if struct_issue is not None:
+        reason = f"Diff structure validation failed: {struct_issue}"
+        return PatchApplyResult(
+            status="REJECTED",
+            reason=reason,
+            patch_path=patch_path,
+            touched_paths=resolved_touched_paths,
+            before_hashes=before_hashes,
+            after_hashes={},
+            snapshot_dir=snapshot_dir,
+            created_paths=[],
+            errors=[reason],
+            reason_code=REASON_CODE_MALFORMED_DIFF,
+        )
+
+    git_exe = _resolve_git_executable()
+    if git_exe is None:
+        return PatchApplyResult(
+            status="REJECTED",
+            reason="Git executable not found on this system",
+            patch_path=patch_path,
+            touched_paths=resolved_touched_paths,
+            before_hashes=before_hashes,
+            after_hashes={},
+            snapshot_dir=snapshot_dir,
+            created_paths=[],
+            errors=["Git not found: PATCH_ENGINE_UNAVAILABLE"],
+            reason_code=REASON_CODE_PATCH_ENGINE_UNAVAILABLE,
+        )
+
+    preflight_issue = _check_sandbox_preflight(sandbox, patch_path, resolved_touched_paths, patch_text)
+    if preflight_issue is not None:
+        reason = f"Sandbox preflight check failed: {preflight_issue}"
+        return PatchApplyResult(
+            status="REJECTED",
+            reason=reason,
+            patch_path=patch_path,
+            touched_paths=resolved_touched_paths,
+            before_hashes=before_hashes,
+            after_hashes={},
+            snapshot_dir=snapshot_dir,
+            created_paths=[],
+            errors=[reason],
+            reason_code=preflight_issue,
+        )
+
+    check = _git_apply(
+        [git_exe, "apply", "--check", str(patch_path)],
+        cwd=sandbox,
+        run=run,
+        timeout_seconds=timeout_seconds,
+    )
+    if check.returncode != 0:
+        if check.returncode == 127:
+            reason_code = REASON_CODE_PATCH_ENGINE_UNAVAILABLE
+            reason = "Git executable not found at runtime"
+        elif check.returncode == 126:
+            reason_code = REASON_CODE_PATCH_ENGINE_OS_ERROR
+            reason = _stderr_reason(check, "Git executable could not be invoked")
+        elif check.returncode == 124:
+            reason_code = REASON_CODE_PATCH_APPLY_TIMEOUT
+            reason = _stderr_reason(check, "git apply --check timed out")
+        else:
+            reason_code = REASON_CODE_PATCH_CHECK_FAILED
+            reason = _stderr_reason(check, "git apply --check failed")
+        return PatchApplyResult(
+            status="REJECTED",
+            reason=reason,
+            patch_path=patch_path,
+            touched_paths=resolved_touched_paths,
+            before_hashes=before_hashes,
+            after_hashes={},
+            snapshot_dir=snapshot_dir,
+            created_paths=[],
+            errors=[reason],
+            reason_code=reason_code,
+            stdout=str(check.stdout or ""),
+            stderr=str(check.stderr or ""),
+        )
+
+    return PatchApplyResult(
+        status="CHECKED",
+        reason="patch applies cleanly inside sandbox",
+        patch_path=patch_path,
+        touched_paths=resolved_touched_paths,
+        before_hashes=before_hashes,
+        after_hashes={},
+        snapshot_dir=snapshot_dir,
+        created_paths=[],
+        errors=[],
+        reason_code="",
+        stdout=str(check.stdout or ""),
+        stderr=str(check.stderr or ""),
     )
 
 
@@ -388,9 +558,15 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _git_apply(command: list[str], *, cwd: Path, run: RunCallable) -> subprocess.CompletedProcess:
+def _git_apply(
+    command: list[str],
+    *,
+    cwd: Path,
+    run: RunCallable,
+    timeout_seconds: int = 60,
+) -> subprocess.CompletedProcess:
     try:
-        return run(command, cwd=str(cwd), capture_output=True, text=True, check=False, timeout=60)
+        return run(command, cwd=str(cwd), capture_output=True, text=True, check=False, timeout=timeout_seconds)
     except FileNotFoundError:
         return subprocess.CompletedProcess(command, 127, stdout="", stderr="Git executable not found")
     except OSError as exc:

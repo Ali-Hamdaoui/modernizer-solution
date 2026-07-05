@@ -37,7 +37,11 @@ from migration_factory.repair_loop.ledger import (
     write_ledger,
     write_patch_attempt_result,
 )
-from migration_factory.repair_loop.patch_apply import apply_patch_to_sandbox, rollback_patch
+from migration_factory.repair_loop.patch_apply import (
+    REASON_CODE_PATCH_CHECK_FAILED,
+    apply_patch_to_sandbox,
+    rollback_patch,
+)
 from migration_factory.repair_loop.patch_gate import evaluate_patch_proposal
 from migration_factory.repair_loop.validation_runner import (
     ValidationResult,
@@ -501,6 +505,7 @@ class V2RepairFlowService:
         attempt["repair_apply_result_ref"] = str(apply_artifact_ref)
         attempt["repair_apply_result_checksum"] = apply_artifact_checksum
         if apply_result.status != "APPLIED":
+            stale_apply_check = apply_result.reason_code == REASON_CODE_PATCH_CHECK_FAILED
             result_path = write_patch_attempt_result(
                 run_dir=run_path,
                 run_id=resolved_run_id,
@@ -521,8 +526,11 @@ class V2RepairFlowService:
                 {
                     "proposal_id": proposal.proposal_id,
                     "attempt": 1,
-                    "status": "REPAIR_FAILED",
+                    "status": "STALE_APPLY_CHECK_FAILED" if stale_apply_check else "REPAIR_FAILED",
                     "reason": apply_result.reason,
+                    "reason_code": apply_result.reason_code,
+                    "rerun_status": "not_started" if stale_apply_check else "",
+                    "rollback_status": "not_started" if stale_apply_check else "",
                     "max_attempts_exhausted": True,
                     "binding_checksum": binding_checksum or "",
                 },
@@ -532,14 +540,29 @@ class V2RepairFlowService:
             attempt["repair_terminal_failure_checksum"] = terminal_checksum
             append_attempt(ledger, attempt)
             ledger["artifact_refs"] = artifact_refs
-            ledger["final_status"] = "REPAIR_FAILED"
+            ledger["final_status"] = "STALE_APPLY_CHECK_FAILED" if stale_apply_check else "REPAIR_FAILED"
             write_ledger(run_path, ledger)
+            if self._repo is not None and stale_apply_check:
+                self._repo.update_proposal_prf_fields(
+                    proposal_id,
+                    status="approve_failed",
+                    status_reason=f"[{apply_result.reason_code}] Proposal stale/apply-check failed; new proposal required: {apply_result.reason}",
+                    apply_status=apply_result.status,
+                    rerun_status="not_started",
+                    rollback_status="not_started",
+                    remaining_attempts=0,
+                    completed_at=utc_now_text(),
+                )
             return self._record_action(
                 proposal_id=proposal_id,
                 target_path=resolved_target_path,
                 patch_content=patch_content,
                 status="failed",
-                result_summary=f"Repair patch was rejected in sandbox: {apply_result.reason}",
+                result_summary=(
+                    f"Repair proposal is stale; backend apply-check failed and no validation was started: {apply_result.reason}"
+                    if stale_apply_check
+                    else f"Repair patch was rejected in sandbox: {apply_result.reason}"
+                ),
             )
         self._emit_repair_event(
             event_recorder,

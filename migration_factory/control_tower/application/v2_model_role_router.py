@@ -143,7 +143,7 @@ class V2ModelRoleRouter:
         primary_env_ref = self._role_env_ref(request.role, active_settings)
         fallback_env_ref = active_settings.azure_foundry_fallback_deployment_env or ""
 
-        role_config = ModelRoleConfigLoader.try_load_role(request.role.value)
+        role_config = ModelRoleConfigLoader.try_load_role(_role_to_config_role(request.role))
         provider_alias = (role_config.provider_alias if role_config else "azure_openai")
 
         if provider_alias == "mistral":
@@ -164,7 +164,7 @@ class V2ModelRoleRouter:
         self,
         request: V2RoleModelRequest,
         *,
-        invoke: Callable[[str, str], Any],
+        invoke: Callable[..., Any],
         settings: ControlTowerSettings | None = None,
     ) -> V2RoleModelResult:
         route = self.plan(request, settings=settings)
@@ -182,9 +182,24 @@ class V2ModelRoleRouter:
             schema_failure = self._schema_failure_reason(request, result.content)
             if schema_failure:
                 schema_diag = self._schema_diagnostics(
-                    request, result.content, deployment=route.primary_deployment,
+                    request,
+                    result.content,
+                    deployment=route.primary_deployment,
+                    response_format_requested=result.response_format_requested,
+                    response_format_used=result.response_format_used,
                 )
                 schema_summary = _build_schema_failure_summary(request, result.content)
+                if self._should_attempt_reviewer_schema_repair(request, schema_failure):
+                    repaired, schema_diag = self._attempt_reviewer_schema_repair(
+                        route=route,
+                        request=request,
+                        invoke=invoke,
+                        invalid_content=result.content,
+                        original_schema_diagnostics=schema_diag,
+                        original_failure_reason=schema_failure,
+                    )
+                    if repaired is not None:
+                        return repaired
             if result.success and not schema_failure:
                 return V2RoleModelResult(
                     content=result.content,
@@ -266,23 +281,140 @@ class V2ModelRoleRouter:
 
     def _try_invoke(
         self,
-        invoke: Callable[[str, str], Any],
+        invoke: Callable[..., Any],
         *,
         deployment: str,
         provider: str = "azure_openai",
         request: V2RoleModelRequest,
         role: str,
+        prompt_override: str | None = None,
     ) -> tuple[Any | None, str]:
         if not deployment:
             if role == V2ModelRole.REVIEWER.value:
                 return None, "reviewer_model_unavailable"
             return None, f"missing_{role}_deployment"
         try:
-            return invoke(deployment, provider), ""
+            if prompt_override is None:
+                return invoke(deployment, provider), ""
+            return invoke(deployment, provider, prompt_override=prompt_override), ""
         except Exception:
             if role == V2ModelRole.REVIEWER.value:
                 return None, "reviewer_model_failed"
             return None, f"{role}_model_failed"
+
+    def _should_attempt_reviewer_schema_repair(
+        self,
+        request: V2RoleModelRequest,
+        failure_reason: str,
+    ) -> bool:
+        return (
+            request.role == V2ModelRole.REVIEWER
+            and request.require_schema
+            and request.output_schema_name == "RepairReviewerOutput"
+            and failure_reason == "reviewer_schema_invalid"
+        )
+
+    def _attempt_reviewer_schema_repair(
+        self,
+        *,
+        route: V2RoleModelRoute,
+        request: V2RoleModelRequest,
+        invoke: Callable[..., Any],
+        invalid_content: str,
+        original_schema_diagnostics: dict[str, Any],
+        original_failure_reason: str,
+    ) -> tuple[V2RoleModelResult | None, dict[str, Any]]:
+        repair_prompt = _build_reviewer_schema_repair_prompt(
+            original_prompt=request.prompt,
+            invalid_content=invalid_content,
+            schema_diagnostics=original_schema_diagnostics,
+            original_failure_reason=original_failure_reason,
+        )
+        repair_diag: dict[str, Any] = {
+            **original_schema_diagnostics,
+            "original_schema_failure_reason": original_failure_reason,
+            "original_parse_failure_category": str(
+                original_schema_diagnostics.get("parse_failure_category") or ""
+            ),
+            "schema_repair_attempted": True,
+            "schema_repair_succeeded": False,
+            "schema_repair_failure_reason": "",
+            "schema_repair_parse_failure_category": "",
+        }
+        raw_repair_result, repair_failure = self._try_invoke(
+            invoke,
+            deployment=route.primary_deployment,
+            provider=route.provider,
+            request=request,
+            role=request.role.value,
+            prompt_override=repair_prompt,
+        )
+        if raw_repair_result is None:
+            repair_diag["schema_repair_failure_reason"] = repair_failure or "reviewer_model_failed"
+            return None, repair_diag
+
+        result = self._coerce_primary_result(raw_repair_result, request)
+        repair_schema_failure = self._schema_failure_reason(request, result.content)
+        repair_result_diag = self._schema_diagnostics(
+            request,
+            result.content,
+            deployment=route.primary_deployment,
+            response_format_requested=result.response_format_requested,
+            response_format_used=result.response_format_used,
+        )
+        repair_diag["schema_repair_output_checksum"] = str(
+            repair_result_diag.get("output_checksum") or ""
+        )
+        repair_diag["schema_repair_parse_failure_category"] = str(
+            repair_result_diag.get("parse_failure_category") or ""
+        )
+
+        if result.success and not repair_schema_failure:
+            success_diag = {
+                **repair_result_diag,
+                "original_schema_failure_reason": original_failure_reason,
+                "original_parse_failure_category": repair_diag["original_parse_failure_category"],
+                "schema_repair_attempted": True,
+                "schema_repair_succeeded": True,
+                "schema_repair_failure_reason": "",
+                "schema_repair_parse_failure_category": "",
+                "schema_repair_output_checksum": repair_diag["schema_repair_output_checksum"],
+            }
+            return (
+                V2RoleModelResult(
+                    content=result.content,
+                    role=result.role,
+                    provider=result.provider,
+                    source=result.source,
+                    model_status=result.model_status,
+                    success=True,
+                    failure_reason="",
+                    primary_failure_reason=original_failure_reason,
+                    fallback_used=False,
+                    schema_validated=True,
+                    redacted_summary=(
+                        "Reviewer schema repair succeeded after initial schema validation failure."
+                    ),
+                    schema_diagnostics=success_diag,
+                    response_format_requested=result.response_format_requested,
+                    response_format_used=result.response_format_used,
+                    deployment_alias_hash=result.deployment_alias_hash,
+                    prompt_tokens=result.prompt_tokens,
+                    completion_tokens=result.completion_tokens,
+                    total_tokens=result.total_tokens,
+                    reasoning_tokens=result.reasoning_tokens,
+                    latency_ms=result.latency_ms,
+                ),
+                success_diag,
+            )
+
+        repair_diag["schema_repair_failure_reason"] = (
+            repair_schema_failure
+            or result.failure_reason
+            or repair_failure
+            or "reviewer_schema_invalid"
+        )
+        return None, repair_diag
 
     def _coerce_primary_result(self, result: Any, request: V2RoleModelRequest) -> V2RoleModelResult:
         return V2RoleModelResult(
@@ -343,7 +475,9 @@ class V2ModelRoleRouter:
         parsed, category = _parse_model_json_safe(content)
         if parsed is None:
             if category == "empty_output":
-                return "main_empty_response"
+                if request.role == V2ModelRole.PROPOSER:
+                    return "main_empty_response"
+                return f"{request.role.value}_schema_invalid"
             if request.role == V2ModelRole.PROPOSER:
                 return "main_schema_invalid"
             return f"{request.role.value}_schema_invalid"
@@ -361,6 +495,8 @@ class V2ModelRoleRouter:
         content: str,
         *,
         deployment: str = "",
+        response_format_requested: bool | None = None,
+        response_format_used: bool | None = None,
     ) -> dict[str, Any]:
         """Return safe schema diagnostics without leaking raw content."""
         if not request.require_schema or not request.output_schema_name:
@@ -374,8 +510,10 @@ class V2ModelRoleRouter:
             "role": request.role.value,
             "stage": "reviewer" if request.role == V2ModelRole.REVIEWER else "main",
             "output_checksum": output_checksum if content.strip() else "",
-            "response_format_requested": True,
-            "response_format_used": True,
+            "response_format_requested": bool(
+                request.require_schema if response_format_requested is None else response_format_requested
+            ),
+            "response_format_used": bool(response_format_used) if response_format_used is not None else False,
             "deployment_alias_hash": _deployment_alias_hash(deployment),
         }
         if parsed is None:
@@ -527,6 +665,87 @@ class V2ModelRoleRouter:
 # ── Module-level helpers ────────────────────────────────────────────
 
 
+def _build_reviewer_schema_repair_prompt(
+    *,
+    original_prompt: str,
+    invalid_content: str,
+    schema_diagnostics: dict[str, Any],
+    original_failure_reason: str,
+) -> str:
+    safe_invalid = _safe_invalid_model_output_excerpt(invalid_content)
+    safe_diag = {
+        k: v for k, v in schema_diagnostics.items()
+        if k in (
+            "schema_name",
+            "role",
+            "stage",
+            "parse_failure_category",
+            "missing_fields",
+            "wrong_field_types",
+            "wrong_field_names",
+            "invalid_fields",
+            "extra_fields",
+            "reason_code",
+            "response_format_requested",
+            "response_format_used",
+        )
+    }
+    return (
+        "You are the same repair reviewer. Your previous response failed backend "
+        "schema validation and was not used. Rewrite the reviewer answer as one "
+        "schema-valid JSON object only.\n\n"
+        "Return only JSON. No markdown. No code fences. No prose outside JSON. "
+        "Do not add extra keys.\n\n"
+        f"Safe schema failure reason: {redact_model_summary(original_failure_reason)}\n"
+        f"Safe schema diagnostics: {json.dumps(safe_diag, sort_keys=True)}\n\n"
+        "Required RepairReviewerOutput JSON shape:\n"
+        "{\n"
+        '  "decision": "needs_revision",\n'
+        '  "review_summary": "string",\n'
+        '  "main_patch_findings": ["string"],\n'
+        '  "changed_files_verified": false,\n'
+        '  "reviewed_diff": "string",\n'
+        '  "diff_changed_by_reviewer": false,\n'
+        '  "risks": ["string"],\n'
+        '  "policy_concerns": ["string"],\n'
+        '  "main_diff_diagnostics_acknowledged": false,\n'
+        '  "diff_parseable": false,\n'
+        '  "reviewed_context_checksum": "string",\n'
+        '  "reviewed_primary_output_checksum": "string",\n'
+        '  "model_claimed_diff_parseable": false\n'
+        "}\n\n"
+        "Required fields: decision, review_summary, main_patch_findings, "
+        "changed_files_verified, reviewed_diff, diff_changed_by_reviewer, risks, "
+        "policy_concerns, main_diff_diagnostics_acknowledged, diff_parseable, "
+        "reviewed_context_checksum, reviewed_primary_output_checksum.\n"
+        "Optional field: model_claimed_diff_parseable.\n"
+        "Allowed decisions: accept, reject, needs_more_context, needs_revision.\n"
+        "No additional properties are allowed.\n\n"
+        "If decision is accept, reviewed_diff must be non-empty, diff_parseable must "
+        "be true, changed_files_verified must be true, and "
+        "main_diff_diagnostics_acknowledged must be true. If you cannot produce a "
+        "valid diff, return decision needs_more_context or needs_revision with "
+        "reviewed_diff set to an empty string, diff_parseable false, and a clear "
+        "review_summary.\n\n"
+        "Previous invalid reviewer output excerpt, redacted and bounded:\n"
+        f"{safe_invalid}\n\n"
+        "Original reviewer prompt/context follows. Use it to regenerate the same "
+        "review task correctly, but output only the JSON object described above.\n"
+        f"{original_prompt}"
+    )
+
+
+def _safe_invalid_model_output_excerpt(content: str, *, limit: int = 8000) -> str:
+    text = str(content or "")
+    text = re.sub(r"(?i)\b[a-z]:\\[^\s\"']+", "[redacted-path]", text)
+    text = re.sub(r"(?i)/(?:users|home)/[^\s\"']+", "[redacted-path]", text)
+    text = re.sub(r"(?i)(api[_-]?key|bearer\s+)[^\s\",}]+", r"\1[REDACTED]", text)
+    text = redact_model_summary(text)
+    if len(text) > limit:
+        return text[:limit] + "\n[truncated]"
+    return text
+
+
 def _deployment_alias_hash(deployment: str) -> str:
     """Hash a deployment name to a safe opaque identifier."""
     if not deployment:
@@ -547,11 +766,6 @@ def _build_diagnostic_summary_from_diag(diag: dict[str, Any]) -> str:
     invalid_fields = diag.get("invalid_fields")
     extra_fields = diag.get("extra_fields")
     diff_status = str(diag.get("proposed_diff_parse_status") or "")
-    rfu = diag.get("response_format_used")
-
-    if rfu is False:
-        return "Azure rejected response_format=json_object; model returned plain text."
-
     if category == "azure_response_format_rejected":
         return "Azure rejected response_format=json_object."
 

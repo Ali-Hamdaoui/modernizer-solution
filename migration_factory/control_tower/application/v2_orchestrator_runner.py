@@ -2,14 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
 import sqlite3
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
 from migration_factory.control_tower.application.redaction import (
@@ -34,6 +36,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository
 )
 from migration_factory.repair_loop.failure_evidence import (
     FailureSource,
+    NormalizedCompilerError,
     build_failure_evidence,
     failure_evidence_to_dict,
 )
@@ -1044,7 +1047,19 @@ class V2OrchestratorRunner:
             return
 
         artifact_refs = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
+        sandbox_path_text = _result_sandbox_path(result)
+        sandbox_path = Path(sandbox_path_text) if sandbox_path_text else None
         changed_files = tuple(str(path) for path in result.get("changed_files", ()) if str(path).strip()) if isinstance(result.get("changed_files"), (list, tuple)) else ()
+        repair_diagnostic_text = _build_repair_diagnostic_text(
+            result=result,
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
+            run_dir=run_dir,
+        )
+        compiler_errors = _extract_compiler_errors(
+            repair_diagnostic_text,
+            sandbox_path=sandbox_path,
+        )
         accepted_checksums = tuple(
             str(value)
             for value in (
@@ -1067,6 +1082,7 @@ class V2OrchestratorRunner:
             job_id=job_id,
             command_id=command_id,
             failure_summary=failure_summary,
+            compiler_errors=compiler_errors,
             changed_files=changed_files,
             source_profile=str(result.get("source_profile") or ""),
             target_profile=str(result.get("target_profile") or ""),
@@ -1076,6 +1092,24 @@ class V2OrchestratorRunner:
             stderr_tail=stderr_tail,
             safe_log_preview=_first_text(result.get("safe_log_preview"), stderr_tail, stdout_tail),
         )
+        normalized_build_evidence = _normalized_build_evidence(
+            compiler_errors=compiler_errors,
+            result=result,
+        )
+        source_contexts = _build_source_contexts(
+            sandbox_path=sandbox_path,
+            changed_files=changed_files,
+            compiler_errors=compiler_errors,
+            candidate_source_paths=_source_paths_from_compiler_locations(
+                repair_diagnostic_text,
+                sandbox_path=sandbox_path,
+            ),
+        )
+        file_checksums = {
+            str(item.get("repo_relative_path") or ""): str(item.get("file_checksum") or "")
+            for item in source_contexts
+            if str(item.get("repo_relative_path") or "") and str(item.get("file_checksum") or "")
+        }
         context_pack = build_repair_context_pack(
             failure_evidence=evidence,
             job_id=job_id,
@@ -1084,6 +1118,9 @@ class V2OrchestratorRunner:
             source_profile=str(result.get("source_profile") or ""),
             target_profile=str(result.get("target_profile") or ""),
             changed_files=changed_files,
+            normalized_build_evidence=normalized_build_evidence,
+            source_contexts=source_contexts,
+            file_checksums=file_checksums,
             accepted_artifact_checksums=accepted_checksums,
         )
 
@@ -1102,7 +1139,7 @@ class V2OrchestratorRunner:
         result["_repair_failure_evidence_ref"] = str(evidence_path)
         result["_repair_context_pack_ref"] = str(context_path)
         result["_repair_run_dir"] = str(run_dir)
-        result["_repair_sandbox_path"] = _result_sandbox_path(result)
+        result["_repair_sandbox_path"] = sandbox_path_text
         result["_repair_failure_evidence_checksum"] = evidence.content_checksum
         result["_repair_context_pack_checksum"] = context_pack.context_pack_checksum
         result["_repair_base_repo_state_checksum"] = context_pack.base_repo_state_checksum
@@ -2323,6 +2360,351 @@ def _looks_like_orchestrator_result(value: dict[str, Any]) -> bool:
             "modernized_app_path",
         )
     )
+
+
+_MAVEN_COMPILER_ERROR_RE = re.compile(
+    r"(?P<path>(?:/[A-Za-z]:|[A-Za-z]:|/)?[^\r\n]*?\.java):"
+    r"\[(?P<line>\d+),(?P<column>\d+)\]\s*(?P<message>[^\r\n]+)"
+)
+
+_COMPILER_LOCATION_RE = re.compile(
+    r"location:\s+(?:interface|class|enum|record)\s+"
+    r"(?P<fqn>[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+)"
+)
+
+_REPAIR_DIAGNOSTIC_MAX_CHARS = 80_000
+_REPAIR_ERROR_ARTIFACT_MAX_CHARS = 60_000
+
+
+def _extract_compiler_errors(text: str, *, sandbox_path: Path | None) -> tuple[NormalizedCompilerError, ...]:
+    errors: list[NormalizedCompilerError] = []
+    seen: set[tuple[str, int, int, str]] = set()
+    for match in _MAVEN_COMPILER_ERROR_RE.finditer(text or ""):
+        rel_path = _repo_relative_source_path(match.group("path"), sandbox_path=sandbox_path)
+        message = redact_model_summary(match.group("message")).strip()[:500]
+        line = int(match.group("line"))
+        column = int(match.group("column"))
+        key = (rel_path, line, column, message)
+        if key in seen:
+            continue
+        seen.add(key)
+        errors.append(
+            NormalizedCompilerError(
+                message=message,
+                file_path=rel_path,
+                line=line,
+                column=column,
+                severity="error",
+            )
+        )
+        if len(errors) >= 20:
+            break
+    return tuple(errors)
+
+
+def _build_repair_diagnostic_text(
+    *,
+    result: dict[str, Any],
+    stdout_tail: str,
+    stderr_tail: str,
+    run_dir: Path,
+) -> str:
+    build_validation = result.get("build_validation") if isinstance(result.get("build_validation"), dict) else {}
+    parts: list[str] = []
+    for value in (
+        result.get("failure_summary"),
+        result.get("message"),
+        result.get("matched_line"),
+        result.get("safe_log_preview"),
+        build_validation.get("message"),
+        build_validation.get("matched_line"),
+        build_validation.get("stdout_tail"),
+        build_validation.get("stderr_tail"),
+        stdout_tail,
+        stderr_tail,
+        _build_error_artifact_text(run_dir),
+    ):
+        text = _diagnostic_value_text(value)
+        if text:
+            parts.append(text)
+    return "\n".join(parts)[:_REPAIR_DIAGNOSTIC_MAX_CHARS]
+
+
+def _build_error_artifact_text(run_dir: Path) -> str:
+    if not run_dir.is_dir():
+        return ""
+    candidates: list[Path] = []
+    for pattern in (
+        "build/build-error*.json",
+        "build/*failure*.json",
+        "build/*validation*.json",
+        "repairs/repair_rerun_result.json",
+    ):
+        candidates.extend(sorted(run_dir.glob(pattern), key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True)[:3])
+
+    parts: list[str] = []
+    total = 0
+    seen: set[Path] = set()
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(run_dir.resolve())
+        except (OSError, ValueError):
+            continue
+        if resolved in seen or not resolved.is_file() or resolved.stat().st_size > 512 * 1024:
+            continue
+        seen.add(resolved)
+        try:
+            raw = resolved.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        text = _selected_error_artifact_text(raw)
+        if not text:
+            continue
+        remaining = _REPAIR_ERROR_ARTIFACT_MAX_CHARS - total
+        if remaining <= 0:
+            break
+        text = text[:remaining]
+        parts.append(text)
+        total += len(text)
+    return "\n".join(parts)
+
+
+def _selected_error_artifact_text(raw: str) -> str:
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return redact_model_summary(raw)[:20_000]
+    if not isinstance(payload, dict):
+        return ""
+
+    allowed_keys = (
+        "result_kind",
+        "message",
+        "matched_line",
+        "stdout_tail",
+        "stderr_tail",
+        "errors",
+        "warnings",
+        "build_status",
+        "test_status",
+    )
+    selected: list[str] = []
+    for key in allowed_keys:
+        if key not in payload:
+            continue
+        text = _diagnostic_value_text(payload.get(key))
+        if text:
+            selected.append(text)
+    return "\n".join(selected)[:20_000]
+
+
+def _diagnostic_value_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        return "\n".join(_diagnostic_value_text(item) for item in value if _diagnostic_value_text(item)).strip()
+    if isinstance(value, dict):
+        safe: dict[str, Any] = {}
+        for key in ("message", "matched_line", "stdout_tail", "stderr_tail", "errors", "warnings"):
+            if key in value:
+                safe[key] = value[key]
+        return _diagnostic_value_text(list(safe.values()))
+    return str(value).strip()
+
+
+def _normalized_build_evidence(
+    *,
+    compiler_errors: tuple[NormalizedCompilerError, ...],
+    result: dict[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    evidence: list[dict[str, Any]] = []
+    for error in compiler_errors[:20]:
+        evidence.append(
+            {
+                "kind": "compiler_error",
+                "file_path": error.file_path,
+                "line": error.line,
+                "column": error.column,
+                "message": error.message,
+                "severity": error.severity,
+            }
+        )
+    for key in ("build_status", "test_status", "final_status"):
+        value = str(result.get(key) or "").strip()
+        if value:
+            evidence.append({"kind": key, "status": redact_model_summary(value)[:200]})
+    return tuple(evidence[:30])
+
+
+def _build_source_contexts(
+    *,
+    sandbox_path: Path | None,
+    changed_files: tuple[str, ...],
+    compiler_errors: tuple[NormalizedCompilerError, ...],
+    candidate_source_paths: tuple[str, ...] = (),
+) -> tuple[dict[str, Any], ...]:
+    if sandbox_path is None or not sandbox_path.is_dir():
+        return ()
+
+    candidate_paths: list[str] = []
+    for error in compiler_errors:
+        if error.file_path:
+            candidate_paths.append(error.file_path)
+    candidate_paths.extend(changed_files)
+    candidate_paths.extend(candidate_source_paths)
+
+    contexts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    sandbox = sandbox_path.resolve()
+    errors_by_file: dict[str, list[NormalizedCompilerError]] = {}
+    for error in compiler_errors:
+        errors_by_file.setdefault(error.file_path, []).append(error)
+
+    for raw_path in candidate_paths:
+        rel_path = _repo_relative_source_path(raw_path, sandbox_path=sandbox)
+        if not rel_path or rel_path in seen or _source_context_path_issue(rel_path):
+            continue
+        seen.add(rel_path)
+        target = (sandbox / PurePosixPath(rel_path)).resolve()
+        try:
+            target.relative_to(sandbox)
+        except ValueError:
+            continue
+        if not target.is_file() or target.stat().st_size > 512 * 1024:
+            continue
+        try:
+            text = target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        file_errors = errors_by_file.get(rel_path, ())
+        contexts.append(
+            _source_context_from_text(
+                rel_path=rel_path,
+                text=text,
+                failing_lines=tuple(error.line for error in file_errors if error.line > 0),
+            )
+        )
+        if len(contexts) >= 8:
+            break
+    return tuple(contexts)
+
+
+def _source_paths_from_compiler_locations(text: str, *, sandbox_path: Path | None) -> tuple[str, ...]:
+    if sandbox_path is None or not sandbox_path.is_dir():
+        return ()
+    sandbox = sandbox_path.resolve()
+    paths: list[str] = []
+    seen: set[str] = set()
+    for match in _COMPILER_LOCATION_RE.finditer(text or ""):
+        fqn = match.group("fqn")
+        if not fqn:
+            continue
+        rel_path = "src/main/java/" + fqn.replace(".", "/") + ".java"
+        if rel_path in seen or _source_context_path_issue(rel_path):
+            continue
+        target = (sandbox / PurePosixPath(rel_path)).resolve()
+        try:
+            target.relative_to(sandbox)
+        except ValueError:
+            continue
+        if target.is_file():
+            seen.add(rel_path)
+            paths.append(rel_path)
+        if len(paths) >= 12:
+            break
+    return tuple(paths)
+
+
+def _source_context_from_text(
+    *,
+    rel_path: str,
+    text: str,
+    failing_lines: tuple[int, ...],
+) -> dict[str, Any]:
+    lines = text.splitlines()
+    package_line = next((line.strip() for line in lines[:80] if line.strip().startswith("package ")), "")
+    imports = [line.strip() for line in lines[:200] if line.strip().startswith("import ")]
+    return {
+        "repo_relative_path": rel_path,
+        "file_checksum": hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest(),
+        "package_line": package_line[:300],
+        "import_block": "\n".join(imports[:80])[:6000],
+        "existing_imports": imports[:80],
+        "failing_lines": list(failing_lines[:10]),
+        "bounded_source_excerpt": _bounded_source_excerpt(lines, failing_lines=failing_lines),
+    }
+
+
+def _bounded_source_excerpt(lines: list[str], *, failing_lines: tuple[int, ...]) -> str:
+    ranges: list[tuple[int, int]] = []
+    if lines:
+        ranges.append((1, min(len(lines), 80)))
+    for line in failing_lines[:5]:
+        ranges.append((max(1, line - 25), min(len(lines), line + 25)))
+
+    selected: list[str] = []
+    last_end = 0
+    for start, end in sorted(ranges):
+        if start <= last_end:
+            start = last_end + 1
+        if start > end:
+            continue
+        if selected:
+            selected.append("...")
+        for number in range(start, end + 1):
+            selected.append(f"{number}: {redact_model_summary(lines[number - 1])[:300]}")
+        last_end = end
+    return "\n".join(selected)[:16000]
+
+
+def _repo_relative_source_path(raw_path: Any, *, sandbox_path: Path | None) -> str:
+    path_text = str(raw_path or "").strip().replace("\\", "/")
+    if not path_text:
+        return ""
+    if sandbox_path is not None:
+        sandbox_text = str(sandbox_path.resolve()).replace("\\", "/").rstrip("/")
+        if path_text.lower().startswith(sandbox_text.lower() + "/"):
+            path_text = path_text[len(sandbox_text) + 1 :]
+    marker = _source_marker(path_text)
+    if marker >= 0:
+        path_text = path_text[marker:]
+    while path_text.startswith("./"):
+        path_text = path_text[2:]
+    if path_text.startswith(("a/", "b/")):
+        path_text = path_text[2:]
+    return PurePosixPath(path_text).as_posix()
+
+
+def _source_marker(value: str) -> int:
+    lowered = value.lower()
+    markers = (
+        "src/main/java/",
+        "src/test/java/",
+        "src/main/resources/",
+        "src/test/resources/",
+        "pom.xml",
+    )
+    positions = [lowered.find(marker) for marker in markers if lowered.find(marker) >= 0]
+    return min(positions) if positions else -1
+
+
+def _source_context_path_issue(rel_path: str) -> str:
+    normalized = str(rel_path or "").replace("\\", "/")
+    win = PureWindowsPath(rel_path)
+    pure = PurePosixPath(normalized)
+    lowered = normalized.lower()
+    if not normalized or normalized.startswith("/") or win.is_absolute() or re.match(r"^[a-zA-Z]:", rel_path):
+        return "absolute_path"
+    if ".." in pure.parts:
+        return "path_traversal"
+    if any(part in {".git", ".migration", "target", "build", "node_modules"} for part in pure.parts):
+        return "generated_or_internal_path"
+    if any(token in lowered for token in ("secret", "token", "password", "api_key", "apikey", ".env")):
+        return "secret_like_path"
+    return ""
 
 
 def _result_sandbox_path(result: dict[str, Any]) -> str:

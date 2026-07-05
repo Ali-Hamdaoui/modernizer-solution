@@ -34,6 +34,11 @@ from migration_factory.repair_loop.failure_evidence import (
     FailureSource,
     failure_evidence_to_dict,
 )
+from migration_factory.repair_loop.patch_apply import validate_unified_diff_structure
+from migration_factory.repair_loop.patch_gate import (
+    classify_diff_failure,
+    extract_touched_paths,
+)
 from migration_factory.repair_loop.repair_context import (
     RepairContextPack,
     compute_base_repo_state_checksum,
@@ -51,12 +56,14 @@ class RepairReviewChainProductionError(RuntimeError):
         reason_code: str = "",
         schema_name: str = "",
         role: str = "",
+        partial_chain: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.schema_diagnostics = schema_diagnostics
         self.reason_code = reason_code or ""
         self.schema_name = schema_name or ""
         self.role = role or ""
+        self.partial_chain = partial_chain or {}
 
 
 # ── F5-T3: Deterministic repair artifact ─────────────────────────────
@@ -121,6 +128,8 @@ def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checks
         "- Do NOT include commands, paths to execute, provider data, endpoint data, "
         "env data, deployment data, or approvals.\n"
         "- Do NOT include absolute sandbox paths.\n"
+        "- The host runtime is Windows. Do not output absolute Windows paths or C:\\ paths.\n"
+        "- Use repo-relative POSIX-style paths only. Diff headers must use forward slashes.\n"
         "- The proposed_diff MUST be a strict Git-style unified diff. It:\n"
         "  * must start with 'diff --git a/<relative-path> b/<relative-path>'\n"
         "  * must include '--- a/<relative-path>'\n"
@@ -134,9 +143,9 @@ def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checks
         "- The fix must stay within the sandbox scope and declared changed files.\n\n"
         "REPAIR SELECTION:\n"
         "- If multiple strategies exist, choose the smallest code-only fix that directly addresses the compiler error.\n"
-        "- For 'cannot find symbol: class JsonNode' in a Java source file that references JsonNode without import, "
-        "prefer adding 'import com.fasterxml.jackson.databind.JsonNode;' to the source file when dependency evidence "
-        "already shows Jackson is available.\n"
+        "- Do not assume Jackson package family. Use the target profile and existing imports. "
+        "If target context shows tools.jackson.*, keep tools.jackson.*. "
+        "If tools.jackson.databind.JsonNode already exists, do not add com.fasterxml.jackson.databind.JsonNode.\n"
         "- Do not propose a dependency or POM change unless failure evidence proves the dependency is missing from "
         "the classpath and no source import fix is possible.\n\n"
         "Valid JSON example:\n"
@@ -156,59 +165,175 @@ def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checks
 
 
 def _reviewer_repair_prompt(
+    *,
+    context_pack: RepairContextPack,
     primary_output: dict[str, Any],
+    main_diff_diagnostics: dict[str, Any],
     deterministic_checksum: str,
     context_checksum: str,
     primary_checksum: str,
-    diff_checksum: str,
 ) -> str:
     return (
-        "You are a repair reviewer. Validate the repair proposal below against the "
-        "exact checksums, context, and policy constraints.\n\n"
-        "Output only valid JSON. No markdown. No code fences. No commentary.\n\n"
+        "You are a repair reviewer and final patch author. Validate Main's repair "
+        "against the grounded context and backend diagnostics. If Main's diff is stale "
+        "or malformed but the context is sufficient, return a corrected final reviewed_diff.\n\n"
+        "Output only valid JSON. No markdown. No code fences. No commentary. "
+        "No prose outside the JSON object. Do not add extra keys.\n\n"
         "Match the RepairReviewerOutput schema exactly.\n\n"
         "Required fields:\n"
-        "  decision: \"accept\" | \"reject\" | \"needs_revision\"\n"
-        "  notes: list of strings\n"
+        "  decision: \"accept\" | \"reject\" | \"needs_more_context\" | \"needs_revision\"\n"
+        "  review_summary: string\n"
+        "  main_patch_findings: list of strings\n"
         "  risks: list of strings\n"
         "  policy_concerns: list of strings\n"
         "  changed_files_verified: boolean\n"
+        "  reviewed_diff: string\n"
+        "  diff_changed_by_reviewer: boolean\n"
+        "  main_diff_diagnostics_acknowledged: boolean\n"
         "  diff_parseable: boolean\n"
         f"  reviewed_context_checksum: \"{context_checksum}\"\n"
-        f"  reviewed_primary_output_checksum: \"{primary_checksum}\"\n"
-        f"  reviewed_diff_checksum: \"{diff_checksum}\"\n\n"
-        "If decision is \"reject\", include reason_for_rejection (string).\n"
-        "If decision is \"needs_revision\", include revision_request (string).\n\n"
-        "Review the normalized proposed diff, not only the Main summary. Bind your "
-        "decision to the exact top-level checksum fields.\n\n"
+        f"  reviewed_primary_output_checksum: \"{primary_checksum}\"\n\n"
+        "Optional fields:\n"
+        "  model_claimed_diff_parseable: boolean\n\n"
+        "If decision is \"accept\", reviewed_diff must contain the final strict Git-style unified diff. "
+        "For accept, reviewed_diff must be non-empty, diff_parseable=true, "
+        "changed_files_verified=true, and main_diff_diagnostics_acknowledged=true. "
+        "If Main's diff is correct, copy it into reviewed_diff. If you correct it, set "
+        "diff_changed_by_reviewer=true. If unable to produce a valid diff, return decision "
+        "\"needs_more_context\" or \"needs_revision\", reviewed_diff=\"\", diff_parseable=false, "
+        "and a clear review_summary.\n\n"
+        "Backend truth is mechanical. Do not claim backend validation success. The backend will compute "
+        "reviewed_diff_checksum and run schema, path, policy, and git apply --check validation.\n\n"
         "Valid JSON example:\n"
         "{\n"
         '  "decision": "accept",\n'
-        '  "notes": [],\n'
+        '  "review_summary": "Main selected the right file but the hunk was repaired against real source context.",\n'
+        '  "main_patch_findings": ["Main diff had stale context."],\n'
         '  "risks": [],\n'
         '  "policy_concerns": [],\n'
         '  "changed_files_verified": true,\n'
+        '  "reviewed_diff": "diff --git a/src/main/java/example/Foo.java b/src/main/java/example/Foo.java\\n--- a/src/main/java/example/Foo.java\\n+++ b/src/main/java/example/Foo.java\\n@@ -1,2 +1,3 @@\\n package example;\\n+import tools.jackson.databind.JsonNode;\\n",\n'
+        '  "diff_changed_by_reviewer": true,\n'
+        '  "main_diff_diagnostics_acknowledged": true,\n'
         '  "diff_parseable": true,\n'
+        '  "model_claimed_diff_parseable": true,\n'
         f'  "reviewed_context_checksum": "{context_checksum}",\n'
-        f'  "reviewed_primary_output_checksum": "{primary_checksum}",\n'
-        f'  "reviewed_diff_checksum": "{diff_checksum}"\n'
+        f'  "reviewed_primary_output_checksum": "{primary_checksum}"\n'
         "}\n\n"
         "CONSTRAINTS:\n"
-        "- Accept only if the diff is valid unified diff format and addresses "
-        "the exact failure evidence.\n"
+        "- Use only the provided grounded context and Main proposal. Do not invent file bodies.\n"
+        "- Do not output placeholder lines, ellipses, bare @@ hunks, or // interface methods.\n"
+        "- The host runtime is Windows. Do not output absolute Windows paths or C:\\ paths.\n"
+        "- Use repo-relative POSIX-style diff paths only.\n"
+        "- Respect existing imports and target profile. Do not assume Jackson package family.\n"
         "- Reject any unsafe diff (absolute paths, security config changes, "
         "execution instructions, test disabling, deleted production code).\n"
-        "- Reject if the diff scope exceeds the declared changed files.\n"
-        "- Bind your decision to the exact checksums provided.\n"
-        "- changed_files_verified must be true if all declared changed files are "
-        "present in the diff.\n"
-        "- diff_parseable must be false if the diff cannot be parsed as a valid "
-        "unified diff.\n\n"
+        "- Reject or needs_more_context if the source context is insufficient to produce a grounded patch.\n"
+        "- main_diff_diagnostics_acknowledged must be true.\n\n"
         f"Deterministic repair artifact checksum: {deterministic_checksum}\n"
         f"Context pack checksum: {context_checksum}\n"
         f"Primary output checksum: {primary_checksum}\n"
-        f"Normalized proposed diff checksum: {diff_checksum}\n"
-        f"Primary output:\n{json.dumps(primary_output, sort_keys=True)}"
+        f"Grounded context:\n{json.dumps(context_pack_to_dict(context_pack), sort_keys=True)}\n"
+        f"Primary output:\n{json.dumps(primary_output, sort_keys=True)}\n"
+        f"Backend main_diff_diagnostics:\n{json.dumps(main_diff_diagnostics, sort_keys=True)}"
+    )
+
+
+def _reviewer_self_repair_prompt(
+    *,
+    context_pack: RepairContextPack,
+    primary_output: dict[str, Any],
+    main_diff_diagnostics: dict[str, Any],
+    original_reviewer_output: dict[str, Any],
+    original_reviewed_diff: str,
+    validation_issue: str,
+    deterministic_checksum: str,
+    context_checksum: str,
+    primary_checksum: str,
+) -> str:
+    context_payload = context_pack_to_dict(context_pack)
+    return (
+        "You are the same repair reviewer. Your previous reviewed_diff failed backend "
+        "mechanical validation. Repair only your final reviewed_diff once, using the "
+        "grounded source context and exact backend issue below.\n\n"
+        "Output only valid JSON matching RepairReviewerOutput. No markdown, no prose, no code fences.\n\n"
+        "If you can produce a corrected strict Git-style unified diff, return decision=\"accept\". "
+        "If the source context is insufficient, return decision=\"needs_more_context\" or "
+        "decision=\"needs_revision\" and leave reviewed_diff empty.\n\n"
+        "Backend validation issue:\n"
+        f"{validation_issue}\n\n"
+        "Critical mechanical rules:\n"
+        f"- Exact backend issue: {validation_issue}\n"
+        "- Hunk header counts must exactly match hunk body old/new line counts.\n"
+        "- Every hunk must include at least one real unchanged context line beginning with a space.\n"
+        "- Do not return zero-context hunks or rely on relaxed zero-context patch behavior.\n"
+        "- Do not assume git apply --unidiff-zero or any weak apply flags.\n"
+        "- Use repo-relative POSIX paths only.\n"
+        "- Do not invent file bodies, placeholder lines, ellipses, or bare @@ hunks.\n"
+        "- Preserve the existing package/import context from source_contexts.\n"
+        "- Set diff_parseable=true and model_claimed_diff_parseable=true only if your reviewed_diff is parseable.\n"
+        "- Backend will reject the output again if hunk counts do not match.\n\n"
+        f"Deterministic repair artifact checksum: {deterministic_checksum}\n"
+        f"Context pack checksum: {context_checksum}\n"
+        f"Primary output checksum: {primary_checksum}\n"
+        f"Grounded context, including source_contexts and diff_generation_rules:\n{json.dumps(context_payload, sort_keys=True)}\n"
+        f"Primary output:\n{json.dumps(primary_output, sort_keys=True)}\n"
+        f"Backend main_diff_diagnostics:\n{json.dumps(main_diff_diagnostics, sort_keys=True)}\n"
+        f"Original reviewer output:\n{json.dumps(original_reviewer_output, sort_keys=True)}\n"
+        f"Original bad reviewed_diff:\n{original_reviewed_diff}"
+    )
+
+
+def produce_reviewer_applicability_repair(
+    *,
+    context_pack: RepairContextPack,
+    primary_output: dict[str, Any],
+    reviewer_output: dict[str, Any],
+    reviewed_diff: str,
+    apply_check_error: str,
+    apply_check_stderr: str,
+    deterministic_checksum: str,
+    context_checksum: str,
+    primary_checksum: str,
+    client: V2AssistantModelClient,
+    invocation_ledger: Any = None,
+) -> tuple[dict[str, Any], str | None, Any]:
+    issue = (
+        "validation_issue_type=applicability_check_failed\n"
+        "The reviewed_diff is schema-valid and structurally valid, but strict "
+        "git apply --check rejected it against the exact sandbox. Repair only "
+        "the final reviewed_diff. Do not rerun Main.\n\n"
+        "Exact git apply --check error:\n"
+        f"{apply_check_error}\n\n"
+        "Exact git apply --check stderr:\n"
+        f"{apply_check_stderr}\n\n"
+        "Applicability repair requirements:\n"
+        "- Use the provided source_contexts as the source of truth.\n"
+        "- Include at least one unchanged context line before/after each changed line where possible.\n"
+        "- Do not produce zero-context hunks.\n"
+        "- Return valid RepairReviewerOutput JSON only.\n"
+        "- If you cannot produce an applicable diff from the grounded context, return "
+        "needs_more_context or needs_revision with reviewed_diff empty.\n\n"
+        "Original non-applicable reviewed_diff:\n"
+        f"{reviewed_diff}"
+    )
+    return _invoke_reviewer_self_repair(
+        client=client,
+        context_pack=context_pack,
+        primary_output=primary_output,
+        main_diff_diagnostics={
+            "structure_status": "valid",
+            "applicability_status": "failed",
+            "validation_issue_type": "applicability_check_failed",
+            "apply_check_error": apply_check_error,
+            "apply_check_stderr": apply_check_stderr,
+        },
+        original_reviewer_output=reviewer_output,
+        validation_issue=issue,
+        deterministic_checksum=deterministic_checksum,
+        context_checksum=context_checksum,
+        primary_checksum=primary_checksum,
+        invocation_ledger=invocation_ledger,
     )
 
 
@@ -294,7 +419,6 @@ def _coerce_reviewer_repair_output(
     deterministic_checksum: str,
     context_checksum: str,
     primary_checksum: str,
-    diff_checksum: str,
 ) -> dict[str, Any]:
     raw = str(content).strip()
     if not raw:
@@ -334,20 +458,21 @@ def _coerce_reviewer_repair_output(
         )
 
     decision = str(parsed.get("decision") or "").strip().lower()
-    if decision not in {"accept", "revise", "reject", "needs_revision"}:
+    if decision not in {"accept", "revise", "reject", "needs_revision", "needs_more_context"}:
         raise RepairReviewChainProductionError(
-            f"invalid reviewer decision {decision!r}; must be accept/reject/needs_revision",
+            f"invalid reviewer decision {decision!r}; must be accept/reject/needs_more_context",
             reason_code="reviewer_invalid_decision",
             schema_name="RepairReviewerOutput",
             role="reviewer",
         )
     if decision == "revise":
-        decision = "needs_revision"
+        decision = "needs_more_context"
+    if decision == "needs_revision":
+        decision = "needs_more_context"
 
     required_checksum_fields = {
         "reviewed_context_checksum",
         "reviewed_primary_output_checksum",
-        "reviewed_diff_checksum",
     }
     missing_checksum_fields = {
         field
@@ -369,7 +494,6 @@ def _coerce_reviewer_repair_output(
 
     reviewed_context_checksum = str(parsed["reviewed_context_checksum"]).strip()
     reviewed_primary_output_checksum = str(parsed["reviewed_primary_output_checksum"]).strip()
-    reviewed_diff_checksum = str(parsed["reviewed_diff_checksum"]).strip()
     if reviewed_context_checksum != context_checksum:
         raise RepairReviewChainProductionError(
             "reviewer context checksum binding did not match the reviewed artifacts",
@@ -386,40 +510,41 @@ def _coerce_reviewer_repair_output(
             schema_name="RepairReviewerOutput",
             role="reviewer",
         )
-    if reviewed_diff_checksum != diff_checksum:
-        raise RepairReviewChainProductionError(
-            "reviewer diff checksum binding did not match the reviewed artifacts",
-            reason_code="reviewer_checksum_mismatch",
-            schema_diagnostics=_reviewer_checksum_mismatch_diagnostics("reviewed_diff_checksum"),
-            schema_name="RepairReviewerOutput",
-            role="reviewer",
-        )
 
     changed_files_verified = bool(parsed.get("changed_files_verified", False))
+    reviewed_diff = _strip_reviewed_diff_fences(str(parsed.get("reviewed_diff") or ""))
+
+    review_summary = str(parsed.get("review_summary") or "").strip()
+    notes = parsed.get("notes") if isinstance(parsed.get("notes"), list) else []
+    if review_summary:
+        notes = [review_summary, *[str(item) for item in notes]]
+    main_patch_findings = (
+        parsed.get("main_patch_findings")
+        if isinstance(parsed.get("main_patch_findings"), list)
+        else []
+    )
+    reviewed_diff_checksum = sha256_canonical_json({"unified_diff": reviewed_diff})
     diff_parseable = bool(parsed.get("diff_parseable", False))
-    if decision == "accept" and not diff_parseable:
-        raise RepairReviewChainProductionError(
-            "reviewer accepted a diff it marked unparseable",
-            reason_code="reviewer_rejected_diff",
-            schema_name="RepairReviewerOutput",
-            role="reviewer",
-        )
-    if decision == "accept" and not changed_files_verified:
-        raise RepairReviewChainProductionError(
-            "reviewer accepted without verifying changed files",
-            reason_code="reviewer_policy_reject",
-            schema_name="RepairReviewerOutput",
-            role="reviewer",
-        )
+    model_claimed_diff_parseable = (
+        bool(parsed.get("model_claimed_diff_parseable"))
+        if "model_claimed_diff_parseable" in parsed
+        else diff_parseable
+    )
 
     return {
         "decision": decision,
-        "notes": parsed.get("notes") if isinstance(parsed.get("notes"), list) else [str(parsed.get("reasoning") or "No notes.")],
+        "review_summary": review_summary,
+        "main_patch_findings": [str(item) for item in main_patch_findings],
+        "notes": [str(item) for item in notes] or [str(parsed.get("reasoning") or "No notes.")],
         "confidence": float(parsed.get("confidence", 0.8)),
         "risks": parsed.get("risks") if isinstance(parsed.get("risks"), list) else [],
         "policy_concerns": parsed.get("policy_concerns") if isinstance(parsed.get("policy_concerns"), list) else [],
         "changed_files_verified": changed_files_verified,
+        "reviewed_diff": reviewed_diff,
+        "diff_changed_by_reviewer": bool(parsed.get("diff_changed_by_reviewer", False)),
+        "main_diff_diagnostics_acknowledged": bool(parsed.get("main_diff_diagnostics_acknowledged", False)),
         "diff_parseable": diff_parseable,
+        "model_claimed_diff_parseable": model_claimed_diff_parseable,
         "reviewed_context_checksum": reviewed_context_checksum,
         "reviewed_primary_output_checksum": reviewed_primary_output_checksum,
         "reviewed_diff_checksum": reviewed_diff_checksum,
@@ -447,12 +572,18 @@ def _compute_primary_repair_checksum(output: dict[str, Any]) -> str:
 def _compute_reviewer_repair_checksum(output: dict[str, Any]) -> str:
     payload = {
         "decision": str(output.get("decision", "")),
+        "review_summary": str(output.get("review_summary", "")),
+        "main_patch_findings": list(output.get("main_patch_findings", [])),
         "notes": list(output.get("notes", [])),
         "confidence": float(output.get("confidence", 0.0)),
         "risks": list(output.get("risks", [])),
         "policy_concerns": list(output.get("policy_concerns", [])),
         "changed_files_verified": bool(output.get("changed_files_verified", False)),
+        "reviewed_diff": str(output.get("reviewed_diff", "")),
+        "diff_changed_by_reviewer": bool(output.get("diff_changed_by_reviewer", False)),
+        "main_diff_diagnostics_acknowledged": bool(output.get("main_diff_diagnostics_acknowledged", False)),
         "diff_parseable": bool(output.get("diff_parseable", False)),
+        "model_claimed_diff_parseable": bool(output.get("model_claimed_diff_parseable", False)),
         "reviewed_context_checksum": str(output.get("reviewed_context_checksum", "")),
         "reviewed_primary_output_checksum": str(output.get("reviewed_primary_output_checksum", "")),
         "reviewed_diff_checksum": str(output.get("reviewed_diff_checksum", "")),
@@ -905,6 +1036,330 @@ def _check_forbidden_keys(data: dict[str, Any]) -> list[str]:
     return failures
 
 
+def _strip_reviewed_diff_fences(diff: str) -> str:
+    cleaned = re.sub(r"^```(?:diff)?\s*\n?", "", str(diff or "").strip())
+    cleaned = re.sub(r"\n?\s*```\s*$", "", cleaned)
+    return cleaned.strip()
+
+
+def _reviewer_accept_contract_issue(output: dict[str, Any]) -> str | None:
+    if str(output.get("decision") or "") != "accept":
+        return None
+    if not str(output.get("reviewed_diff") or "").strip():
+        return "missing_reviewed_diff"
+    if not bool(output.get("changed_files_verified", False)):
+        return "reviewer_accepted_without_changed_files_verified"
+    if not bool(output.get("main_diff_diagnostics_acknowledged", False)):
+        return "reviewer_accepted_without_main_diff_diagnostics_acknowledged"
+    if output.get("diff_parseable") is False:
+        return "reviewer_accepted_unparseable_diff"
+    if output.get("model_claimed_diff_parseable") is False:
+        return "reviewer_accepted_unparseable_diff"
+    return None
+
+
+def _reviewed_diff_mechanical_issue(reviewed_diff: str) -> str | None:
+    diff = _strip_reviewed_diff_fences(reviewed_diff)
+    if not diff:
+        return "missing_reviewed_diff"
+    if not _is_unified_diff(diff):
+        return "reviewed_diff_not_unified_diff"
+    forbidden_paths = _check_forbidden_paths_in_diff(diff)
+    if forbidden_paths:
+        return "reviewed_diff_forbidden_path:" + ";".join(forbidden_paths)
+    structural_issue = validate_unified_diff_structure(diff)
+    if structural_issue is not None:
+        return f"reviewed_diff_structural_issue:{structural_issue}"
+    return None
+
+
+def _reviewed_diff_struct_issue(mechanical_issue: str | None) -> str:
+    prefix = "reviewed_diff_structural_issue:"
+    text = str(mechanical_issue or "").strip()
+    if text.startswith(prefix):
+        return text[len(prefix):].strip()
+    return ""
+
+
+def _reviewer_self_repair_validation_issue(mechanical_issue: str) -> str:
+    struct_issue = _reviewed_diff_struct_issue(mechanical_issue)
+    if struct_issue == "hunk_missing_context":
+        return (
+            "validation_issue_type=reviewed_diff_structural_invalid\n"
+            "exact_issue=hunk_missing_context\n"
+            "The rejected reviewed_diff contains one or more zero-context hunks.\n"
+            "Each hunk must include at least one real context line beginning with a space.\n"
+            "Use the provided source_contexts/import blocks to add real surrounding context.\n"
+            "Do not output zero-context hunks.\n"
+            "Do not assume git apply --unidiff-zero or any weak apply flags."
+        )
+    return mechanical_issue
+
+
+def _partial_failed_review_chain(
+    *,
+    context_checksum: str,
+    primary_checksum: str,
+    diff_checksum: str,
+    reviewer_output: dict[str, Any],
+    reviewer_accept_contract_issue: str | None,
+    reviewer_self_repair_attempted: bool,
+    proposer_invocation_id: str | None,
+    reviewer_invocation_id: str | None,
+    reviewer_self_repair_invocation_id: str | None,
+    deterministic_checksum: str = "",
+    reviewer_self_repair_succeeded: bool = False,
+    reviewer_mechanical_validation_issue: str | None = None,
+) -> dict[str, Any]:
+    reviewed_diff = _strip_reviewed_diff_fences(str(reviewer_output.get("reviewed_diff") or ""))
+    reviewed_diff_checksum = (
+        sha256_canonical_json({"unified_diff": reviewed_diff})
+        if reviewed_diff
+        else ""
+    )
+    reviewer_payload = dict(reviewer_output)
+    if reviewed_diff_checksum:
+        reviewer_payload["reviewed_diff_checksum"] = reviewed_diff_checksum
+    reviewer_output_checksum = _compute_reviewer_repair_checksum(reviewer_payload)
+    chain: dict[str, Any] = {
+        "deterministic_artifact_checksum": deterministic_checksum,
+        "context_pack_checksum": context_checksum,
+        "primary_output_checksum": primary_checksum,
+        "proposed_diff_checksum": diff_checksum,
+        "reviewed_diff_checksum": reviewed_diff_checksum,
+        "reviewer_output_checksum": reviewer_output_checksum,
+        "reviewer_decision": str(reviewer_output.get("decision") or ""),
+        "reviewer_accept_contract_valid": False if reviewer_accept_contract_issue else True,
+        "reviewer_accept_contract_issue": reviewer_accept_contract_issue or "",
+        "reviewer_self_repair_attempted": reviewer_self_repair_attempted,
+        "reviewer_self_repair_succeeded": reviewer_self_repair_succeeded,
+        "reviewer_mechanical_validation_issue": reviewer_mechanical_validation_issue or "",
+        "struct_issue": _reviewed_diff_struct_issue(reviewer_mechanical_validation_issue),
+        "final_diff_exists": False,
+        "proposal_created": False,
+        "gate_created": False,
+        "policy_ran": False,
+    }
+    if proposer_invocation_id is not None:
+        chain["proposer_invocation_id"] = proposer_invocation_id
+    if reviewer_invocation_id is not None:
+        chain["reviewer_initial_invocation_id" if reviewer_self_repair_invocation_id else "reviewer_invocation_id"] = reviewer_invocation_id
+    if reviewer_self_repair_invocation_id is not None:
+        chain["reviewer_self_repair_invocation_id"] = reviewer_self_repair_invocation_id
+        chain["reviewer_invocation_id"] = reviewer_self_repair_invocation_id
+    return chain
+
+
+def _persist_reviewed_diff_validation_failure(
+    *,
+    output_dir: Path,
+    reviewer_output: dict[str, Any],
+    review_chain: dict[str, Any],
+    mechanical_issue: str,
+) -> None:
+    reviewed_diff = _strip_reviewed_diff_fences(str(reviewer_output.get("reviewed_diff") or ""))
+    reviewer_payload = dict(reviewer_output)
+    if reviewed_diff and not reviewer_payload.get("reviewed_diff_checksum"):
+        reviewer_payload["reviewed_diff_checksum"] = sha256_canonical_json({"unified_diff": reviewed_diff})
+    if not reviewer_payload.get("output_checksum"):
+        reviewer_payload["output_checksum"] = _compute_reviewer_repair_checksum(reviewer_payload)
+
+    reviewer_path = output_dir / "reviewer_repair_llm_output.json"
+    _write_json(reviewer_path, reviewer_payload)
+
+    rejected_diff_ref = ""
+    if reviewed_diff:
+        rejected_path = output_dir / "reviewed_diff_rejected.diff"
+        rejected_path.write_text(reviewed_diff, encoding="utf-8")
+        rejected_diff_ref = str(rejected_path)
+
+    struct_issue = _reviewed_diff_struct_issue(mechanical_issue) or mechanical_issue
+    validation_payload = {
+        "reason_code": "MALFORMED_DIFF",
+        "detail": struct_issue,
+        "struct_issue": struct_issue,
+        "reviewer_mechanical_validation_issue": mechanical_issue,
+        "reviewer_self_repair_attempted": bool(review_chain.get("reviewer_self_repair_attempted")),
+        "reviewer_self_repair_succeeded": False,
+        "reviewer_accept_contract_valid": bool(review_chain.get("reviewer_accept_contract_valid")),
+        "reviewed_diff_checksum": str(review_chain.get("reviewed_diff_checksum") or ""),
+        "final_diff_exists": False,
+        "proposal_created": False,
+        "gate_created": False,
+        "policy_ran": False,
+    }
+    validation_path = output_dir / "reviewed_diff_validation_failure.json"
+    _write_json(validation_path, validation_payload)
+
+    persisted_chain = dict(review_chain)
+    persisted_chain.update({
+        "reviewer_output_ref": str(reviewer_path),
+        "reviewed_diff_rejected_ref": rejected_diff_ref,
+        "reviewed_diff_validation_failure_ref": str(validation_path),
+        "reviewer_repair_llm_output_ref": str(reviewer_path),
+    })
+    _write_json(output_dir / "review_chain.json", persisted_chain)
+
+
+def _invoke_reviewer_self_repair(
+    *,
+    client: V2AssistantModelClient,
+    context_pack: RepairContextPack,
+    primary_output: dict[str, Any],
+    main_diff_diagnostics: dict[str, Any],
+    original_reviewer_output: dict[str, Any],
+    validation_issue: str,
+    deterministic_checksum: str,
+    context_checksum: str,
+    primary_checksum: str,
+    invocation_ledger: Any = None,
+) -> tuple[dict[str, Any], str | None, Any]:
+    prompt = _reviewer_self_repair_prompt(
+        context_pack=context_pack,
+        primary_output=primary_output,
+        main_diff_diagnostics=main_diff_diagnostics,
+        original_reviewer_output=original_reviewer_output,
+        original_reviewed_diff=str(original_reviewer_output.get("reviewed_diff") or ""),
+        validation_issue=validation_issue,
+        deterministic_checksum=deterministic_checksum,
+        context_checksum=context_checksum,
+        primary_checksum=primary_checksum,
+    )
+    self_repair_invocation_id: str | None = None
+    if invocation_ledger is not None:
+        self_repair_invocation_id = invocation_ledger.start_invocation(
+            job_id=context_pack.job_id,
+            role="reviewer",
+            responsibility="repair_review_self_repair",
+            context_checksum=context_checksum,
+            input_checksum=sha256_canonical_json({
+                "primary_output_checksum": primary_checksum,
+                "validation_issue": validation_issue,
+                "original_reviewed_diff_checksum": str(original_reviewer_output.get("reviewed_diff_checksum") or ""),
+            }),
+            schema_name="RepairReviewerOutput",
+        )
+
+    result = client.answer_with_role(
+        role=V2ModelRole.REVIEWER,
+        prompt=prompt,
+        fallback="Reviewer self-repair model unavailable; reviewed repair cannot be produced.",
+        output_schema_name="RepairReviewerOutput",
+        require_schema=True,
+    )
+    fallback_used = str(getattr(result, "source", "") or "") == "deterministic"
+    if self_repair_invocation_id is not None:
+        if result.success:
+            invocation_ledger.complete_invocation(
+                self_repair_invocation_id,
+                output=result.content,
+                redacted_summary=result.redacted_summary,
+                fallback_used=fallback_used,
+            )
+        else:
+            invocation_ledger.fail_invocation(
+                self_repair_invocation_id,
+                redacted_error=result.failure_reason,
+                redacted_summary=result.redacted_summary,
+                fallback_used=fallback_used,
+            )
+
+    if not result.success:
+        raise RepairReviewChainProductionError(
+            f"reviewer self-repair model failed closed: {result.failure_reason or result.model_status}",
+            schema_diagnostics=getattr(result, "schema_diagnostics", None),
+            reason_code=str(result.failure_reason or "reviewer_model_failed"),
+            schema_name="RepairReviewerOutput",
+            role="reviewer",
+        )
+
+    return (
+        _coerce_reviewer_repair_output(
+            result.content,
+            deterministic_checksum=deterministic_checksum,
+            context_checksum=context_checksum,
+            primary_checksum=primary_checksum,
+        ),
+        self_repair_invocation_id,
+        result,
+    )
+
+
+def _compute_main_diff_diagnostics(
+    *,
+    primary_output: dict[str, Any],
+    context_pack: RepairContextPack,
+) -> dict[str, Any]:
+    """Compute mechanical diagnostics on Main's proposed diff for Reviewer.
+
+    Backend truth only — no model claims. Uses existing patch validators.
+    """
+    result: dict[str, Any] = {
+        "structure_status": "unknown",
+        "structural_issue": "",
+        "message_for_reviewer": "",
+    }
+
+    diff = str(primary_output.get("proposed_diff", ""))
+
+    if not diff.strip():
+        result["structure_status"] = "empty"
+        result["structural_issue"] = "Main produced empty diff"
+        result["message_for_reviewer"] = "Main returned an empty proposed_diff. You must produce a grounded reviewed_diff from the source context if possible."
+        return result
+
+    validation_error = validate_unified_diff_structure(diff)
+    if validation_error is None:
+        result["structure_status"] = "valid"
+    else:
+        result["structure_status"] = "invalid"
+        result["structural_issue"] = str(validation_error)[:200]
+        result["message_for_reviewer"] = f"Main diff failed structure validation: {result['structural_issue']}. Correct the diff using grounded source context."
+
+    # Classify diff failure
+    try:
+        classification = classify_diff_failure(diff)
+    except Exception:
+        classification = "unknown"
+    result["diff_classification"] = classification
+
+    # Extract touched paths
+    try:
+        touched_paths, _extracted = extract_touched_paths(diff)
+    except Exception:
+        touched_paths = ()
+    result["touched_paths"] = list(touched_paths)
+
+    # Placeholder/ellipsis detection
+    lowered = diff.lower()
+    result["placeholder_body_detected"] = any(
+        token in lowered for token in ("...", "// interface methods", "// method body", "// todo", "// implement")
+    )
+    result["bare_hunk_detected"] = bool(
+        re.search(r"^@@(?!\s+-)", diff, re.MULTILINE)
+    )
+
+    # Stale context suspicion
+    result["stale_context_suspected"] = classification in {"stale_context", "hunk_apply_failure", "no_matching_file"}
+
+    # Changed files vs diff paths
+    declared = set(str(f).strip().replace("\\", "/") for f in primary_output.get("changed_files", []))
+    touched_set = set(str(p).replace("\\", "/") for p in touched_paths)
+    result["changed_files_match_diff_paths"] = declared.intersection(touched_set) == declared if declared else None
+
+    # Path safety check
+    path_issues = []
+    for path in touched_paths:
+        path_str = str(path).replace("\\", "/")
+        if path_str.startswith("/") or re.match(r"^[a-zA-Z]:", path_str):
+            path_issues.append(f"absolute path in diff: {path_str}")
+        if ".." in path_str.split("/"):
+            path_issues.append(f"path traversal in diff: {path_str}")
+    result["path_safety_issue"] = path_issues[0] if path_issues else ""
+
+    return result
+
+
 # ── F5-T6: Final reviewed repair diff artifact ─────────────────────
 
 
@@ -922,6 +1377,8 @@ def _build_final_reviewed_repair_artifact(
 ) -> dict[str, Any]:
     proposed_diff = str(primary_output.get("proposed_diff", ""))
     diff_checksum = sha256_canonical_json({"unified_diff": proposed_diff})
+    reviewed_diff = str(reviewer_output.get("reviewed_diff", ""))
+    reviewed_diff_checksum = str(reviewer_output.get("reviewed_diff_checksum", ""))
 
     return {
         "schema_version": "2.0.0",
@@ -935,14 +1392,21 @@ def _build_final_reviewed_repair_artifact(
         "primary_output_checksum": primary_checksum,
         "reviewer_output_checksum": reviewer_checksum,
         "proposed_diff_checksum": diff_checksum,
+        "reviewed_diff_checksum": reviewed_diff_checksum,
         "changed_files": list(primary_output.get("changed_files", [])),
+        "reviewed_changed_files": list(reviewer_output.get("changed_files", [])),
         "base_repo_state_checksum": context_pack.base_repo_state_checksum,
         "root_cause": str(primary_output.get("root_cause", "")),
         "fix_strategy": str(primary_output.get("fix_strategy", "")),
         "risk": str(primary_output.get("risk", "")),
         "confidence": float(primary_output.get("confidence", 0.0)),
         "reviewer_decision": str(reviewer_output.get("decision", "")),
+        "reviewer_review_summary": str(reviewer_output.get("review_summary", "")),
         "reviewer_notes": list(reviewer_output.get("notes", [])),
+        "reviewer_main_patch_findings": list(reviewer_output.get("main_patch_findings", [])),
+        "reviewer_diff_changed": bool(reviewer_output.get("diff_changed_by_reviewer", False)),
+        "reviewer_risk_notes": list(reviewer_output.get("risks", [])),
+        "reviewer_policy_concerns": list(reviewer_output.get("policy_concerns", [])),
         "policy_validation_checksum": "",
         "artifact_checksum": "",
         "created_at": utc_now_text(),
@@ -1099,6 +1563,12 @@ def produce_repair_review_chain(
     proposed_diff = str(primary_output.get("proposed_diff", ""))
     diff_checksum = sha256_canonical_json({"unified_diff": proposed_diff})
 
+    # ── Main diff diagnostics for Reviewer ────────────────────────────
+    main_diff_diagnostics = _compute_main_diff_diagnostics(
+        primary_output=primary_output,
+        context_pack=context_pack,
+    )
+
     # ── PR-G: Capture reviewer invocation ────────────────────────────
     if invocation_ledger is not None:
         reviewer_invocation_id = invocation_ledger.start_invocation(
@@ -1114,11 +1584,12 @@ def produce_repair_review_chain(
     reviewer_result = client.answer_with_role(
         role=V2ModelRole.REVIEWER,
         prompt=_reviewer_repair_prompt(
-            primary_output,
-            deterministic_checksum,
-            context_checksum,
-            primary_checksum,
-            diff_checksum,
+            context_pack=context_pack,
+            primary_output=primary_output,
+            main_diff_diagnostics=main_diff_diagnostics,
+            deterministic_checksum=deterministic_checksum,
+            context_checksum=context_checksum,
+            primary_checksum=primary_checksum,
         ),
         fallback="Reviewer repair model unavailable; reviewed repair cannot be produced.",
         output_schema_name="RepairReviewerOutput",
@@ -1154,11 +1625,11 @@ def produce_repair_review_chain(
 
     reviewer_output = _coerce_reviewer_repair_output(
         reviewer_result.content,
-        deterministic_checksum,
-        context_checksum,
-        primary_checksum,
-        diff_checksum,
+        deterministic_checksum=deterministic_checksum,
+        context_checksum=context_checksum,
+        primary_checksum=primary_checksum,
     )
+    reviewer_schema_repair_metadata = _safe_schema_repair_metadata(reviewer_result)
 
     if reviewer_output["reviewed_context_checksum"] != context_checksum:
         raise RepairReviewChainProductionError(
@@ -1172,29 +1643,123 @@ def produce_repair_review_chain(
             schema_diagnostics=_reviewer_checksum_mismatch_diagnostics("reviewed_primary_output_checksum"),
             reason_code="reviewer_checksum_mismatch",
         )
-    if reviewer_output["reviewed_diff_checksum"] != diff_checksum:
-        raise RepairReviewChainProductionError(
-            f"reviewer diff checksum mismatch: expected {diff_checksum}, got {reviewer_output['reviewed_diff_checksum']}",
-            schema_diagnostics=_reviewer_checksum_mismatch_diagnostics("reviewed_diff_checksum"),
-            reason_code="reviewer_checksum_mismatch",
-        )
+    initial_reviewer_output: dict[str, Any] | None = None
+    initial_reviewer_output_ref = ""
+    reviewer_self_repair_invocation_id: str | None = None
+    reviewer_self_repair_attempted = False
+    reviewer_accept_contract_issue = _reviewer_accept_contract_issue(reviewer_output)
+    reviewed_diff = str(reviewer_output.get("reviewed_diff") or "")
+    reviewed_diff_mechanical_issue = None
+    if reviewer_output["decision"] == "accept" and reviewer_accept_contract_issue is None:
+        reviewed_diff_mechanical_issue = _reviewed_diff_mechanical_issue(reviewed_diff)
 
-    if not reviewer_output["diff_parseable"]:
-        raise RepairReviewChainProductionError(
-            "reviewer accepted an unparseable diff; refusing to materialize reviewed repair",
-            reason_code="reviewer_rejected_diff",
+    if reviewer_accept_contract_issue or reviewed_diff_mechanical_issue:
+        reviewer_self_repair_attempted = True
+        initial_reviewer_output = dict(reviewer_output)
+        initial_reviewer_checksum = _compute_reviewer_repair_checksum(initial_reviewer_output)
+        initial_reviewer_output["output_checksum"] = initial_reviewer_checksum
+        initial_reviewer_path = output_dir / "reviewer_initial_repair_llm_output.json"
+        _write_json(initial_reviewer_path, initial_reviewer_output)
+        initial_reviewer_output_ref = str(initial_reviewer_path)
+
+        self_repair_validation_issue = (
+            reviewer_accept_contract_issue
+            or (
+                _reviewer_self_repair_validation_issue(reviewed_diff_mechanical_issue)
+                if reviewed_diff_mechanical_issue
+                else "reviewed_diff_invalid"
+            )
         )
-    if not reviewer_output["changed_files_verified"]:
-        raise RepairReviewChainProductionError(
-            "reviewer accepted without changed files verification; refusing to materialize reviewed repair",
-            reason_code="reviewer_policy_reject",
+        reviewer_output, reviewer_self_repair_invocation_id, reviewer_self_repair_result = _invoke_reviewer_self_repair(
+            client=client,
+            context_pack=context_pack,
+            primary_output=primary_output,
+            main_diff_diagnostics=main_diff_diagnostics,
+            original_reviewer_output=initial_reviewer_output,
+            validation_issue=self_repair_validation_issue,
+            deterministic_checksum=deterministic_checksum,
+            context_checksum=context_checksum,
+            primary_checksum=primary_checksum,
+            invocation_ledger=invocation_ledger,
         )
+        reviewer_result = reviewer_self_repair_result
+        reviewer_accept_contract_issue = _reviewer_accept_contract_issue(reviewer_output)
+        reviewed_diff = str(reviewer_output.get("reviewed_diff") or "")
+        reviewed_diff_mechanical_issue = None
+        if reviewer_output["decision"] == "accept" and reviewer_accept_contract_issue is None:
+            reviewed_diff_mechanical_issue = _reviewed_diff_mechanical_issue(reviewed_diff)
 
     if reviewer_output["decision"] != "accept":
         raise RepairReviewChainProductionError(
             f"reviewer decision failed closed: {reviewer_output['decision']}",
             reason_code="reviewer_rejected_diff",
+            schema_name="RepairReviewerOutput",
+            role="reviewer",
+            partial_chain=_partial_failed_review_chain(
+                context_checksum=context_checksum,
+                primary_checksum=primary_checksum,
+                diff_checksum=diff_checksum,
+                reviewer_output=reviewer_output,
+                reviewer_accept_contract_issue=None,
+                reviewer_self_repair_attempted=reviewer_self_repair_attempted,
+                proposer_invocation_id=proposer_invocation_id,
+                reviewer_invocation_id=reviewer_invocation_id,
+                reviewer_self_repair_invocation_id=reviewer_self_repair_invocation_id,
+                deterministic_checksum=deterministic_checksum,
+            ),
         )
+    if reviewer_accept_contract_issue:
+        raise RepairReviewChainProductionError(
+            f"reviewer accept contract invalid: {reviewer_accept_contract_issue}",
+            reason_code="REVIEWER_ACCEPT_CONTRACT_INVALID",
+            schema_name="RepairReviewerOutput",
+            role="reviewer",
+            partial_chain=_partial_failed_review_chain(
+                context_checksum=context_checksum,
+                primary_checksum=primary_checksum,
+                diff_checksum=diff_checksum,
+                reviewer_output=reviewer_output,
+                reviewer_accept_contract_issue=reviewer_accept_contract_issue,
+                reviewer_self_repair_attempted=reviewer_self_repair_attempted,
+                proposer_invocation_id=proposer_invocation_id,
+                reviewer_invocation_id=reviewer_invocation_id,
+                reviewer_self_repair_invocation_id=reviewer_self_repair_invocation_id,
+                deterministic_checksum=deterministic_checksum,
+            ),
+        )
+    if reviewed_diff_mechanical_issue:
+        failed_chain = _partial_failed_review_chain(
+            context_checksum=context_checksum,
+            primary_checksum=primary_checksum,
+            diff_checksum=diff_checksum,
+            reviewer_output=reviewer_output,
+            reviewer_accept_contract_issue=None,
+            reviewer_self_repair_attempted=reviewer_self_repair_attempted,
+            proposer_invocation_id=proposer_invocation_id,
+            reviewer_invocation_id=reviewer_invocation_id,
+            reviewer_self_repair_invocation_id=reviewer_self_repair_invocation_id,
+            deterministic_checksum=deterministic_checksum,
+            reviewer_self_repair_succeeded=False,
+            reviewer_mechanical_validation_issue=reviewed_diff_mechanical_issue,
+        )
+        _persist_reviewed_diff_validation_failure(
+            output_dir=output_dir,
+            reviewer_output=reviewer_output,
+            review_chain=failed_chain,
+            mechanical_issue=reviewed_diff_mechanical_issue,
+        )
+        struct_issue = _reviewed_diff_struct_issue(reviewed_diff_mechanical_issue) or reviewed_diff_mechanical_issue
+        raise RepairReviewChainProductionError(
+            f"Diff structure validation failed: {struct_issue}",
+            reason_code="MALFORMED_DIFF",
+            schema_name="RepairReviewerOutput",
+            role="reviewer",
+            partial_chain=failed_chain,
+        )
+
+    reviewed_diff = _strip_reviewed_diff_fences(reviewed_diff)
+    reviewer_output["reviewed_diff"] = reviewed_diff
+    reviewer_output["reviewed_diff_checksum"] = sha256_canonical_json({"unified_diff": reviewed_diff})
 
     reviewer_checksum = _compute_reviewer_repair_checksum(reviewer_output)
     reviewer_output["output_checksum"] = reviewer_checksum
@@ -1218,7 +1783,7 @@ def produce_repair_review_chain(
     _write_json(final_artifact_path, final_artifact)
 
     diff_path = output_dir / "final_reviewed_repair.diff"
-    diff_path.write_text(proposed_diff, encoding="utf-8")
+    diff_path.write_text(reviewed_diff, encoding="utf-8")
 
     review_chain: dict[str, Any] = {
         "deterministic_artifact_checksum": deterministic_checksum,
@@ -1226,7 +1791,9 @@ def produce_repair_review_chain(
         "primary_output_checksum": primary_checksum,
         "reviewer_output_checksum": reviewer_checksum,
         "proposed_diff_checksum": diff_checksum,
+        "reviewed_diff_checksum": reviewer_output["reviewed_diff_checksum"],
         "final_artifact_checksum": final_artifact_checksum,
+        "diff_changed_by_reviewer": reviewer_output["diff_changed_by_reviewer"],
         "reviewer_decision": reviewer_output["decision"],
         "job_id": context_pack.job_id,
         "stage_index": context_pack.stage_index,
@@ -1239,7 +1806,24 @@ def produce_repair_review_chain(
             "proposer": _safe_model_role_status(primary_result),
             "reviewer": _safe_model_role_status(reviewer_result),
         },
+        "main_diff_diagnostics": main_diff_diagnostics,
+        "reviewer_accept_contract_valid": True,
+        "reviewer_accept_contract_issue": "",
+        "reviewer_self_repair_attempted": reviewer_self_repair_attempted,
+        "reviewer_self_repair_succeeded": reviewer_self_repair_attempted,
+        "reviewer_mechanical_validation_issue": "",
+        "final_diff_exists": True,
+        "proposal_created": False,
+        "gate_created": False,
+        "policy_ran": False,
     }
+    if reviewer_schema_repair_metadata:
+        review_chain["reviewer_schema_repair"] = reviewer_schema_repair_metadata
+    if initial_reviewer_output_ref:
+        review_chain["reviewer_initial_output_ref"] = initial_reviewer_output_ref
+        review_chain["reviewer_initial_output_checksum"] = str((initial_reviewer_output or {}).get("output_checksum") or "")
+    if reviewer_self_repair_invocation_id is not None:
+        review_chain["reviewer_self_repair_invocation_id"] = reviewer_self_repair_invocation_id
     if was_normalized:
         review_chain["diff_normalized"] = True
     if was_hunk_repaired:
@@ -1247,6 +1831,9 @@ def produce_repair_review_chain(
     if proposer_invocation_id is not None and reviewer_invocation_id is not None:
         review_chain["proposer_invocation_id"] = proposer_invocation_id
         review_chain["reviewer_invocation_id"] = reviewer_invocation_id
+        if reviewer_self_repair_invocation_id is not None:
+            review_chain["reviewer_initial_invocation_id"] = reviewer_invocation_id
+            review_chain["reviewer_invocation_id"] = reviewer_self_repair_invocation_id
         assert proposer_invocation_id != reviewer_invocation_id, "proposer and reviewer invocation IDs must be distinct"
     review_chain_path = output_dir / "review_chain.json"
     _write_json(review_chain_path, review_chain)
@@ -1259,6 +1846,8 @@ def produce_repair_review_chain(
         "final_reviewed_diff": str(diff_path),
         "review_chain_metadata": str(review_chain_path),
     }
+    if initial_reviewer_output_ref:
+        produced_refs["reviewer_initial_llm_output"] = initial_reviewer_output_ref
 
     return {"artifact_refs": produced_refs, "review_chain": review_chain}
 
@@ -1278,6 +1867,25 @@ def _safe_model_role_status(result: Any) -> dict[str, Any]:
         "status": "available" if bool(getattr(result, "success", False)) else "blocked",
         "fallback_used": str(getattr(result, "source", "") or "") == "azure_openai_fallback",
     }
+
+
+def _safe_schema_repair_metadata(result: Any) -> dict[str, Any]:
+    diagnostics = getattr(result, "schema_diagnostics", None)
+    if not isinstance(diagnostics, dict):
+        return {}
+    keys = (
+        "original_schema_failure_reason",
+        "original_parse_failure_category",
+        "schema_repair_attempted",
+        "schema_repair_succeeded",
+        "schema_repair_failure_reason",
+        "schema_repair_parse_failure_category",
+        "schema_repair_output_checksum",
+    )
+    metadata = {key: diagnostics.get(key) for key in keys if key in diagnostics}
+    if not metadata.get("schema_repair_attempted"):
+        return {}
+    return metadata
 
 
 def _reviewer_checksum_mismatch_diagnostics(field_name: str) -> dict[str, Any]:

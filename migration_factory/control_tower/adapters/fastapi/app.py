@@ -119,6 +119,7 @@ from migration_factory.control_tower.application.env_parser import (
     parse_env_block,
     parse_result_to_dict,
 )
+from migration_factory.control_tower.application.v2_llm_invocation_ledger import V2LLMInvocationLedger
 from migration_factory.control_tower.application.v2_azure_health_service import (
     V2AzureHealthService,
 )
@@ -759,34 +760,80 @@ def _next_action_for_unavailable(reason_code: str, payload: dict[str, Any]) -> s
         return "Main model did not produce a diff. Operator may re-trigger or revise."
     if reason_code == "PATCH_POLICY_REJECTED":
         return "Backend policy rejected the diff. Operator may review requested revisions."
+    if reason_code == "PATCH_CHECK_FAILED":
+        return "Backend apply-check failed; new proposal required."
+    if reason_code == "reviewer_schema_invalid":
+        return "Retry after reviewer/schema contract fix"
+    if reason_code == "proposer_schema_invalid":
+        return "Retry after main/schema contract fix"
     return "No repair proposal available."
 
 
 def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[str, Any] | None:
     events = tuple(uow.v2_events.list_by_job(job_id))
-    latest = next(
-        (
-            event for event in reversed(events)
-            if getattr(event, "type", "") == "reviewed_repair_materialization_failed"
-        ),
-        None,
-    )
-    if latest is None:
+    candidates: list[tuple[int, Any, dict[str, Any]]] = []
+    for index, event in enumerate(events):
+        event_type = str(getattr(event, "type", "") or getattr(event, "event_type", "") or "")
+        if event_type not in {
+            "reviewed_repair_materialization_failed",
+            "reviewed_repair_unavailable",
+            "repair_primary_schema_invalid",
+        }:
+            continue
+        parsed_payload = getattr(event, "payload", None)
+        if isinstance(parsed_payload, dict):
+            payload = parsed_payload
+        else:
+            try:
+                payload = json.loads(str(getattr(event, "payload_json", "") or "{}"))
+            except json.JSONDecodeError:
+                payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        candidates.append((index, event, payload))
+    if not candidates:
         return None
-    try:
-        payload = json.loads(str(getattr(latest, "payload_json", "") or "{}"))
-    except json.JSONDecodeError:
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
 
-    reason_code = _stable_materialization_reason_code(payload.get("reason_code"))
+    def _candidate_score(item: tuple[int, Any, dict[str, Any]]) -> tuple[int, int]:
+        index, event, payload = item
+        schema_diagnostics = payload.get("schema_diagnostics")
+        if not isinstance(schema_diagnostics, dict):
+            schema_diagnostics = {}
+        reason = _stable_materialization_reason_code(
+            payload.get("reason_code") or schema_diagnostics.get("reason_code")
+        )
+        detail = _safe_struct_issue(payload.get("struct_issue") or payload.get("detail"))
+        event_type = str(getattr(event, "type", "") or getattr(event, "event_type", "") or "")
+        score = 0
+        if reason != "UNKNOWN_MATERIALIZATION_FAILURE":
+            score += 10
+        if detail:
+            score += 10
+        if reason == "MALFORMED_DIFF":
+            score += 10
+        if event_type == "reviewed_repair_materialization_failed":
+            score += 3
+        if reason == "UNKNOWN_MATERIALIZATION_FAILURE":
+            score -= 5
+        if reason == "duplicate_main_blocked":
+            score -= 8
+        return score, index
+
+    _, latest, payload = max(candidates, key=_candidate_score)
+
+    schema_diagnostics = payload.get("schema_diagnostics")
+    if not isinstance(schema_diagnostics, dict):
+        schema_diagnostics = {}
+    reason_code = _stable_materialization_reason_code(
+        payload.get("reason_code") or schema_diagnostics.get("reason_code")
+    )
     struct_issue = _safe_struct_issue(payload.get("struct_issue") or payload.get("detail"))
+    detail = struct_issue or _safe_struct_issue(payload.get("detail"))
     diagnostic: dict[str, Any] = {
         "kind": "materialization_failed",
         "title": _materialization_title(reason_code),
         "reason_code": reason_code,
-        "detail": struct_issue,
+        "detail": detail,
         "struct_issue": struct_issue,
         "message": _materialization_message(reason_code),
         "main_invocation_id": _safe_event_text(payload.get("main_invocation_id")),
@@ -795,6 +842,8 @@ def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[st
         "provider_alias": _safe_event_text(payload.get("provider_alias")),
         "deployment_alias_hash": _safe_event_text(payload.get("deployment_alias_hash")),
         "context_checksum": _safe_event_text(payload.get("context_checksum")),
+        "reviewed_diff_checksum": _safe_event_text(payload.get("reviewed_diff_checksum")),
+        "reviewer_accept_contract_issue": _safe_event_text(payload.get("reviewer_accept_contract_issue")),
         "final_diff_exists": bool(payload.get("final_diff_exists")),
         "policy_ran": bool(payload.get("policy_ran")),
         "gate_created": bool(payload.get("gate_created")),
@@ -807,8 +856,25 @@ def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[st
         "main_status": None,
         "reviewer_status": None,
         "main_output_checksum": None,
-        "reviewer_output_checksum": None,
+        "reviewer_output_checksum": _safe_event_text(payload.get("reviewer_output_checksum")),
         "next_action": _next_action_for_unavailable(reason_code, payload),
+        "applicability_status": _safe_event_text(payload.get("applicability_status")),
+        "applicability_reason_code": _safe_event_text(payload.get("applicability_reason_code")),
+        "applicability_checked_at": _safe_event_text(payload.get("applicability_checked_at")),
+        "reviewer_applicability_repair_attempted": bool(payload.get("reviewer_applicability_repair_attempted")),
+        "reviewer_applicability_repair_succeeded": bool(payload.get("reviewer_applicability_repair_succeeded")),
+        "reviewer_self_repair_attempted": bool(payload.get("reviewer_self_repair_attempted")),
+        "reviewer_self_repair_succeeded": bool(payload.get("reviewer_self_repair_succeeded")),
+        "reviewer_mechanical_validation_issue": _safe_event_text(payload.get("reviewer_mechanical_validation_issue")),
+        "apply_check_stderr_summary": _safe_apply_check_summary(payload.get("apply_check_stderr_summary")),
+        "schema_repair_attempted": bool(schema_diagnostics.get("schema_repair_attempted")),
+        "schema_repair_succeeded": bool(schema_diagnostics.get("schema_repair_succeeded")),
+        "schema_repair_failure_reason": _safe_event_text(
+            schema_diagnostics.get("schema_repair_failure_reason")
+        ),
+        "schema_repair_parse_failure_category": _safe_event_text(
+            schema_diagnostics.get("schema_repair_parse_failure_category")
+        ),
     }
     invocation_ids = {
         str(value or "")
@@ -827,14 +893,14 @@ def _latest_repair_materialization_unavailable(uow: Any, job_id: str) -> dict[st
                 diagnostic["schema_name"] = _safe_event_text(getattr(record, "schema_name", None))
             if not diagnostic["main_status"] and str(getattr(record, "responsibility", "") or "") == "repair_proposal":
                 diagnostic["main_status"] = _safe_event_text(getattr(record, "status", None))
-            if not diagnostic["reviewer_status"] and str(getattr(record, "responsibility", "") or "") == "repair_review":
+            if not diagnostic["reviewer_status"] and str(getattr(record, "responsibility", "") or "") in {"repair_review", "repair_review_self_repair"}:
                 diagnostic["reviewer_status"] = _safe_event_text(getattr(record, "status", None))
             resp = str(getattr(record, "responsibility", "") or "")
             oc = _safe_event_text(getattr(record, "output_checksum", None))
             if oc:
                 if resp == "repair_proposal" and not diagnostic["main_output_checksum"]:
                     diagnostic["main_output_checksum"] = oc
-                if resp == "repair_review" and not diagnostic["reviewer_output_checksum"]:
+                if resp in {"repair_review", "repair_review_self_repair"} and not diagnostic["reviewer_output_checksum"]:
                     diagnostic["reviewer_output_checksum"] = oc
     return diagnostic
 
@@ -847,21 +913,37 @@ def _stable_materialization_reason_code(value: Any) -> str:
         "DIFF_REF_MISSING",
         "PATCH_POLICY_REJECTED",
         "CHECKSUM_MISMATCH",
+        "REVIEWER_ACCEPT_CONTRACT_INVALID",
         "ARTIFACT_WRITE_FAILED",
         "SAFE_DIFF_PREVIEW_FAILED",
+        "PATCH_CHECK_FAILED",
+        "REVIEWED_DIFF_STRUCTURAL_INVALID",
         "UNKNOWN_MATERIALIZATION_FAILURE",
+        "duplicate_main_blocked",
+        "reviewer_schema_invalid",
+        "proposer_schema_invalid",
     }
     if text in stable:
         return text
     lowered = text.lower()
+    if lowered in {"reviewer_schema_invalid", "proposer_schema_invalid", "main_schema_invalid"}:
+        return "proposer_schema_invalid" if lowered == "main_schema_invalid" else lowered
     if "hunk_" in lowered or "diff structure validation failed" in lowered or "malformed" in lowered:
         return "MALFORMED_DIFF"
+    if "reviewer_schema_invalid" in lowered:
+        return "reviewer_schema_invalid"
+    if "proposer_schema_invalid" in lowered or "main_schema_invalid" in lowered:
+        return "proposer_schema_invalid"
     if "policy" in lowered:
         return "PATCH_POLICY_REJECTED"
+    if "patch_check_failed" in lowered or "apply-check" in lowered or "apply --check" in lowered:
+        return "PATCH_CHECK_FAILED"
     if "checksum" in lowered:
         return "CHECKSUM_MISMATCH"
     if "diff_ref" in lowered:
         return "DIFF_REF_MISSING"
+    if "reviewer accept contract" in lowered or "accepted_unparseable" in lowered:
+        return "REVIEWER_ACCEPT_CONTRACT_INVALID"
     return "UNKNOWN_MATERIALIZATION_FAILURE"
 
 
@@ -870,6 +952,8 @@ def _safe_struct_issue(value: Any) -> str:
     marker = "Diff structure validation failed:"
     if text.startswith(marker):
         text = text[len(marker):].strip()
+    if "reviewed_diff_structural_issue:" in text:
+        text = text.rsplit("reviewed_diff_structural_issue:", 1)[-1].strip()
     if ":\\" in text or "/" in text or "\\" in text:
         return ""
     return text[:160]
@@ -882,6 +966,29 @@ def _safe_event_text(value: Any) -> str | None:
     if ":\\" in text or "/" in text or "\\" in text:
         return None
     return text[:160]
+
+
+def _safe_apply_check_summary(value: Any) -> str | None:
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return None
+    lines: list[str] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        line = re.sub(r"[A-Za-z]:[\\/][^\s]+", "[redacted-path]", line)
+        line = re.sub(r"(?<!\w)/(?:Users|home)/[^\s]+", "[redacted-path]", line)
+        for pattern in ("AZURE_OPENAI", "Bearer"):
+            if pattern in line:
+                line = ""
+                break
+        if line:
+            lines.append(line[:300])
+        if len(lines) >= 8:
+            break
+    summary = "\n".join(lines).strip()
+    return summary[:1200] or None
 
 
 _SAFE_EVENT_FORBIDDEN_KEYS = frozenset({
@@ -916,22 +1023,38 @@ def _safe_event_payload(obj: Any) -> Any:
 
 
 def _materialization_title(reason_code: str) -> str:
+    if reason_code == "reviewer_schema_invalid":
+        return "Reviewed Repair Unavailable"
+    if reason_code == "proposer_schema_invalid":
+        return "Main Model Schema Invalid"
     if reason_code == "MALFORMED_DIFF":
         return "Reviewed Repair Diff Invalid"
     if reason_code == "PROPOSER_DIFF_MISSING":
         return "Main Model Did Not Produce a Patch"
     if reason_code == "PATCH_POLICY_REJECTED":
         return "Reviewed Repair Rejected by Patch Policy"
+    if reason_code == "PATCH_CHECK_FAILED":
+        return "Reviewed Repair Apply-Check Failed"
+    if reason_code == "REVIEWER_ACCEPT_CONTRACT_INVALID":
+        return "Reviewer Accept Contract Invalid"
     return "Reviewed Repair Materialization Failed"
 
 
 def _materialization_message(reason_code: str) -> str:
+    if reason_code == "reviewer_schema_invalid":
+        return "Reviewer model output failed schema validation, so no reviewed diff was produced."
+    if reason_code == "proposer_schema_invalid":
+        return "Main model output failed schema validation, so Reviewer was not run and no reviewed diff was produced."
     if reason_code == "MALFORMED_DIFF":
         return "Reviewer accepted the repair, but backend structural validation rejected the reviewed diff before user approval."
     if reason_code == "PROPOSER_DIFF_MISSING":
         return "Main model completed, but it did not produce a backend-owned patch for reviewer approval."
     if reason_code == "PATCH_POLICY_REJECTED":
         return "Reviewer accepted the repair, but backend patch policy rejected the reviewed diff."
+    if reason_code == "PATCH_CHECK_FAILED":
+        return "Backend apply-check failed before approval, so no proposal was exposed."
+    if reason_code == "REVIEWER_ACCEPT_CONTRACT_INVALID":
+        return "Reviewer accepted a reviewed diff that contradicted the required accept contract."
     return "Backend could not materialize a reviewed diff for user approval."
 
 
@@ -3823,7 +3946,7 @@ def create_app(
                         allowed_actions=evidence.allowed_actions,
                         final_diff_text=None,
                         reviewer_decision=evidence.reviewer_decision,
-                        stale_reason=evidence.stale_reason,
+                        stale_reason="stale_apply_check_failed" if reason_code == "PATCH_CHECK_FAILED" else evidence.stale_reason,
                         current_gate_id=getattr(gate, "gate_id", None) if gate is not None else None,
                         gate_status=evidence.gate_status,
                         gate_decision=evidence.gate_decision,
@@ -3921,7 +4044,7 @@ def create_app(
                         status_reason=getattr(record, "status_reason", None),
                         allowed_actions=evidence.allowed_actions,
                         reviewer_decision=evidence.reviewer_decision,
-                        stale_reason=evidence.stale_reason,
+                        stale_reason="stale_apply_check_failed" if reason_code == "PATCH_CHECK_FAILED" else evidence.stale_reason,
                         current_gate_id=getattr(gate, "gate_id", None) if gate is not None else None,
                         gate_status=evidence.gate_status,
                         gate_decision=evidence.gate_decision,
@@ -4503,14 +4626,19 @@ def create_app(
 
             if apply_status != "APPLIED":
                 completed_at = utc_now_text()
-                reason_status = f"[{reason_code}] Sandbox apply failed: {apply_reason}" if reason_code else f"Sandbox apply failed: {apply_reason}"
+                stale_apply_check = reason_code == "PATCH_CHECK_FAILED"
+                reason_status = (
+                    f"[{reason_code}] Proposal stale/apply-check failed; new proposal required: {apply_reason}"
+                    if stale_apply_check
+                    else (f"[{reason_code}] Sandbox apply failed: {apply_reason}" if reason_code else f"Sandbox apply failed: {apply_reason}")
+                )
                 uow.v2_repairs.update_proposal_prf_fields(
                     proposal_id,
                     status="approve_failed",
                     status_reason=reason_status,
                     apply_status=apply_status,
-                    rerun_status="",
-                    rollback_status="",
+                    rerun_status="not_started" if stale_apply_check else "",
+                    rollback_status="not_started" if stale_apply_check else "",
                     remaining_attempts=0,
                     completed_at=completed_at,
                 )
@@ -4518,13 +4646,20 @@ def create_app(
                     uow,
                     job_id=job_id,
                     stage=getattr(gate, "stage_index", None),
-                    event_type="repair_approve_apply_failed",
+                    event_type="repair_approve_apply_check_failed" if stale_apply_check else "repair_approve_apply_failed",
                     status="failed",
-                    message=f"Sandbox apply failed for proposal {proposal_id}: {apply_reason}",
+                    message=(
+                        f"Backend apply-check failed for proposal {proposal_id}; new proposal required."
+                        if stale_apply_check
+                        else f"Sandbox apply failed for proposal {proposal_id}: {apply_reason}"
+                    ),
                     payload={
                         "proposal_id": proposal_id,
                         "apply_status": apply_status,
                         "reason_code": reason_code,
+                        "stale_reason": "stale_apply_check_failed" if stale_apply_check else "",
+                        "rerun_status": "not_started" if stale_apply_check else "",
+                        "rollback_status": "not_started" if stale_apply_check else "",
                     },
                 )
                 return RepairProposalApproveResponse(
@@ -4532,8 +4667,10 @@ def create_app(
                     proposal_id=proposal_id,
                     status="approve_failed",
                     apply_status=apply_status,
+                    rerun_status="not_started" if stale_apply_check else "",
+                    rollback_status="not_started" if stale_apply_check else "",
                     reason_code=reason_code,
-                    status_reason=apply_reason,
+                    status_reason=reason_status,
                 ).model_dump()
 
             # ── Rerun validation ────────────────────────────────
@@ -5002,34 +5139,7 @@ def create_app(
     def list_v2_llm_activity(job_id: str) -> dict[str, Any]:
         with _read_unit_of_work(unit_of_work_factory) as uow:
             records = uow.v2_llm_invocations.list_by_job(job_id)
-            invocations = [
-                {
-                    "invocation_id": r.invocation_id,
-                    "job_id": r.job_id,
-                    "role": r.role,
-                    "responsibility": r.responsibility,
-                    "status": r.status,
-                    "proposal_id": r.proposal_id,
-                    "gate_id": r.gate_id,
-                    "provider_alias": r.provider_alias,
-                    "model_display_name": _safe_llm_role_display_name(r.role),
-                    "deployment_alias_hash": r.deployment_alias_hash,
-                    "context_checksum": r.context_checksum,
-                    "input_checksum": r.input_checksum,
-                    "output_checksum": r.output_checksum,
-                    "schema_name": r.schema_name,
-                    "fallback_used": bool(r.fallback_used),
-                    "redacted_error": r.redacted_error,
-                    "redacted_summary": r.redacted_summary,
-                    "prompt_tokens": r.prompt_tokens,
-                    "completion_tokens": r.completion_tokens,
-                    "total_tokens": r.total_tokens,
-                    "latency_ms": r.latency_ms,
-                    "created_at": r.created_at,
-                    "completed_at": r.completed_at,
-                }
-                for r in records
-            ]
+            invocations = [V2LLMInvocationLedger.record_to_dto(r) for r in records]
         return {"invocations": invocations, "job_id": job_id}
 
     # ------------------------------------------------------------------

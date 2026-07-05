@@ -46,6 +46,9 @@ class RepairContextPack:
     prior_reviewer_notes: tuple[str, ...] = ()
     user_comments: str = ""
     changed_files: tuple[str, ...] = ()
+    normalized_build_evidence: tuple[dict[str, Any], ...] = ()
+    source_contexts: tuple[dict[str, Any], ...] = ()
+    diff_generation_rules: tuple[str, ...] = ()
     safe_log_preview: str = ""
     base_repo_state_checksum: str = ""
     context_pack_checksum: str = ""
@@ -71,6 +74,9 @@ def compute_context_pack_checksum(pack: RepairContextPack) -> str:
         "prior_reviewer_notes": list(pack.prior_reviewer_notes),
         "user_comments": pack.user_comments,
         "changed_files": list(sorted(pack.changed_files)),
+        "normalized_build_evidence": list(pack.normalized_build_evidence),
+        "source_contexts": list(pack.source_contexts),
+        "diff_generation_rules": list(pack.diff_generation_rules),
         "safe_log_preview": pack.safe_log_preview,
         "base_repo_state_checksum": pack.base_repo_state_checksum,
         "prior_revision_ids": list(sorted(pack.prior_revision_ids)),
@@ -122,6 +128,9 @@ def build_repair_context_pack(
     prior_reviewer_notes: tuple[str, ...] | None = None,
     user_comments: str = "",
     changed_files: tuple[str, ...] | None = None,
+    normalized_build_evidence: tuple[dict[str, Any], ...] | None = None,
+    source_contexts: tuple[dict[str, Any], ...] | None = None,
+    diff_generation_rules: tuple[str, ...] | None = None,
     file_checksums: dict[str, str] | None = None,
     accepted_artifact_checksums: tuple[str, ...] | None = None,
     prior_revision_ids: tuple[str, ...] | None = None,
@@ -158,6 +167,9 @@ def build_repair_context_pack(
         prior_reviewer_notes=tuple(prior_reviewer_notes or ()),
         user_comments=user_comments,
         changed_files=resolved_changed,
+        normalized_build_evidence=tuple(normalized_build_evidence or ()),
+        source_contexts=tuple(source_contexts or ()),
+        diff_generation_rules=tuple(diff_generation_rules or _default_diff_generation_rules()),
         safe_log_preview=failure_evidence.safe_log_preview,
         base_repo_state_checksum=base_repo_checksum,
         prior_revision_ids=tuple(sorted(prior_revision_ids or ())),
@@ -181,6 +193,9 @@ def build_repair_context_pack(
         prior_reviewer_notes=pack.prior_reviewer_notes,
         user_comments=pack.user_comments,
         changed_files=pack.changed_files,
+        normalized_build_evidence=pack.normalized_build_evidence,
+        source_contexts=pack.source_contexts,
+        diff_generation_rules=pack.diff_generation_rules,
         safe_log_preview=pack.safe_log_preview,
         base_repo_state_checksum=pack.base_repo_state_checksum,
         context_pack_checksum=context_checksum,
@@ -222,6 +237,9 @@ def context_pack_to_dict(pack: RepairContextPack) -> dict[str, Any]:
         "prior_reviewer_notes": list(pack.prior_reviewer_notes),
         "user_comments": pack.user_comments,
         "changed_files": list(pack.changed_files),
+        "normalized_build_evidence": list(pack.normalized_build_evidence),
+        "source_contexts": list(pack.source_contexts),
+        "diff_generation_rules": list(pack.diff_generation_rules),
         "safe_log_preview": pack.safe_log_preview,
         "base_repo_state_checksum": pack.base_repo_state_checksum,
         "context_pack_checksum": pack.context_pack_checksum,
@@ -231,3 +249,14 @@ def context_pack_to_dict(pack: RepairContextPack) -> dict[str, Any]:
         "created_at": pack.created_at,
         "schema_version": pack.schema_version,
     }
+
+
+def _default_diff_generation_rules() -> tuple[str, ...]:
+    return (
+        "The host runtime is Windows. Do not output absolute Windows paths or C:\\ paths.",
+        "Use repo-relative POSIX-style paths only in unified diffs.",
+        "Unified diff headers must use forward slashes: diff --git a/src/Foo.java b/src/Foo.java.",
+        "Never include sandbox_path, target_path, argv, env, raw_command, API keys, endpoints, or local absolute paths in LLM output.",
+        "Use only provided source context. Do not invent file bodies, placeholder lines, ellipses, or // interface methods in patches.",
+        "Do not assume Jackson package family. Respect existing imports and the target profile; if tools.jackson.* is present, keep tools.jackson.*.",
+    )
