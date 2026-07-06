@@ -228,6 +228,9 @@ from migration_factory.control_tower.application.v2_orchestrator_runner import (
 from migration_factory.control_tower.application.v2_profile_runtime import (
     RouteRuntimeProfileUnavailableError,
     public_runtime_profile_error_message,
+    resolve_execution_jdk_env_var_for_runtime_profile,
+    resolve_execution_jdk_id_for_runtime_profile,
+    resolve_runtime_profile_for_run_configuration,
     resolve_runtime_profile_for_route,
 )
 from migration_factory.control_tower.application.v2_failure_diagnosis import (
@@ -1743,6 +1746,7 @@ def create_app(
             approval = candidate.get("approval") if isinstance(candidate.get("approval"), dict) else None
             if approval is None:
                 raise _error(status.HTTP_409_CONFLICT, "REPAIR_CANDIDATE_NOT_APPROVED", "Repair candidate approval required.")
+            _bind_post_repair_runtime_env(candidate, uow, job_id)
             try:
                 execution = apply_approved_repair_candidate(candidate, approval)
             except ValueError as exc:
@@ -1753,6 +1757,34 @@ def create_app(
                 uow.v2_repair_candidates.save_candidate(next_candidate)
             public = uow.v2_repair_candidates.get_public(job_id, stage_index, repair_candidate_id)
         return {"execution": redact_public_data(execution), "candidate": redact_public_data(public or {})}
+
+    def _bind_post_repair_runtime_env(candidate: dict[str, Any], uow: Any, job_id: str) -> None:
+        job = uow.v2_jobs.get(job_id) if hasattr(uow, "v2_jobs") else None
+        run_config = uow.run_configurations.get_for_job(job_id) if hasattr(uow, "run_configurations") else None
+        setup = uow.v2_setups.get(job.setup_id) if job is not None and hasattr(uow, "v2_setups") else None
+        if run_config is None or setup is None:
+            return
+        try:
+            runtime_profile = resolve_runtime_profile_for_run_configuration(run_config)
+            jdk_env_var = resolve_execution_jdk_env_var_for_runtime_profile(runtime_profile)
+            execution_jdk = resolve_execution_jdk_id_for_runtime_profile(runtime_profile)
+        except RouteRuntimeProfileUnavailableError:
+            return
+        java_homes = {
+            "JAVA11_HOME": str(getattr(setup, "java11_home", "") or ""),
+            "JAVA17_HOME": str(getattr(setup, "java17_home", "") or ""),
+            "JAVA21_HOME": str(getattr(setup, "java21_home", "") or ""),
+        }
+        java_home = java_homes.get(jdk_env_var, "")
+        runtime_env = {
+            **java_homes,
+            "MAVEN_CMD": str(getattr(setup, "maven_cmd", "") or ""),
+        }
+        if java_home:
+            runtime_env["JAVA_HOME"] = java_home
+        candidate["_post_repair_execution_jdk"] = execution_jdk
+        candidate["_post_repair_runtime_profile"] = runtime_profile
+        candidate["_post_repair_runtime_env"] = runtime_env
 
     def _v2_gate_to_dict(
         gate: Any,

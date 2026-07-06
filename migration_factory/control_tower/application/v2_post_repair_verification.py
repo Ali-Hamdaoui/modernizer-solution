@@ -17,7 +17,7 @@ from migration_factory.control_tower.domain.checksums import sha256_canonical_js
 from migration_factory.maven import resolve_java_executable, resolve_maven_executable
 
 
-CommandRunner = Callable[[list[str], Path], dict[str, Any]]
+CommandRunner = Callable[..., dict[str, Any]]
 
 POST_REPAIR_COMMANDS: tuple[list[str], ...] = (
     ["__MAVEN__", "-DskipTests", "clean", "compile"],
@@ -109,13 +109,21 @@ def run_post_repair_verification(
         }
 
     runner = command_runner or _run_command
-    resolved_toolchain = _resolve_backend_toolchain()
+    resolved_toolchain = _resolve_backend_toolchain(repair_candidate)
     toolchain_warnings: list[str] = []
     java_environment_command = _render_command(ENVIRONMENT_COMMANDS[0], resolved_toolchain)
-    java_environment_record = _normalize_command_result(java_environment_command, sandbox, runner(java_environment_command, sandbox))
+    java_environment_record = _normalize_command_result(
+        java_environment_command,
+        sandbox,
+        _run_with_toolchain_env(runner, java_environment_command, sandbox, resolved_toolchain),
+    )
     maven_environment_command = _render_command(ENVIRONMENT_COMMANDS[1], resolved_toolchain)
     if resolved_toolchain["maven_available"]:
-        maven_environment_record = _normalize_command_result(maven_environment_command, sandbox, runner(maven_environment_command, sandbox))
+        maven_environment_record = _normalize_command_result(
+            maven_environment_command,
+            sandbox,
+            _run_with_toolchain_env(runner, maven_environment_command, sandbox, resolved_toolchain),
+        )
     else:
         maven_environment_record = {
             "command": maven_environment_command,
@@ -132,6 +140,71 @@ def run_post_repair_verification(
     java_warning = _java_toolchain_warning(environment_summary, repair_candidate)
     if java_warning:
         toolchain_warnings.append(java_warning)
+    if not resolved_toolchain["java_runtime_available"]:
+        toolchain_warnings.append(str(resolved_toolchain.get("java_runtime_error") or "java_runtime_resolution_failed"))
+        proof_path = _write_toolchain_failure_proof(
+            proof_dir=proof_dir,
+            job_id=job_id,
+            stage_index=stage_index,
+            repair_candidate=repair_candidate,
+            approval=approval,
+            sandbox=sandbox,
+            environment_summary=environment_summary,
+            toolchain_warnings=toolchain_warnings,
+            resolved_toolchain=resolved_toolchain,
+            missing_tool="java",
+            failure_kind="java_runtime_resolution_failed",
+            repair_blocked_reason="missing_java_runtime",
+        )
+        classification = {
+            "job_id": job_id,
+            "stage_index": stage_index,
+            "failure_type": "TOOLCHAIN_UNAVAILABLE",
+            "classification_status": "toolchain_failure",
+            "post_repair_failure_kind": "java_runtime_resolution_failed",
+            "repair_blocked_reason": "missing_java_runtime",
+            "missing_tool": "java",
+            "toolchain_warnings": toolchain_warnings,
+            "repair_enabled": False,
+        }
+        return {
+            "post_repair_verification_status": "failed",
+            "stage_recovery_status": "still_failed",
+            "post_repair_failure_kind": "java_runtime_resolution_failed",
+            "missing_tool": "java",
+            "repair_blocked_reason": "missing_java_runtime",
+            "toolchain_warnings": toolchain_warnings,
+            "commands": environment_records,
+            "evidence_pack": {
+                "job_id": job_id,
+                "stage_index": stage_index,
+                "stage_name": repair_candidate.get("stage_name") or f"Stage {stage_index}",
+                "output_sandbox_ref": str(sandbox),
+                "usable_artifacts": [
+                    {"kind": "sandbox", "internal_ref": str(sandbox), "ref": redact_absolute_paths(str(sandbox))},
+                ],
+                "missing_artifacts": ["java"],
+                "repair_enabled": False,
+                "environment_summary": environment_summary,
+                "toolchain_warnings": toolchain_warnings,
+                "post_repair_failure_kind": "java_runtime_resolution_failed",
+                "missing_tool": "java",
+                "repair_blocked_reason": "missing_java_runtime",
+                "evidence_pack_id": f"post-repair-evidence-{repair_candidate.get('repair_candidate_id') or 'repair'}",
+                "evidence_pack_checksum": "",
+            },
+            "classification": classification,
+            "environment_summary": environment_summary,
+            "proof_artifact": redact_absolute_paths(str(proof_path)),
+            "post_repair_proof_artifact": redact_absolute_paths(str(proof_path)),
+            "downstream_start_allowed": False,
+            "started_at": environment_records[0]["started_at"],
+            "completed_at": environment_records[-1]["completed_at"],
+            "sandbox_path": redact_absolute_paths(str(sandbox)),
+            "working_directory": redact_absolute_paths(str(sandbox)),
+            "next_repair_candidate": None,
+            "_next_repair_candidate": None,
+        }
     if not resolved_toolchain["maven_available"]:
         proof_path = _write_toolchain_failure_proof(
             proof_dir=proof_dir,
@@ -196,19 +269,27 @@ def run_post_repair_verification(
     compile_command = _render_command(POST_REPAIR_COMMANDS[0], resolved_toolchain)
     test_command = _render_command(POST_REPAIR_COMMANDS[1], resolved_toolchain)
     command_records = [
-        _normalize_command_result(compile_command, sandbox, runner(compile_command, sandbox)),
-        _normalize_command_result(test_command, sandbox, runner(test_command, sandbox)),
+        _normalize_command_result(compile_command, sandbox, _run_with_toolchain_env(runner, compile_command, sandbox, resolved_toolchain)),
+        _normalize_command_result(test_command, sandbox, _run_with_toolchain_env(runner, test_command, sandbox, resolved_toolchain)),
     ]
     build_ok = command_records[0]["exit_code"] == 0
     test_ok = command_records[1]["exit_code"] == 0
     dependency_record: dict[str, Any] | None = None
     if build_ok and not test_ok:
         dependency_command = _render_command(DEPENDENCY_TREE_COMMAND, resolved_toolchain)
-        dependency_record = _normalize_command_result(dependency_command, sandbox, runner(dependency_command, sandbox))
+        dependency_record = _normalize_command_result(
+            dependency_command,
+            sandbox,
+            _run_with_toolchain_env(runner, dependency_command, sandbox, resolved_toolchain),
+        )
         command_records.append(dependency_record)
     elif not build_ok:
         dependency_command = _render_command(DEPENDENCY_TREE_COMMAND, resolved_toolchain)
-        dependency_record = _normalize_command_result(dependency_command, sandbox, runner(dependency_command, sandbox))
+        dependency_record = _normalize_command_result(
+            dependency_command,
+            sandbox,
+            _run_with_toolchain_env(runner, dependency_command, sandbox, resolved_toolchain),
+        )
         command_records.append(dependency_record)
 
     build_log_path = proof_dir / "build.log"
@@ -356,7 +437,7 @@ def _resolve_sandbox_root(repair_candidate: dict[str, Any]) -> Path:
     return Path(sandbox_ref).resolve()
 
 
-def _run_command(command: list[str], cwd: Path) -> dict[str, Any]:
+def _run_command(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> dict[str, Any]:
     started_at = utc_now_text()
     start = time.monotonic()
     try:
@@ -367,6 +448,7 @@ def _run_command(command: list[str], cwd: Path) -> dict[str, Any]:
             text=True,
             shell=False,
             check=False,
+            env=env,
         )
         exit_code = int(proc.returncode)
         stdout = proc.stdout or ""
@@ -387,6 +469,19 @@ def _run_command(command: list[str], cwd: Path) -> dict[str, Any]:
         "completed_at": completed_at,
         "duration_ms": duration_ms,
     }
+
+
+def _run_with_toolchain_env(
+    runner: CommandRunner,
+    command: list[str],
+    cwd: Path,
+    toolchain: dict[str, Any],
+) -> dict[str, Any]:
+    env = toolchain.get("env")
+    try:
+        return runner(command, cwd, env)
+    except TypeError:
+        return runner(command, cwd)
 
 
 def _normalize_command_result(command: list[str], cwd: Path, result: Any) -> dict[str, Any]:
@@ -459,16 +554,77 @@ def _extract_java_major_version(text: str) -> str:
     return first
 
 
-def _resolve_backend_toolchain() -> dict[str, Any]:
-    env = os.environ
+def _resolve_backend_toolchain(repair_candidate: dict[str, Any] | None = None) -> dict[str, Any]:
+    env = _toolchain_env_for_candidate(repair_candidate or {})
     java_command = resolve_java_executable(env)
     maven_command = resolve_maven_executable(env)
     maven_available = _maven_command_available(env, maven_command)
+    runtime_error = _java_runtime_error(repair_candidate or {}, env)
     return {
         "java_command": java_command,
         "maven_command": maven_command,
         "maven_available": maven_available,
+        "java_runtime_available": runtime_error == "",
+        "java_runtime_error": runtime_error,
+        "env": env,
     }
+
+
+def _toolchain_env_for_candidate(repair_candidate: dict[str, Any]) -> dict[str, str]:
+    env = os.environ.copy()
+    runtime_env = repair_candidate.get("_post_repair_runtime_env")
+    if isinstance(runtime_env, dict):
+        env.update({str(key): str(value) for key, value in runtime_env.items() if str(value).strip()})
+    java_home = _selected_java_home(repair_candidate, env)
+    if java_home:
+        env["JAVA_HOME"] = java_home
+        java_bin = str(Path(java_home) / "bin")
+        current_path = env.get("PATH", "")
+        env["PATH"] = java_bin if not current_path else os.pathsep.join([java_bin, current_path])
+    return env
+
+
+def _selected_java_home(repair_candidate: dict[str, Any], env: dict[str, str]) -> str:
+    runtime_env = repair_candidate.get("_post_repair_runtime_env")
+    if isinstance(runtime_env, dict) and str(runtime_env.get("JAVA_HOME") or "").strip():
+        return str(runtime_env.get("JAVA_HOME") or "").strip()
+    required_env = _required_java_home_env_var(repair_candidate)
+    if required_env:
+        return str(env.get(required_env) or "").strip()
+    return str(env.get("JAVA_HOME") or "").strip()
+
+
+def _required_java_home_env_var(repair_candidate: dict[str, Any]) -> str:
+    execution_jdk = str(
+        repair_candidate.get("execution_jdk")
+        or repair_candidate.get("route_step_execution_jdk")
+        or repair_candidate.get("_post_repair_execution_jdk")
+        or ""
+    ).strip().lower()
+    if execution_jdk in {"java11", "jdk11", "11"}:
+        return "JAVA11_HOME"
+    if execution_jdk in {"java17", "jdk17", "17"}:
+        return "JAVA17_HOME"
+    if execution_jdk in {"java21", "jdk21", "21"}:
+        return "JAVA21_HOME"
+    target_java = str(
+        repair_candidate.get("target_java_version")
+        or repair_candidate.get("stage_target_java_version")
+        or repair_candidate.get("source_java_version")
+        or ""
+    ).strip()
+    if target_java in {"11", "17", "21"}:
+        return f"JAVA{target_java}_HOME"
+    return ""
+
+
+def _java_runtime_error(repair_candidate: dict[str, Any], env: dict[str, str]) -> str:
+    required_env = _required_java_home_env_var(repair_candidate)
+    if not required_env:
+        return ""
+    if str(env.get(required_env) or "").strip():
+        return ""
+    return f"missing_java_runtime:{required_env}"
 
 
 def _maven_command_available(env: dict[str, str], command: str) -> bool:
@@ -526,6 +682,9 @@ def _write_toolchain_failure_proof(
     environment_summary: dict[str, Any],
     toolchain_warnings: list[str],
     resolved_toolchain: dict[str, Any],
+    missing_tool: str = "maven",
+    failure_kind: str = "toolchain_unavailable",
+    repair_blocked_reason: str = "post_repair_maven_unavailable",
 ) -> Path:
     proof = {
         "job_id": job_id,
@@ -534,9 +693,9 @@ def _write_toolchain_failure_proof(
         "approval_id": approval.get("approval_id", ""),
         "post_repair_verification_status": "failed",
         "stage_recovery_status": "still_failed",
-        "post_repair_failure_kind": "toolchain_unavailable",
-        "missing_tool": "maven",
-        "repair_blocked_reason": "post_repair_maven_unavailable",
+        "post_repair_failure_kind": failure_kind,
+        "missing_tool": missing_tool,
+        "repair_blocked_reason": repair_blocked_reason,
         "commands": [],
         "environment_summary": environment_summary,
         "toolchain_warnings": toolchain_warnings,

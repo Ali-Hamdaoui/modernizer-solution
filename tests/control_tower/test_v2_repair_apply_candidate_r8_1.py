@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from migration_factory.control_tower.application.v2_repair_apply_candidate impor
     public_repair_apply_candidate,
     repair_state_narration,
 )
+from migration_factory.control_tower.application.v2_post_repair_verification import run_post_repair_verification
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
 from migration_factory.maven import resolve_java_executable, resolve_maven_executable
@@ -429,6 +431,100 @@ class _FakePostRepairRunner:
         response.setdefault("completed_at", "2026-07-05T00:00:01Z")
         response.setdefault("duration_ms", 1)
         return response
+
+
+class _EnvCapturingPostRepairRunner:
+    def __init__(self) -> None:
+        self.calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def __call__(self, command: list[str], cwd: Path, env: dict[str, str]) -> dict[str, Any]:
+        self.calls.append((list(command), dict(env)))
+        key = " ".join([_normalize_executable_name(command[0]), *command[1:]]) if command else ""
+        if key == "java -version":
+            stdout = ""
+            stderr = 'openjdk version "11.0.22"'
+        elif key == "mvn -version":
+            stdout = "Apache Maven 3.9.9\nJava version: 11.0.22"
+            stderr = ""
+        else:
+            stdout = "[INFO] BUILD SUCCESS"
+            stderr = ""
+        return {
+            "command": list(command),
+            "working_directory": str(cwd),
+            "stdout": stdout,
+            "stderr": stderr,
+            "exit_code": 0,
+            "started_at": "2026-07-05T00:00:00Z",
+            "completed_at": "2026-07-05T00:00:01Z",
+            "duration_ms": 1,
+        }
+
+
+def test_post_repair_verification_uses_java11_runtime_env_for_stage1_route(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    (sandbox / "pom.xml").write_text(_jackson_pom(), encoding="utf-8")
+    java11_home = tmp_path / "jdks" / "java-11"
+    candidate = {
+        "job_id": "job-sort",
+        "stage_index": 1,
+        "repair_candidate_id": "repair-candidate-java11",
+        "_sandbox_root": str(sandbox),
+        "_post_repair_execution_jdk": "java11",
+        "_post_repair_runtime_env": {
+            "JAVA11_HOME": str(java11_home),
+            "JAVA17_HOME": str(tmp_path / "jdks" / "java-17"),
+            "JAVA21_HOME": str(tmp_path / "jdks" / "java-21"),
+            "JAVA_HOME": str(java11_home),
+            "MAVEN_CMD": "mvn",
+        },
+    }
+    runner = _EnvCapturingPostRepairRunner()
+
+    result = run_post_repair_verification(
+        job_id="job-sort",
+        stage_index=1,
+        repair_candidate=candidate,
+        approval={"approval_id": "approval-1"},
+        command_runner=runner,
+    )
+
+    assert result["post_repair_verification_status"] == "passed"
+    assert result["environment_summary"]["maven"]["output"].endswith("Java version: 11.0.22")
+    assert runner.calls
+    for _command, env in runner.calls:
+        assert env["JAVA_HOME"] == str(java11_home)
+        assert env["PATH"].split(os.pathsep)[0] == str(java11_home / "bin")
+
+
+def test_post_repair_verification_fails_when_required_java11_home_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("JAVA11_HOME", raising=False)
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    (sandbox / "pom.xml").write_text(_jackson_pom(), encoding="utf-8")
+    runner = _EnvCapturingPostRepairRunner()
+
+    result = run_post_repair_verification(
+        job_id="job-sort",
+        stage_index=1,
+        repair_candidate={
+            "job_id": "job-sort",
+            "stage_index": 1,
+            "repair_candidate_id": "repair-candidate-missing-java11",
+            "_sandbox_root": str(sandbox),
+            "_post_repair_execution_jdk": "java11",
+            "_post_repair_runtime_env": {"MAVEN_CMD": "mvn"},
+        },
+        approval={"approval_id": "approval-1"},
+        command_runner=runner,
+    )
+
+    assert result["post_repair_verification_status"] == "failed"
+    assert result["stage_recovery_status"] == "still_failed"
+    assert result["post_repair_failure_kind"] == "java_runtime_resolution_failed"
+    assert result["repair_blocked_reason"] == "missing_java_runtime"
+    assert any("JAVA11_HOME" in warning for warning in result["toolchain_warnings"])
 
 
 def _normalize_executable_name(value: str) -> str:

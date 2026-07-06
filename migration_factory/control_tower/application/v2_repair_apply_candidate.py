@@ -81,7 +81,7 @@ def apply_approved_repair_candidate(
     approval: dict[str, Any],
     *,
     verification_runner: Callable[[Path], tuple[bool, str]] | None = None,
-    post_repair_verification_runner: Callable[[list[str], Path], dict[str, Any]] | None = None,
+    post_repair_verification_runner: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Apply backend-owned recipe to sandbox only, verify, rollback on failure."""
 
@@ -418,6 +418,8 @@ def _create_jackson_candidate_from_evidence(classification: dict[str, Any], stag
         "status": "pending_human_approval",
         "family": JACKSON_FAMILY,
         "recipe_id": JACKSON_BACKEND_RECIPE,
+        "source_java_version": str(stage_evidence.get("source_java_version") or classification.get("source_java_version") or ""),
+        "target_java_version": str(stage_evidence.get("target_java_version") or classification.get("target_java_version") or ""),
         "patch_source": "backend_deterministic_recipe",
         "llm_source": "advisory_only",
         "target_file": target_rel,
@@ -550,6 +552,8 @@ def _create_sort_candidate_from_evidence(classification: dict[str, Any], stage_e
         "status": "pending_human_approval",
         "family": SORT_FAMILY,
         "recipe_id": SORT_BACKEND_RECIPE,
+        "source_java_version": str(stage_evidence.get("source_java_version") or classification.get("source_java_version") or ""),
+        "target_java_version": str(stage_evidence.get("target_java_version") or classification.get("target_java_version") or ""),
         "patch_source": "backend_deterministic_recipe",
         "llm_source": "advisory_only",
         "target_file": changes[0]["target_file"],
@@ -735,7 +739,7 @@ def _apply_multi_file_candidate(
     approval: dict[str, Any],
     *,
     verification_runner: Callable[[Path], tuple[bool, str]] | None = None,
-    post_repair_verification_runner: Callable[[list[str], Path], dict[str, Any]] | None = None,
+    post_repair_verification_runner: Callable[..., dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     sandbox = Path(str(candidate.get("_sandbox_root") or "")).resolve()
     changes = [item for item in candidate.get("_file_changes", []) if isinstance(item, dict)]
