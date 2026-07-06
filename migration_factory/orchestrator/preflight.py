@@ -1,4 +1,4 @@
-import os
+import json
 from pathlib import Path
 
 import yaml
@@ -65,15 +65,7 @@ def validate_preflight(state: MigrationState, config: dict) -> None:
     if thread_id != run_id:
         raise PreflightError(f"thread_id must match run_id: {run_id}")
 
-    explicit_copilot_provider = os.environ.get("AI_MIGRATION_COPILOT_PROVIDER", "").strip()
-    availability = probe_copilot_availability(
-        repo_root=Path(__file__).resolve().parents[2],
-        run_dir=state.get("run_dir", ""),
-        provider=explicit_copilot_provider,
-        model=str(state.get("copilot_model") or ""),
-        required=bool(state.get("copilot_required", False)),
-        timeout_seconds=min(int(state.get("copilot_timeout_seconds") or 300), 30),
-    )
+    availability = _write_quarantined_copilot_compat_artifact(state)
     artifact_refs = dict(state.get("artifact_refs", {}) or {})
     artifact_refs["copilot_availability"] = str(
         Path(state.get("run_dir", "")) / "preflight" / "copilot_availability.json"
@@ -81,12 +73,26 @@ def validate_preflight(state: MigrationState, config: dict) -> None:
     state["artifact_refs"] = artifact_refs
     state["copilot_availability_status"] = str(availability.get("status") or "SKIPPED")
     state["copilot_feature_probe"] = availability
-    if (
-        explicit_copilot_provider == "copilot_cli"
-        and state.get("copilot_required") is True
-        and availability.get("status") != "AVAILABLE"
-    ):
-        raise PreflightError(f"Copilot repair proposal preflight failed: {availability.get('reason', '')}")
+
+
+def _write_quarantined_copilot_compat_artifact(state: MigrationState) -> dict:
+    availability = {
+        "provider": "github_copilot",
+        "status": "quarantined",
+        "available": False,
+        "required": False,
+        "product_runtime": False,
+        "reason": (
+            "GitHub Copilot is not part of DEMO3 product runtime; "
+            "Azure/backend model routing is used."
+        ),
+    }
+    run_dir = str(state.get("run_dir", "") or "")
+    if run_dir:
+        path = Path(run_dir) / "preflight" / "copilot_availability.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(availability, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return availability
 
 def _validate_profile_mode_compatibility(profile_path: Path, state: MigrationState) -> None:
     try:

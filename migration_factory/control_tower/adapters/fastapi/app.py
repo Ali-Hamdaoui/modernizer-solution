@@ -1486,9 +1486,10 @@ def create_app(
             job = _require_v2_job(uow, job_id)
             commands = uow.v2_commands.list_by_job(job_id)
             events = uow.v2_events.list_by_job(job_id)
+            proof_accepted_stages = _proof_accepted_stages(uow, job_id)
         return {
             "job_id": job_id,
-            "stages": _v2_stages_from_job(job, commands, events),
+            "stages": _v2_stages_from_job(job, commands, events, proof_accepted_stages=proof_accepted_stages),
         }
 
     @app.get("/v1/v2/jobs/{job_id}/approvals")
@@ -1620,7 +1621,8 @@ def create_app(
         with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
-        return redact_public_data(_v2_pipeline_projection(job_id, events))
+            proof_accepted_stages = _proof_accepted_stages(uow, job_id)
+        return redact_public_data(_v2_pipeline_projection(job_id, events, proof_accepted_stages=proof_accepted_stages))
 
     @app.get(
         "/v1/v2/jobs/{job_id}/failure-summary",
@@ -1640,8 +1642,10 @@ def create_app(
             candidate_repo = getattr(uow, "v2_repair_candidates", None)
             candidate = candidate_repo.latest_public_for_job(job_id) if candidate_repo is not None else None
             if candidate:
+                candidate = _repair_candidate_with_review_projection(candidate, uow, job_id)
                 summary["repair_apply_candidate"] = candidate
                 _overlay_repair_apply_candidate(summary, candidate)
+                _overlay_repair_proof_acceptance(summary, candidate, uow, job_id)
             strategy_repo = getattr(uow, "v2_repair_strategies", None)
             strategy = strategy_repo.latest_for_job(job_id) if strategy_repo is not None else None
             strategy_history = strategy_repo.history_for_job(job_id) if strategy_repo is not None else []
@@ -13928,8 +13932,14 @@ def _active_stage_index(events: tuple[Any, ...]) -> int:
     return 1
 
 
-def _v2_pipeline_projection(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
+def _v2_pipeline_projection(
+    job_id: str,
+    events: tuple[Any, ...],
+    *,
+    proof_accepted_stages: set[int] | None = None,
+) -> dict[str, Any]:
     active_stage = _active_stage_index(events)
+    proof_accepted = active_stage in (proof_accepted_stages or set())
 
     # Scope events to active stage; global events (no stage) are included
     def _is_allowed_for_stage(event: Any) -> bool:
@@ -13955,6 +13965,12 @@ def _v2_pipeline_projection(job_id: str, events: tuple[Any, ...]) -> dict[str, A
         latest = matching[-1] if matching else None
         row_status = _pipeline_row_status(key, matching)
         latest_message = latest.message if latest is not None else "Waiting for backend-owned evidence."
+        if proof_accepted and key in {"failure_repair", "result_contract"}:
+            row_status = "pass"
+            latest_message = "Repair proof accepted. Target reached or no downstream stage required."
+        elif proof_accepted and key in {"build_validation", "test_validation"} and row_status in {"failed", "skipped", "pending"}:
+            row_status = "pass"
+            latest_message = "Post-repair backend verification passed."
         if key == "test_validation" and not matching:
             active_build_failed = any(
                 event.stage == active_stage
@@ -14362,6 +14378,92 @@ def _overlay_repair_apply_candidate(summary: dict[str, Any], candidate: dict[str
             and str(existing.get("repair_candidate_id") or "") == candidate_id
         ):
                 classification["repair_apply_candidate"] = candidate
+
+
+def _overlay_repair_proof_acceptance(
+    summary: dict[str, Any],
+    candidate: dict[str, Any],
+    uow: Any,
+    job_id: str,
+) -> None:
+    stage_index = _int_or_none(candidate.get("stage_index"))
+    if stage_index is None or not _candidate_has_accepted_repair_proof(candidate, uow, job_id, stage_index):
+        return
+    summary["repair_loop_active"] = False
+    summary["repair_proof_status"] = "proof_accepted"
+    summary["stage_recovery_status"] = candidate.get("stage_recovery_status") or "recovered"
+    summary["target_reached"] = True
+    for failure in summary.get("failures", []):
+        if not isinstance(failure, dict) or failure.get("stage") != stage_index:
+            continue
+        failure["final_proof_level"] = "proof_accepted"
+        failure["repair_loop_status"] = "PROOF_ACCEPTED"
+        failure["stage_recovery_status"] = candidate.get("stage_recovery_status") or "recovered"
+        failure["next_operator_action"] = "Repair proof accepted. Target reached or no downstream stage required."
+
+
+def _proof_accepted_stages(uow: Any, job_id: str) -> set[int]:
+    candidate_repo = getattr(uow, "v2_repair_candidates", None)
+    candidate = candidate_repo.latest_public_for_job(job_id) if candidate_repo is not None else None
+    if not isinstance(candidate, dict):
+        return set()
+    stage_index = _int_or_none(candidate.get("stage_index"))
+    if stage_index is None:
+        return set()
+    if not _candidate_has_accepted_repair_proof(candidate, uow, job_id, stage_index):
+        return set()
+    return {stage_index}
+
+
+def _repair_candidate_with_review_projection(candidate: dict[str, Any], uow: Any, job_id: str) -> dict[str, Any]:
+    projected = dict(candidate)
+    stage_index = _int_or_none(projected.get("stage_index"))
+    accepted = (
+        stage_index is not None
+        and _candidate_has_accepted_repair_proof(projected, uow, job_id, stage_index)
+    )
+    ready = _candidate_has_verified_repair_proof(projected)
+    projected["proof_accepted"] = accepted
+    projected["proof_review_status"] = "accepted" if accepted else ("ready_for_review" if ready else "")
+    return projected
+
+
+def _candidate_has_verified_repair_proof(candidate: dict[str, Any]) -> bool:
+    if str(candidate.get("status") or "") != "verified":
+        return False
+    if str(candidate.get("execution_status") or "") != "verified":
+        return False
+    if str(candidate.get("post_repair_verification_status") or candidate.get("verification_status") or "") != "passed":
+        return False
+    if str(candidate.get("rollback_status") or "") != "not_needed":
+        return False
+    return bool(str(candidate.get("proof_artifact") or "").strip())
+
+
+def _candidate_has_accepted_repair_proof(
+    candidate: dict[str, Any],
+    uow: Any,
+    job_id: str,
+    stage_index: int,
+) -> bool:
+    if not _candidate_has_verified_repair_proof(candidate):
+        return False
+    gate_repo = getattr(uow, "phase_gates", None)
+    if gate_repo is None or not hasattr(gate_repo, "list_by_job_and_stage"):
+        return False
+    return any(
+        gate.gate_phase == "repair_review"
+        and gate.gate_status == "resolved"
+        and gate.gate_decision == "continue"
+        for gate in gate_repo.list_by_job_and_stage(job_id, stage_index)
+    )
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _overlay_repair_strategy_packet(
@@ -15396,7 +15498,13 @@ def _event_payload_dict(event: Any) -> dict[str, Any]:
     return {}
 
 
-def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, ...]) -> list[dict[str, Any]]:
+def _v2_stages_from_job(
+    job: Any,
+    commands: tuple[Any, ...],
+    events: tuple[Any, ...],
+    *,
+    proof_accepted_stages: set[int] | None = None,
+) -> list[dict[str, Any]]:
     try:
         stages = json.loads(job.stage_chain_json)
     except (json.JSONDecodeError, TypeError):
@@ -15452,6 +15560,8 @@ def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, 
     }
     for stage_index in command_stages:
         status_by_stage.setdefault(stage_index, "queued")
+    for stage_index in proof_accepted_stages or set():
+        status_by_stage[stage_index] = "proof_accepted"
 
     normalized = []
     for stage in sorted(stages, key=lambda item: int(item["stage_index"])):

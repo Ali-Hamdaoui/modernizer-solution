@@ -1422,13 +1422,19 @@ class V2OrchestratorRunner:
                 payload={"command_id": command_id, "build_status": build_status},
             )
         elif _is_failure_status(build_status):
+            build_payload = {
+                "command_id": command_id,
+                "build_status": build_status,
+                **_build_diagnostic_contract(result),
+                **_stage_failure_evidence_payload(result),
+            }
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="build_failed",
                 status="failed",
                 message=f"Sandbox build failed: {build_status}",
-                payload={"command_id": command_id, "build_status": build_status},
+                payload=build_payload,
             )
 
         if test_status in _SUCCESS_TEST_STATUSES:
@@ -1609,23 +1615,7 @@ class V2OrchestratorRunner:
         transform_status = str(result.get("transform_status", ""))
         fallback = result.get("repair_fallback_generated")
 
-        build_validation = result.get("build_validation") or {}
-        build_contract = {
-            "matched_line": _str_or_none(build_validation.get("matched_line") or result.get("matched_line")),
-            "command": _list_or_none(build_validation.get("command") or result.get("command")),
-            "requested_command": _list_or_none(build_validation.get("requested_command") or result.get("requested_command")),
-            "resolved_command": _list_or_none(build_validation.get("resolved_command") or result.get("resolved_command")),
-            "build_tool": _str_or_none(build_validation.get("build_tool") or result.get("build_tool")),
-            "module": _str_or_none(build_validation.get("module") or result.get("module")),
-            "main_class": _str_or_none(build_validation.get("main_class") or result.get("main_class")),
-            "unit_id": _str_or_none(build_validation.get("unit_id") or result.get("unit_id")),
-            "result_kind": _str_or_none(build_validation.get("result_kind") or result.get("result_kind")),
-            "message": _str_or_none(build_validation.get("message") or result.get("message")),
-            "java_home": _str_or_none(build_validation.get("java_home") or result.get("java_home")),
-            "detected_version": _str_or_none(build_validation.get("detected_version") or result.get("detected_version")),
-            "required_minimum": _str_or_none(build_validation.get("required_minimum") or result.get("required_minimum")),
-        }
-        public_contract = {k: v for k, v in build_contract.items() if v is not None}
+        public_contract = _build_diagnostic_contract(result)
         evidence_payload = _stage_failure_evidence_payload(result)
 
         if _is_failure_status(build_status):
@@ -3328,7 +3318,7 @@ def _first_text(*values: Any) -> str:
 def _str_or_none(value: Any) -> str | None:
     if value is None:
         return None
-    text = str(value)
+    text = str(redact_public_value(value))
     return text if text else None
 
 
@@ -3336,6 +3326,28 @@ def _list_or_none(value: Any) -> list[str] | None:
     if value is None:
         return None
     if isinstance(value, (list, tuple)):
-        items = [str(item) for item in value]
+        items = [str(redact_public_value(item)) for item in value]
         return items if items else None
     return None
+
+
+def _build_diagnostic_contract(result: dict[str, Any]) -> dict[str, Any]:
+    build_validation = result.get("build_validation") or {}
+    if not isinstance(build_validation, dict):
+        build_validation = {}
+    build_contract = {
+        "matched_line": _str_or_none(build_validation.get("matched_line") or result.get("matched_line")),
+        "command": _list_or_none(build_validation.get("command") or result.get("command")),
+        "requested_command": _list_or_none(build_validation.get("requested_command") or result.get("requested_command")),
+        "resolved_command": _list_or_none(build_validation.get("resolved_command") or result.get("resolved_command")),
+        "build_tool": _str_or_none(build_validation.get("build_tool") or result.get("build_tool")),
+        "module": _str_or_none(build_validation.get("module") or result.get("module")),
+        "main_class": _str_or_none(build_validation.get("main_class") or result.get("main_class")),
+        "unit_id": _str_or_none(build_validation.get("unit_id") or result.get("unit_id")),
+        "result_kind": _str_or_none(build_validation.get("result_kind") or result.get("result_kind")),
+        "message": _str_or_none(build_validation.get("message") or result.get("message")),
+        "java_home": _str_or_none(build_validation.get("java_home") or result.get("java_home")),
+        "detected_version": _str_or_none(build_validation.get("detected_version") or result.get("detected_version")),
+        "required_minimum": _str_or_none(build_validation.get("required_minimum") or result.get("required_minimum")),
+    }
+    return {k: v for k, v in build_contract.items() if v is not None}

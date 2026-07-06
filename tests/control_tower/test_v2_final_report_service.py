@@ -58,6 +58,90 @@ def test_evaluate_eligibility_fails_without_stage4() -> None:
     assert any("Stage 4" in b for b in eligibility.blockers)
 
 
+def test_evaluate_eligibility_accepts_stage1_repair_proof_for_boot27_route() -> None:
+    command = MagicMock(
+        status="failed",
+        result_json=json.dumps({
+            "source_profile": "springboot-2.1-java11",
+            "target_profile": "springboot-2.7-java11",
+            "route_metadata": {
+                "source_profile": "springboot-2.1-java11",
+                "target_profile": "springboot-2.7-java11",
+                "included_stages": [1],
+                "route_steps": [{"stage_index": 1}],
+            },
+            "final_status": "BUILD_FAILED_IN_SANDBOX",
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+        }),
+    )
+    uow = _mock_uow()
+    uow.run_configurations.get_for_job.return_value = MagicMock(
+        payload_json=json.dumps({
+            "source_profile": "springboot-2.1-java11",
+            "target_profile": "springboot-2.7-java11",
+        })
+    )
+    uow.v2_commands.list_by_job.return_value = [command]
+    uow.v2_commands.list_by_job_and_stage.return_value = [command]
+    uow.phase_gates.list_open.return_value = []
+    uow.phase_gates.list_by_job_and_stage.return_value = [
+        MagicMock(gate_phase="repair_review", gate_status="resolved", gate_decision="continue")
+    ]
+    uow.artifact_revisions.find_accepted.return_value = None
+    uow.v2_repair_candidates.latest_public_for_job.return_value = {
+        "stage_index": 1,
+        "status": "verified",
+        "execution_status": "verified",
+        "post_repair_verification_status": "passed",
+        "rollback_status": "not_needed",
+        "proof_artifact": "proof.json",
+    }
+    service = V2FinalReportService(MagicMock(return_value=uow))
+
+    eligibility = service._evaluate_eligibility(uow, "job123")
+
+    assert eligibility.eligible is True
+    uow.v2_commands.list_by_job_and_stage.assert_called_with("job123", 1)
+
+
+def test_evaluate_eligibility_uses_run_configuration_route_when_command_lacks_route_metadata() -> None:
+    command = MagicMock(
+        status="failed",
+        result_json=json.dumps({
+            "final_status": "BUILD_FAILED_IN_SANDBOX",
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+        }),
+    )
+    uow = _mock_uow()
+    uow.run_configurations.get_for_job.return_value = MagicMock(
+        payload_json=json.dumps({
+            "source_profile": "springboot-2.1-java11",
+            "target_profile": "springboot-2.7-java11",
+        })
+    )
+    uow.v2_commands.list_by_job.return_value = [command]
+    uow.v2_commands.list_by_job_and_stage.return_value = [command]
+    uow.phase_gates.list_open.return_value = []
+    uow.phase_gates.list_by_job_and_stage.return_value = [
+        MagicMock(gate_phase="repair_review", gate_status="resolved", gate_decision="continue")
+    ]
+    uow.artifact_revisions.find_accepted.return_value = None
+    uow.v2_repair_candidates.latest_public_for_job.return_value = {
+        "stage_index": 1,
+        "status": "verified",
+        "execution_status": "verified",
+        "post_repair_verification_status": "passed",
+        "rollback_status": "not_needed",
+        "proof_artifact": "proof.json",
+    }
+    service = V2FinalReportService(MagicMock(return_value=uow))
+
+    eligibility = service._evaluate_eligibility(uow, "job123")
+
+    assert eligibility.eligible is True
+    uow.v2_commands.list_by_job_and_stage.assert_called_with("job123", 1)
+
+
 def test_report_result_contains_no_path_fields() -> None:
     result = V2FinalReportResult(
         job_id="job123",

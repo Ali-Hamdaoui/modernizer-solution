@@ -220,8 +220,6 @@ describe("M2-01 frontend diagnostic contracts", () => {
       getV2OpenGate("job-1"),
       getV2GateDetail("job-1", "gate-1"),
       postV2GateAction("job-1", "gate-1", {
-        gate_id: "gate-1",
-        job_id: "job-1",
         action: "reject",
         expected_gate_checksum: "sha256:gate-checksum",
         idempotency_key: "idem-1",
@@ -245,8 +243,6 @@ describe("M2-01 frontend diagnostic contracts", () => {
     expect(actionCall).toBeDefined();
     const body = JSON.parse(String((actionCall?.[1] as RequestInit | undefined)?.body ?? "{}"));
     expect(body).toEqual(expect.objectContaining({
-      gate_id: "gate-1",
-      job_id: "job-1",
       action: "reject",
       expected_gate_checksum: "sha256:gate-checksum",
       idempotency_key: "idem-1",
@@ -255,6 +251,8 @@ describe("M2-01 frontend diagnostic contracts", () => {
       reason: "not ready",
     }));
     expect(JSON.stringify(body)).not.toContain("sandbox_path");
+    expect(JSON.stringify(body)).not.toContain("gate_id");
+    expect(JSON.stringify(body)).not.toContain("job_id");
     expect(JSON.stringify(body)).not.toContain("argv");
     expect(JSON.stringify(body)).not.toContain("env");
     expect(JSON.stringify(body)).not.toContain("raw_command");
@@ -724,8 +722,6 @@ describe("F3/F4 Profile routing contracts", () => {
 
   it("GateActionRequest includes override_source_profile and detection fields", () => {
     const action: GateActionRequest = {
-      gate_id: "gate-1",
-      job_id: "job-1",
       action: "continue",
       expected_gate_checksum: "sha256:gate",
       idempotency_key: "idem-1",
@@ -790,8 +786,6 @@ describe("F3/F4 Profile routing contracts", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await postV2GateAction("job-1", "gate-1", {
-      gate_id: "gate-1",
-      job_id: "job-1",
       action: "continue",
       expected_gate_checksum: "sha256:gate",
       idempotency_key: "idem-1",

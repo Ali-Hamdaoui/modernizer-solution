@@ -169,16 +169,12 @@ def test_copilot_provider_unset_skips_cli_probe_even_when_state_defaults_to_cli(
     state["copilot_required"] = True
     monkeypatch.delenv("AI_MIGRATION_COPILOT_PROVIDER", raising=False)
 
-    def fake_probe(**kwargs):
-        assert kwargs["provider"] == ""
-        return {"status": "SKIPPED", "reason": "provider  is not copilot_cli"}
-
-    monkeypatch.setattr(preflight_module, "probe_copilot_availability", fake_probe)
-
     validate_preflight(state, build_langgraph_config(state["run_id"]))
 
-    assert state["copilot_availability_status"] == "SKIPPED"
-    assert state["copilot_feature_probe"]["reason"] == "provider  is not copilot_cli"
+    assert state["copilot_availability_status"] == "quarantined"
+    assert state["copilot_feature_probe"]["product_runtime"] is False
+    assert state["copilot_feature_probe"]["required"] is False
+    assert "Azure/backend model routing" in state["copilot_feature_probe"]["reason"]
 
 
 def test_evidence_session_does_not_use_repo_or_sandbox_cwd(tmp_path: Path) -> None:
@@ -519,6 +515,8 @@ def test_required_h2_failure_routes_into_repair_loop_after_sandbox_transform(tmp
             "modernized_app_path": str(tmp_path / "modernized"),
             "ai_hub_path": str(tmp_path / "ai-hub"),
             "profile_id": "java17",
+            "source_profile": "springboot-2.7-java11",
+            "target_profile": "springboot-3.5-java17",
             "approved_by": "reviewer",
             "artifact_refs": {},
             "h2_startup_required": True,
@@ -576,6 +574,8 @@ def test_required_h2_invalid_copilot_response_merges_repair_state(tmp_path: Path
             "modernized_app_path": str(tmp_path / "modernized"),
             "ai_hub_path": str(tmp_path / "ai-hub"),
             "profile_id": "java17",
+            "source_profile": "springboot-2.7-java11",
+            "target_profile": "springboot-3.5-java17",
             "approved_by": "reviewer",
             "artifact_refs": {},
             "h2_startup_required": True,

@@ -83,6 +83,26 @@ def test_continue_from_analysis_review_gate(tmp_path: Path) -> None:
     decision = decision_repo.get(result.decision_id)
     assert decision is not None
     assert decision.action == "continue"
+    assert decision.actor_type == "human"
+
+
+def test_continue_from_gate_preserves_actor_type_from_api(tmp_path: Path) -> None:
+    action_svc, gate_repo, decision_repo = _setup(tmp_path)
+    gate_svc = V2PhaseGateService(gate_repo)
+
+    gate_id = _create_open_gate(gate_svc, phase="repair_review")
+
+    result = action_svc.continue_from_gate(
+        gate_id=gate_id,
+        job_id="job-abc",
+        decided_by="assistant-1",
+        actor_type="assistant",
+    )
+
+    assert result.status == "executed"
+    decision = decision_repo.get(result.decision_id)
+    assert decision is not None
+    assert decision.actor_type == "assistant"
 
 
 def test_continue_on_already_resolved_gate(tmp_path: Path) -> None:

@@ -68,6 +68,7 @@ import type {
   V2RepairStrategyTraceResponse,
   V2RouteStepEntry,
   GateEvidencePack,
+  GateActionRequest,
   MigrationProfileId,
 } from "../../../lib/contracts";
 import { MIGRATION_PROFILE_OPTIONS } from "../../../lib/contracts";
@@ -417,8 +418,10 @@ export function GatePanelContent({
   state: GatePanelState;
   jobId?: string;
   job?: V2MigrationJobResponse;
-  onGateRefresh?: () => void;
+  onGateRefresh?: () => Promise<void> | void;
 }) {
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   if (state.status === "loading") {
     return (
       <section className="panel stack" aria-label="Open gate panel">
@@ -487,6 +490,15 @@ export function GatePanelContent({
             <span className="meta">Gate count: {state.gates.length}</span>
           </div>
         </div>
+        <GateActionButtons
+          jobId={jobId}
+          gate={gate}
+          busyAction={actionBusy}
+          error={actionError}
+          onBusyChange={setActionBusy}
+          onError={setActionError}
+          onSuccess={onGateRefresh}
+        />
         <div className="migration-intelligence stack">
           <strong>Migration Intelligence</strong>
           {hasMigrationIntelligence(migrationIntelligence) || migrationWarnings.length > 0 ? (
@@ -619,6 +631,77 @@ export function GatePanelContent({
       )}
     </section>
   );
+}
+
+function GateActionButtons({
+  jobId,
+  gate,
+  busyAction,
+  error,
+  onBusyChange,
+  onError,
+  onSuccess,
+}: {
+  jobId?: string;
+  gate: GateRepresentation;
+  busyAction: string | null;
+  error: string | null;
+  onBusyChange: (value: string | null) => void;
+  onError: (value: string | null) => void;
+  onSuccess?: () => Promise<void> | void;
+}) {
+  const safeJobId = jobId ?? "";
+  if (!safeJobId || gate.available_actions.length === 0) {
+    return null;
+  }
+
+  async function submitGateAction(action: GateRepresentation["available_actions"][number]) {
+    onBusyChange(action.action);
+    onError(null);
+    try {
+      const payload = buildGateActionButtonPayload(gate, action, createIdempotencyKey());
+      await postV2GateAction(safeJobId, gate.gate_id, payload);
+      await onSuccess?.();
+    } catch (err) {
+      onError(err instanceof Error ? err.message : "Gate action failed");
+    } finally {
+      onBusyChange(null);
+    }
+  }
+
+  return (
+    <div className="gate-actions" aria-label="Gate actions">
+      {gate.available_actions.map((action) => (
+        <button
+          type="button"
+          key={action.action}
+          disabled={action.blocked || busyAction !== null}
+          title={action.blocked ? action.block_reason : action.description}
+          onClick={() => void submitGateAction(action)}
+        >
+          {busyAction === action.action ? "Submitting..." : action.label}
+        </button>
+      ))}
+      {error && <p className="warning-text" role="alert">{error}</p>}
+    </div>
+  );
+}
+
+export function buildGateActionButtonPayload(
+  gate: GateRepresentation,
+  action: GateRepresentation["available_actions"][number],
+  idempotencyKey: string,
+): GateActionRequest {
+  return {
+    action: action.action as GateActionRequest["action"],
+    expected_gate_checksum: gate.checksum,
+    idempotency_key: idempotencyKey,
+    decided_by: "human",
+    actor_type: "human",
+    comments: action.action === "continue"
+      ? "Accepted verified backend repair proof after checksum-bound R11 apply."
+      : "",
+  };
 }
 
 export function GovernedRepairProposalCard({ proposal }: { proposal: GovernedRepairProposalResponse | null }) {
@@ -1840,8 +1923,6 @@ function findDetectedSourceProfileFromEvidence(
 }
 
 export type SourceProfileOverrideSubmitBody = {
-  gate_id: string;
-  job_id: string;
   action: "override_source_profile";
   expected_gate_checksum: string;
   idempotency_key: string;
@@ -1939,8 +2020,6 @@ export function buildSourceProfileOverrideBody(
 
   return {
     body: {
-      gate_id: input.gate.gate_id,
-      job_id: input.jobId,
       action: "override_source_profile",
       expected_gate_checksum: input.gate.checksum,
       idempotency_key: input.idempotencyKey,
@@ -2872,8 +2951,12 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           state={gateState}
           jobId={normalizedJobId}
           job={data?.job}
-          onGateRefresh={() => {
-            void refreshGateState();
+          onGateRefresh={async () => {
+            await Promise.all([
+              refreshGateState(),
+              refreshLiveState(),
+              refreshReport(),
+            ]);
           }}
         />
       ) : null}
@@ -3345,6 +3428,9 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .file-alias-actions { display: flex; align-items: center; gap: 0.6rem; margin: 0.5rem 0; }
         .file-alias-actions button { padding: 0.35rem 0.6rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
         .file-alias-actions button:disabled { color: #777; border-color: #bbb; }
+        .gate-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin: 0.75rem 0; }
+        .gate-actions button { padding: 0.4rem 0.7rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
+        .gate-actions button:disabled { color: #777; border-color: #bbb; }
         .artifact-kinds { border: 1px solid #ddd; padding: 0.5rem; margin: 0.5rem 0; }
         .artifact-kind-link { background: none; border: none; color: #0066cc; cursor: pointer; text-decoration: underline; font-size: 0.85rem; padding: 0; }
         .artifact-kind-link:hover { color: #004499; }
@@ -3379,6 +3465,15 @@ export function RepairApplyCandidateCard({
   const applyBusy = busyKey === `apply:${candidate.repair_candidate_id}`;
   const pendingApproval = candidate.status === "pending_human_approval" && candidate.approval_enabled;
   const approved = candidate.status === "approved" && candidate.apply_enabled;
+  const proofAccepted =
+    candidate.proof_accepted === true || candidate.proof_review_status === "accepted";
+  const proofReady =
+    !proofAccepted
+    && candidate.status === "verified"
+    && candidate.execution_status === "verified"
+    && (candidate.post_repair_verification_status === "passed" || candidate.verification_status === "passed")
+    && candidate.rollback_status === "not_needed"
+    && Boolean(candidate.proof_artifact);
   return (
     <div className="repair-card">
       <strong>Repair Apply Candidate</strong>
@@ -3392,7 +3487,13 @@ export function RepairApplyCandidateCard({
       <p className="meta">Verification: {candidate.verification_status || "not_started"}</p>
       <p className="meta">Rollback: {candidate.rollback_status || "not_started"}</p>
       <p className="checksum">Proof artifact: {candidate.proof_artifact || "pending"}</p>
-      <p className="meta">Downstream remains blocked until backend proof is reviewed.</p>
+      <p className="meta">
+        {proofAccepted
+          ? "Repair proof accepted. Target reached or no downstream stage required."
+          : proofReady
+            ? "Repair proof ready for human review."
+          : "Downstream remains blocked until backend proof is reviewed."}
+      </p>
       {pendingApproval && (
         <button type="button" disabled={approveBusy} onClick={() => onApprove(candidate)}>
           {approveBusy ? "Approving..." : "Approve checksum-bound repair"}

@@ -17,6 +17,7 @@ import {
   MigrationRoutePanel,
   SourceProfileDetectionPanel,
   SourceProfileOverrideForm,
+  buildGateActionButtonPayload,
   buildSourceProfileOverrideBody,
   buildStageTimelineEntries,
   getSourceProfileOverrideBlockedReason,
@@ -1450,6 +1451,98 @@ describe("V2 Migration Cockpit contract", () => {
     expect(markup).not.toContain("Upload patch");
     expect(markup).not.toContain("Override checksum");
     expect(markup).not.toContain("Edit target");
+  });
+
+  it("repair candidate card treats verified R11 proof as accepted", () => {
+    const candidate: V2RepairApplyCandidateResponse = {
+      job_id: "job-123",
+      stage_index: 1,
+      repair_candidate_id: "repair-candidate-r11",
+      status: "verified",
+      family: "SPRING_DATA_SORT_API_DRIFT",
+      patch_source: "backend_deterministic_recipe",
+      llm_source: "advisory_only",
+      target_file: "src/main/java/com/total/corp/common/dto/DTOHelpers.java",
+      pre_apply_checksum: "sha256:file",
+      target_file_checksum: "sha256:file",
+      patch_checksum: "sha256:patch",
+      review_checksum: "sha256:review",
+      proposal_checksum: "sha256:proposal",
+      candidate_checksum: "sha256:candidate",
+      approval_required: true,
+      apply_enabled: false,
+      approval_enabled: false,
+      sandbox_only: true,
+      legacy_mutation_allowed: false,
+      downstream_start_allowed: false,
+      llm_can_apply: false,
+      browser_can_supply_patch: false,
+      execution_status: "verified",
+      verification_status: "passed",
+      post_repair_verification_status: "passed",
+      proof_review_status: "accepted",
+      proof_accepted: true,
+      rollback_status: "not_needed",
+      proof_artifact: "proof.json",
+      created_at: "2026-07-03T00:00:00Z",
+    };
+    const markup = renderToStaticMarkup(
+      <RepairApplyCandidateCard
+        candidate={candidate}
+        busyKey={null}
+        onApprove={() => undefined}
+        onApply={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Repair proof accepted");
+    expect(markup).not.toContain("Downstream remains blocked until backend proof is reviewed.");
+  });
+
+  it("repair candidate card treats verified proof with open gate as ready for review", () => {
+    const candidate: V2RepairApplyCandidateResponse = {
+      job_id: "job-123",
+      stage_index: 1,
+      repair_candidate_id: "repair-candidate-r11",
+      status: "verified",
+      family: "SPRING_DATA_SORT_API_DRIFT",
+      patch_source: "backend_deterministic_recipe",
+      llm_source: "advisory_only",
+      target_file: "src/main/java/com/total/corp/common/dto/DTOHelpers.java",
+      pre_apply_checksum: "sha256:file",
+      target_file_checksum: "sha256:file",
+      patch_checksum: "sha256:patch",
+      review_checksum: "sha256:review",
+      proposal_checksum: "sha256:proposal",
+      candidate_checksum: "sha256:candidate",
+      approval_required: true,
+      apply_enabled: false,
+      approval_enabled: false,
+      sandbox_only: true,
+      legacy_mutation_allowed: false,
+      downstream_start_allowed: false,
+      llm_can_apply: false,
+      browser_can_supply_patch: false,
+      execution_status: "verified",
+      verification_status: "passed",
+      post_repair_verification_status: "passed",
+      proof_review_status: "ready_for_review",
+      proof_accepted: false,
+      rollback_status: "not_needed",
+      proof_artifact: "proof.json",
+      created_at: "2026-07-03T00:00:00Z",
+    };
+    const markup = renderToStaticMarkup(
+      <RepairApplyCandidateCard
+        candidate={candidate}
+        busyKey={null}
+        onApprove={() => undefined}
+        onApply={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain("Repair proof ready for human review");
+    expect(markup).not.toContain("Repair proof accepted");
   });
 
   it("repair candidate approve/apply clients send only checksum-bound bodies", async () => {
@@ -3863,6 +3956,77 @@ describe("F3/F4 Cockpit profile routing panels", () => {
     expect(markup).toBe("");
   });
 
+  it("GatePanelContent renders backend-provided gate actions as buttons", () => {
+    const gate: GateRepresentation = {
+      gate_id: "gate-1",
+      job_id: "job-1",
+      gate_phase: "repair_review",
+      stage_index: 1,
+      gate_status: "open",
+      gate_decision: "continue",
+      source_artifact_checksum: "sha256:gate",
+      source_artifact_refs: [],
+      created_at: "2026-06-28T00:00:00Z",
+      resolved_at: null,
+      resolved_by: null,
+      checksum: "sha256:gate-checksum",
+      available_actions: [
+        { action: "continue", label: "Accept", description: "Accept proof", blocked: false, block_reason: "" },
+        { action: "request_revision", label: "Request Revision", description: "Needs changes", blocked: true, block_reason: "No attempts left" },
+      ],
+    };
+    const markup = renderToStaticMarkup(
+      <GatePanelContent
+        state={{ status: "success", gates: [gate], openGate: gate, openGateDetail: null }}
+        jobId="job-1"
+      />,
+    );
+
+    expect(markup).toContain("<button");
+    expect(markup).toContain("Accept");
+    expect(markup).toContain("Request Revision");
+    expect(markup).toContain("disabled");
+    expect(markup).not.toContain("sandbox_path");
+    expect(markup).not.toContain("target_file");
+  });
+
+  it("gate Accept button payload uses backend action and safe contract fields only", () => {
+    const gate: GateRepresentation = {
+      gate_id: "gate-1",
+      job_id: "job-1",
+      gate_phase: "repair_review",
+      stage_index: 1,
+      gate_status: "open",
+      gate_decision: "pending",
+      source_artifact_checksum: "sha256:gate",
+      source_artifact_refs: [],
+      created_at: "2026-06-28T00:00:00Z",
+      resolved_at: null,
+      resolved_by: null,
+      checksum: "sha256:gate-checksum",
+      available_actions: [
+        { action: "continue", label: "Accept", description: "Accept proof", blocked: false, block_reason: "" },
+      ],
+    };
+    const payload = buildGateActionButtonPayload(gate, gate.available_actions[0], "idem-1");
+
+    expect(payload).toEqual({
+      action: "continue",
+      expected_gate_checksum: "sha256:gate-checksum",
+      idempotency_key: "idem-1",
+      decided_by: "human",
+      actor_type: "human",
+      comments: "Accepted verified backend repair proof after checksum-bound R11 apply.",
+    });
+    const serialized = JSON.stringify(payload);
+    expect(serialized).not.toContain("gate_id");
+    expect(serialized).not.toContain("job_id");
+    expect(serialized).not.toContain("patch");
+    expect(serialized).not.toContain("sandbox_path");
+    expect(serialized).not.toContain("command");
+    expect(serialized).not.toContain("env");
+  });
+
   it("SourceProfileOverrideForm shows a specific blocked reason when detection evidence is missing", () => {
     const gateDetail: GateDetailResponse = {
       gate: {
@@ -4101,8 +4265,6 @@ describe("F3/F4 Cockpit profile routing panels", () => {
     expect(result.blockedReason).toBeNull();
     expect(result.body).not.toBeNull();
     expect(result.body).toMatchObject({
-      gate_id: "gate-1",
-      job_id: "job-1",
       action: "override_source_profile",
       expected_gate_checksum: "sha256:gate-checksum",
       idempotency_key: "idem-1",

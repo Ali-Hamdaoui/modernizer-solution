@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from migration_factory.control_tower.application.v2_stage_progression import (
     TERMINAL_STAGE_INDEX,
+    compute_profile_route,
 )
 from migration_factory.control_tower.domain.entities import ArtifactRecord
 from migration_factory.final_report.writer import generate_final_migration_report
@@ -182,26 +183,28 @@ class V2FinalReportService:
     ) -> V2FinalReportEligibility:
         blockers: list[str] = []
 
+        terminal_stage = _terminal_stage_index(uow, job_id)
+        stage_label = f"Stage {terminal_stage}"
         commands = (
-            uow.v2_commands.list_by_job_and_stage(job_id, TERMINAL_STAGE_INDEX)
+            uow.v2_commands.list_by_job_and_stage(job_id, terminal_stage)
             if hasattr(uow, "v2_commands")
             else []
         )
         if not commands:
-            blockers.append("Stage 4 has not been started yet.")
+            blockers.append(f"{stage_label} has not been started yet.")
         else:
             terminal = commands[0]
-            if terminal.status != "completed":
-                blockers.append(f"Stage 4 is not completed (status: {terminal.status}).")
+            try:
+                result = json.loads(terminal.result_json or "{}")
+            except (json.JSONDecodeError, TypeError):
+                result = {}
+            proof_accepted = _has_accepted_repair_proof(uow, job_id, terminal_stage)
+            if terminal.status != "completed" and not proof_accepted:
+                blockers.append(f"{stage_label} is not completed (status: {terminal.status}).")
             elif terminal.result_json is None:
-                blockers.append("Stage 4 has no result.")
-            else:
-                try:
-                    result = json.loads(terminal.result_json)
-                except (json.JSONDecodeError, TypeError):
-                    result = {}
-                if not _looks_like_success(result):
-                    blockers.append("Stage 4 did not complete successfully.")
+                blockers.append(f"{stage_label} has no result.")
+            elif not _looks_like_success(result) and not proof_accepted:
+                blockers.append(f"{stage_label} did not complete successfully.")
 
         if hasattr(uow, "phase_gates"):
             open_gates = uow.phase_gates.list_open(job_id) if hasattr(uow.phase_gates, "list_open") else []
@@ -210,12 +213,12 @@ class V2FinalReportService:
 
         if hasattr(uow, "artifact_revisions"):
             accepted = (
-                uow.artifact_revisions.find_accepted(job_id, TERMINAL_STAGE_INDEX, "stage_output")
+                uow.artifact_revisions.find_accepted(job_id, terminal_stage, "stage_output")
                 if hasattr(uow.artifact_revisions, "find_accepted")
                 else None
             )
-            if accepted is None:
-                blockers.append("No accepted Stage 4 output artifact revision exists.")
+            if accepted is None and not _has_accepted_repair_proof(uow, job_id, terminal_stage):
+                blockers.append(f"No accepted {stage_label} output artifact revision or repair proof exists.")
 
         eligible = len(blockers) == 0
         return V2FinalReportEligibility(eligible=eligible, blockers=blockers)
@@ -253,7 +256,7 @@ class V2FinalReportService:
         report_dir = None
 
         if hasattr(uow, "v2_commands"):
-            commands = uow.v2_commands.list_by_job_and_stage(job_id, TERMINAL_STAGE_INDEX)
+            commands = uow.v2_commands.list_by_job_and_stage(job_id, _terminal_stage_index(uow, job_id))
             if commands and commands[0].result_json:
                 try:
                     state = json.loads(commands[0].result_json)
@@ -351,6 +354,135 @@ class _ArtifactSnapshot:
 def _looks_like_success(result: dict[str, Any]) -> bool:
     final_status = str(result.get("final_status") or result.get("status") or "")
     return final_status in ("PASS", "TRANSFORM_APPLIED_IN_SANDBOX", "completed")
+
+
+def _terminal_stage_index(uow: Any, job_id: str) -> int:
+    route = _route_metadata_from_commands(uow, job_id)
+    if route:
+        steps = route.get("route_steps")
+        if isinstance(steps, list) and steps:
+            last = steps[-1]
+            stage = _int_or_none(last.get("stage_index") if isinstance(last, dict) else None)
+            if stage is not None:
+                return stage
+        included = route.get("included_stages")
+        if isinstance(included, list) and included:
+            stage = _int_or_none(included[-1])
+            if stage is not None:
+                return stage
+        source = str(route.get("source_profile") or "")
+        target = str(route.get("target_profile") or "")
+        computed = compute_profile_route(source, target)
+        if computed.valid and computed.included_stages:
+            return computed.included_stages[-1]
+    return TERMINAL_STAGE_INDEX
+
+
+def _route_metadata_from_commands(uow: Any, job_id: str) -> dict[str, Any] | None:
+    from_run_config = _route_metadata_from_run_configuration(uow, job_id)
+    if from_run_config is not None:
+        return from_run_config
+    if not hasattr(uow, "v2_commands") or not hasattr(uow.v2_commands, "list_by_job"):
+        return None
+    for command in reversed(uow.v2_commands.list_by_job(job_id)):
+        try:
+            payload = json.loads(command.result_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        route = payload.get("route_metadata")
+        if isinstance(route, dict):
+            return route
+        source = payload.get("source_profile")
+        target = payload.get("target_profile")
+        if source and target:
+            computed = compute_profile_route(str(source), str(target))
+            if computed.valid:
+                return {
+                    "source_profile": str(source),
+                    "target_profile": str(target),
+                    "included_stages": list(computed.included_stages),
+                    "route_steps": [
+                        {
+                            "stage_index": step.stage_index,
+                            "source_profile": step.source_profile,
+                            "target_profile": step.target_profile,
+                        }
+                        for step in computed.route_steps
+                    ],
+                }
+    return None
+
+
+def _route_metadata_from_run_configuration(uow: Any, job_id: str) -> dict[str, Any] | None:
+    if not hasattr(uow, "run_configurations") or not hasattr(uow.run_configurations, "get_for_job"):
+        return None
+    run_config = uow.run_configurations.get_for_job(job_id)
+    if run_config is None:
+        return None
+    try:
+        payload = json.loads(str(getattr(run_config, "payload_json", "") or "{}"))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    source = str(payload.get("source_profile") or "").strip()
+    target = str(payload.get("target_profile") or "").strip()
+    if not source or not target:
+        return None
+    computed = compute_profile_route(source, target)
+    if not computed.valid:
+        return None
+    return {
+        "source_profile": source,
+        "target_profile": target,
+        "included_stages": list(computed.included_stages),
+        "excluded_stages": list(computed.excluded_stages),
+        "route_steps": [
+            {
+                "stage_index": step.stage_index,
+                "source_profile": step.source_profile,
+                "target_profile": step.target_profile,
+            }
+            for step in computed.route_steps
+        ],
+    }
+
+
+def _has_accepted_repair_proof(uow: Any, job_id: str, stage_index: int) -> bool:
+    if not hasattr(uow, "v2_repair_candidates"):
+        return False
+    candidate = uow.v2_repair_candidates.latest_public_for_job(job_id)
+    if not isinstance(candidate, dict):
+        return False
+    candidate_stage = _int_or_none(candidate.get("stage_index"))
+    if candidate_stage is not None and candidate_stage != stage_index:
+        return False
+    if str(candidate.get("status") or "") != "verified":
+        return False
+    if str(candidate.get("execution_status") or "") != "verified":
+        return False
+    if str(candidate.get("post_repair_verification_status") or candidate.get("verification_status") or "") != "passed":
+        return False
+    if str(candidate.get("rollback_status") or "") != "not_needed":
+        return False
+    if not str(candidate.get("proof_artifact") or "").strip():
+        return False
+    if not hasattr(uow, "phase_gates") or not hasattr(uow.phase_gates, "list_by_job_and_stage"):
+        return False
+    gates = uow.phase_gates.list_by_job_and_stage(job_id, stage_index)
+    return any(
+        gate.gate_phase == "repair_review"
+        and gate.gate_status == "resolved"
+        and gate.gate_decision == "continue"
+        for gate in gates
+    )
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _compute_input_checksum(state: dict[str, Any]) -> str:

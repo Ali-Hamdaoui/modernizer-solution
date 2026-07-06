@@ -1113,6 +1113,10 @@ export type V2RepairApplyCandidateResponse = {
   llm_can_apply: boolean;
   browser_can_supply_patch: boolean;
   verification_status: string;
+  post_repair_verification_status?: string;
+  stage_recovery_status?: string;
+  proof_review_status?: "ready_for_review" | "accepted";
+  proof_accepted?: boolean;
   rollback_status: string;
   proof_artifact: string;
   execution_status?: string;
@@ -1651,6 +1655,7 @@ export type GatePhase =
   | "stage_completion_review";
 
 export type GateDecision =
+  | "pending"
   | "continue"
   | "reanalyze"
   | "revise"
@@ -1694,8 +1699,6 @@ export type AvailableAction = {
 };
 
 export type GateActionRequest = {
-  gate_id: string;
-  job_id: string;
   action: GateDecision;
   expected_gate_checksum: string;
   idempotency_key: string;

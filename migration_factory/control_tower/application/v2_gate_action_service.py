@@ -282,6 +282,7 @@ class V2GateActionService:
         decided_by: str,
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
+        actor_type: str = GateActorType.HUMAN.value,
     ) -> GateActionResult:
         """Validate and execute a 'continue' decision at a gate.
 
@@ -373,7 +374,7 @@ class V2GateActionService:
             decided_by=decided_by,
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
-            actor_type=GateActorType.HUMAN.value,
+            actor_type=actor_type,
         )
         if (
             result.status == "executed"
