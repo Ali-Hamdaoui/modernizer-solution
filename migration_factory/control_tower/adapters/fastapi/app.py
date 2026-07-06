@@ -1472,6 +1472,57 @@ def create_app(
         asyncio.run(app.state.public_event_notifier.notify())
         return service.result_to_dict(result)
 
+    @app.post("/v1/v2/migration-jobs/{job_id}/cancel")
+    def cancel_v2_migration_job(job_id: str) -> dict[str, Any]:
+        """Idempotently cancel a V2 migration job and stop owned execution."""
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            events = uow.v2_events.list_by_job(job_id)
+            terminal_status = _v2_cancel_terminal_status(events)
+            if terminal_status is not None:
+                return {
+                    "job_id": job_id,
+                    "status": terminal_status,
+                    "process": {"process_found": False, "terminated": False, "process_count": 0},
+                }
+
+            active_stage = _active_stage_index(events)
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=active_stage,
+                event_type="migration_cancelling",
+                status="cancelling",
+                message="Migration cancellation requested by the operator.",
+                payload={"requested_by": "control_tower_frontend"},
+            )
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=active_stage,
+                event_type="stage_cancelled",
+                status="cancelled",
+                message="Active migration stage was marked cancelled.",
+                payload={"requested_by": "control_tower_frontend"},
+            )
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=None,
+                event_type="migration_cancelled",
+                status="cancelled",
+                message="Migration job cancelled. Backend remains ready for a new migration.",
+                payload={"requested_by": "control_tower_frontend"},
+            )
+
+        process_result = app.state.v2_orchestrator_runner.cancel_job(job_id)
+        asyncio.run(app.state.public_event_notifier.notify())
+        return {
+            "job_id": job_id,
+            "status": "cancelled",
+            "process": process_result,
+        }
+
     @app.get(
         "/v1/v2/jobs/{job_id}/events/snapshot",
         include_in_schema=False,
@@ -6099,6 +6150,17 @@ def _append_v2_event(
         message=_bounded_event_text(str(redact_public_data(message))),
         payload=redacted_payload if isinstance(redacted_payload, dict) else {},
     )
+
+
+def _v2_cancel_terminal_status(events: tuple[Any, ...]) -> str | None:
+    for event in reversed(events):
+        if event.type == "migration_cancelled" or event.status == "cancelled":
+            return "already_cancelled"
+        if event.type in {"migration_completed", "job_completed"}:
+            return "already_completed"
+        if event.type == "stage_failed" or event.status == "failed":
+            return "already_failed"
+    return None
 
 
 def _emit_v2_stage1_uat_events(uow: Any, *, job_id: str, command_id: str) -> None:
@@ -11974,6 +12036,7 @@ def _argv_value(argv: list[Any], option: str) -> str:
 
 _PIPELINE_PHASES = (
     ("preflight", "Preflight", {"job_created", "stage_queued"}),
+    ("cancellation", "Cancellation", {"migration_cancelling", "stage_cancelled", "migration_cancelled"}),
     ("analysis", "Analysis Agent", {"analysis_started", "analysis_completed", "analysis_failed"}),
     ("planning", "Planning Agent", {"planning_started", "planning_completed", "planning_failed"}),
     ("assessment", "Assessment Agent", {"assessment_started", "assessment_completed", "assessment_failed"}),
@@ -12011,6 +12074,9 @@ _IMPORTANT_EVENT_TYPES = {
     "proof_updated",
     "stage_failed",
     "stage_completed",
+    "stage_cancelled",
+    "migration_cancelling",
+    "migration_cancelled",
     "model_invocation_started",
     "model_invocation_completed",
     "model_invocation_failed",
@@ -12041,7 +12107,7 @@ def _active_stage_index(events: tuple[Any, ...]) -> int:
     candidates = [
         e for e in events
         if e.stage and e.type in {
-            "stage_failed", "stage_started", "resume_started",
+            "stage_failed", "stage_cancelled", "stage_started", "resume_started",
             "sandbox_transform_started", "build_started", "test_started",
             "approval_required", "stage_blocked_for_approval",
             "resume_rejected",
@@ -12165,6 +12231,8 @@ def _pipeline_row_status(key: str, events: list[Any]) -> str:
             return "blocked"
         return "pending"
     latest = events[-1]
+    if latest.status == "cancelled":
+        return "cancelled"
     if latest.status == "blocked":
         return "blocked"
     if latest.status == "running" or latest.type.endswith("_started"):
@@ -12859,6 +12927,8 @@ def _stage_status_from_event(event_type: str, event_status: str) -> str:
     This is an *input* to the chronological reducer; the label alone does
     NOT determine the final stage status (see ``_reduce_stage_status``).
     """
+    if event_type == "stage_cancelled" or event_status == "cancelled":
+        return "cancelled"
     if event_type == "stage_failed" or event_status == "failed":
         return "failed"
     if event_type == "stage_completed":
@@ -12902,6 +12972,10 @@ def _transition_stage_status(current: str, mapped: str) -> str:
     * queued         → applies only if not already past it
     * pending        → no change
     """
+    if current == "cancelled":
+        return "cancelled"
+    if mapped == "cancelled":
+        return "cancelled"
     if mapped == "failed":
         return "failed"
     if mapped == "completed":
