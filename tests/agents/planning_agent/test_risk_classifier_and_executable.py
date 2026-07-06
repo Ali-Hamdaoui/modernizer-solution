@@ -129,3 +129,59 @@ def test_deterministic_blocker_sets_migration_plan_executable_false(tmp_path) ->
 
     payload = yaml.safe_load(plan_path.read_text(encoding="utf-8"))
     assert payload["executable"] is False
+
+
+def _loaded_with_openrewrite_impact(impact: str) -> LoadedAnalysisArtifacts:
+    return LoadedAnalysisArtifacts(
+        required={
+            "analysis_report.json": {"status": "PASS"},
+            "dependency_graph.json": {},
+            "test_inventory.json": {},
+            "analysis_summary.md": "analysis ok\n",
+        },
+        optional={
+            "rewrite_impact_summary.json": {
+                "overall_impact": impact,
+                "requires_manual_review": impact == "HIGH",
+                "blocked_reasons": ["Recipe cannot be selected safely."]
+                if impact == "BLOCKED"
+                else [],
+            }
+        },
+        errors=[],
+        ok=True,
+    )
+
+
+def _find_openrewrite_risk(result, impact: str):
+    expected_code = f"OPENREWRITE_IMPACT_{impact}"
+    return next((risk for risk in result.risks if risk.code == expected_code), None)
+
+
+def test_openrewrite_impact_blocked_is_nonfatal_for_java21_runtime_validation_route() -> None:
+    result = classify_planning_risks(
+        _loaded_with_openrewrite_impact("BLOCKED"),
+        StackFingerprint(build_tool="maven", java="17", spring_boot="3.5.14"),
+        profile_id="springboot-3.5-java17-to-java21",
+        migration_units=("baseline", "java-21-runtime-validation"),
+    )
+
+    risk = _find_openrewrite_risk(result, "BLOCKED")
+    assert risk is not None
+    assert risk.severity == "WARNING"
+    assert "runtime-validation route" in risk.message
+    assert result.ok is True
+
+
+def test_openrewrite_impact_blocked_remains_fatal_for_boot_migration_route() -> None:
+    result = classify_planning_risks(
+        _loaded_with_openrewrite_impact("BLOCKED"),
+        StackFingerprint(build_tool="maven", java="11", spring_boot="2.7"),
+        profile_id="springboot-2.7-to-3.5-java17",
+        migration_units=("baseline", "java-17", "spring-boot-3-5-14", "jakarta"),
+    )
+
+    risk = _find_openrewrite_risk(result, "BLOCKED")
+    assert risk is not None
+    assert risk.severity == "BLOCKER"
+    assert result.ok is False

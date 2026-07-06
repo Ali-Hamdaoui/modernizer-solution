@@ -47,8 +47,8 @@ class StageCommandManifest(CommandManifest):
 
     Extends the base CommandManifest with stage-scoped references that are
     hashed into the manifest_checksum: the stage ledger entry, the JDK
-    configuration, the runner profile, the pipeline catalog, the sandbox
-    workspace, and the backend-owned argv/env payload.
+    configuration, the runner profile, the pipeline catalog, the route-step
+    projection, the sandbox workspace, and the backend-owned argv/env payload.
 
     All argv and env values are backend-owned. The browser never chooses
     raw paths, Maven goals, shell commands, working directories, or model
@@ -68,10 +68,19 @@ class StageCommandManifest(CommandManifest):
     stage_index: int
     stage_id: str
     profile_id: str
-    command_jdk: str
-    sandbox_root_id: str
-    sandbox_relative_path: str
+    route_step_index: int = 1
+    source_profile: str = ""
+    target_profile: str = ""
+    runtime_profile: str = ""
+    catalog: str = ""
+    command_jdk: str = ""
+    execution_jdk: str = ""
+    sandbox_root_id: str = ""
+    sandbox_relative_path: str = ""
     catalog_checksum: str | None = None
+    approval_gate_id: str = ""
+    artifact_refs: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = ()
     argv: tuple[str, ...] = ()
     env: dict[str, str] = Field(default_factory=dict)
 
@@ -123,7 +132,9 @@ def compute_stage_manifest_checksum(manifest: StageCommandManifest) -> str:
     - stage references: ledger_id, ledger_input_checksum, ledger_checksum_guard
     - JDK config: jdk_id, jdk_java_home, jdk_expected_major
     - profile/pipeline: runner_profile_display_name, pipeline_id, pipeline_version
-    - stage metadata: stage_index, stage_id, profile_id, command_jdk
+    - stage metadata: stage_index, stage_id, profile_id, route_step_index,
+      source_profile, target_profile, runtime_profile, catalog, command_jdk,
+      execution_jdk, approval_gate_id, artifact_refs, evidence_refs
     - sandbox workspace: sandbox_root_id, sandbox_relative_path
     - catalog: catalog_checksum
     - backend-owned argv and env

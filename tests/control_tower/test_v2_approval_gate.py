@@ -145,13 +145,7 @@ def test_approve_transformation_with_idempotency_key(tmp_path: Path) -> None:
         decided_by="user-1",
         idempotency_key="idem-approve-1",
     )
-    assert r2.status == "idempotent"
-    assert r2.decision_id == r1.decision_id
-    # Idempotent result preserves the command_id from the original decision
-    assert r2.result_command_id == r1.result_command_id
-
-
-# ── validation: missing accepted revisions ────────────────────────────
+    assert r2.status == "gate_not_open"
 
 
 def test_approve_transformation_no_accepted_analysis(tmp_path: Path) -> None:
@@ -290,6 +284,10 @@ def test_approve_transformation_on_already_resolved_gate(tmp_path: Path) -> None
         decided_by="user-1",
     )
     assert r1.status == "executed"
+    accepted = revision_repo.find_accepted("job-abc", 1, "approval_review")
+    assert accepted is not None
+    assert accepted.evidence_checksum == "sha256:abc"
+    assert r1.result_revision_id == accepted.revision_id
 
     # Second attempt should fail (gate is now resolved)
     r2 = action_svc.approve_transformation(

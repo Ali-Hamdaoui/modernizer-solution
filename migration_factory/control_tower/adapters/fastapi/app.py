@@ -20,7 +20,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from pathlib import Path, PureWindowsPath
 
@@ -113,6 +113,8 @@ from migration_factory.control_tower.infrastructure.singleton import (
     controller_resource_path_from_unit_of_work_factory,
     create_controller_ownership,
 )
+from migration_factory.control_tower.schemas.profile_model import MigrationProfileId
+from migration_factory.control_tower.schemas.profile_validation import validate_profile_pair
 from migration_factory.control_tower.schemas.run_configuration import RunPolicy
 from migration_factory.control_tower.schemas.run_configuration import StageContinuationPolicy
 from migration_factory.control_tower.application.env_parser import (
@@ -145,6 +147,7 @@ from migration_factory.control_tower.application.v2_approval_mapping import (
 )
 from migration_factory.control_tower.application.v2_stage_progression import (
     V2StageProgressionService,
+    route_to_dict,
 )
 from migration_factory.control_tower.application.v2_assistant_service import (
     V2AssistantService,
@@ -180,15 +183,28 @@ from migration_factory.control_tower.application.v2_repair_gate_service import (
 from migration_factory.control_tower.application.v2_reviewer_service import (
     V2ReviewerService,
 )
+from migration_factory.control_tower.application.v2_repair_projection import (
+    build_reviewed_diff_proposal_from_record,
+    record_to_attempt_summary,
+    reviewed_diff_proposal_to_safe_dict,
+)
+from migration_factory.control_tower.application.safe_diff_preview import (
+    build_safe_diff_preview,
+    safe_diff_preview_to_dict,
+)
 from migration_factory.control_tower.application.v2_failure_diagnosis import (
     V2FailureDiagnosisService,
 )
 from migration_factory.control_tower.application.v2_gate_action_service import (
     V2GateActionService,
+    persist_approved_approval_review_revision,
 )
 from migration_factory.control_tower.application.v2_gate_artifact_resolver import (
     V2GateArtifactResolver,
 )
+from migration_factory.repair_loop.patch_gate import evaluate_patch_proposal, extract_touched_paths
+from migration_factory.repair_loop.patch_apply import apply_patch_to_sandbox, rollback_patch
+from migration_factory.repair_loop.validation_runner import ValidationResult, run_validation_after_patch
 from migration_factory.control_tower.application.v2_evidence_pack_builder import (
     EvidencePackBuilder,
     evidence_pack_to_dict,
@@ -208,6 +224,11 @@ from migration_factory.control_tower.application.v2_orchestrator_runner import (
     V2OrchestratorRunner,
     V2OrchestratorStart,
     _bounded,
+)
+from migration_factory.control_tower.application.v2_profile_runtime import (
+    RouteRuntimeProfileUnavailableError,
+    public_runtime_profile_error_message,
+    resolve_runtime_profile_for_route,
 )
 from migration_factory.control_tower.application.v2_failure_diagnosis import (
     create_orchestrator_diagnosis_callback,
@@ -237,7 +258,7 @@ from migration_factory.control_tower.adapters.fastapi.security import (
     redact_public_data,
 )
 from migration_factory.control_tower.application.redaction import redact_model_summary
-from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.domain.checksums import sha256_hex, utc_now_text
 from migration_factory.control_tower.domain.gate_checksum import gate_checksum
 from migration_factory.control_tower.schemas.phase_gate import (
     GateActorType,
@@ -382,6 +403,16 @@ class StartJobRequest(StrictRequest):
     pass
 
 
+class GenerateReportRequest(StrictRequest):
+    """Strict request model for report generation.
+
+    Only allows approved idempotency metadata.
+    Extra fields (path, command, env, argv, stage, profile,
+    sandbox, report_root, filesystem_target) are rejected.
+    """
+    pass
+
+
 class LaunchWorkerRequest(StrictRequest):
     command_id: str
 
@@ -517,7 +548,16 @@ class PreflightRequest(BaseModel):
 class CreateV2JobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     setup_id: str
+    source_profile: MigrationProfileId | None = None
+    target_profile: MigrationProfileId | None = None
     policy: RunPolicy | None = None
+
+    @model_validator(mode="after")
+    def _validate_profile_pair(self) -> "CreateV2JobRequest":
+        validation = validate_profile_pair(self.source_profile, self.target_profile)
+        if not validation.valid:
+            raise ValueError(f"invalid profile pair: {validation.reason}")
+        return self
 
 
 class StartV2JobRequest(BaseModel):
@@ -543,6 +583,12 @@ class GateActionRequest(BaseModel):
     proposal_checksum: str | None = None
     context_pack_checksum: str | None = None
     user_feedback: str = ""
+    detection_artifact_ref: str | None = None
+    detected_source_profile: MigrationProfileId | None = None
+    requested_source_profile: MigrationProfileId | None = None
+    target_profile: MigrationProfileId | None = None
+    expected_detection_artifact_checksum: str | None = None
+    comments: str = ""
 
 
 # F07 reviewer request — context only, no decision from client
@@ -561,7 +607,6 @@ class StageProgressRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     setup_id: str
     current_stage: int
-    sandbox_path: str | None = None
 
 
 class AssistantMessageRequest(BaseModel):
@@ -635,6 +680,100 @@ class ApplyRepairReviewContextRequest(BaseModel):
     expected_sandbox_checksum: str = Field(min_length=1)
     expected_legacy_checksum: str = Field(min_length=1)
     idempotency_key: str | None = None
+
+
+# ── PR-D: User revision request for reviewed repair proposals ─────────
+
+
+class RepairProposalRevisionRequest(BaseModel):
+    """PR-D revision request — accepts only checksums and instruction text.
+
+    No raw patch, path, env, argv, or sandbox fields are accepted.
+    """
+    model_config = ConfigDict(extra="forbid")
+    user_instruction: str = Field(min_length=1, max_length=4000)
+    previous_diff_checksum: str = Field(min_length=1)
+    previous_reviewer_verdict_id: str = Field(min_length=1)
+    expected_gate_checksum: str | None = None
+    idempotency_key: str | None = None
+
+
+# ── PR-E: Approve reviewed repair sandbox apply ──────────────────────
+
+
+class RepairProposalApproveRequest(BaseModel):
+    """PR-E approve request — accepts only IDs and checksums.
+
+    No raw patch, path, env, argv, command, or sandbox fields accepted.
+    Frontend sends IDs/checksums only. Backend reloads all state server-side.
+
+    expected_gate_checksum is optional (None = skip check) so the
+    frontend is not required to compute server-side gate checksums.
+    When provided, it MUST match the persisted gate checksum.
+    """
+    model_config = ConfigDict(extra="forbid")
+    proposal_id: str = Field(min_length=1)
+    diff_checksum: str = Field(min_length=1)
+    reviewer_verdict_id: str = Field(min_length=1)
+    gate_id: str = Field(min_length=1)
+    expected_gate_checksum: str | None = None
+    idempotency_key: str | None = None
+
+
+class RepairProposalApproveResponse(BaseModel):
+    """Safe projection of a repair proposal approve+apply result.
+
+    No raw patch, path, env, argv, command, or secrets.
+    """
+    model_config = ConfigDict(extra="forbid")
+    job_id: str
+    proposal_id: str
+    status: str
+    apply_status: str = ""
+    rerun_status: str = ""
+    next_gate_id: str = ""
+    next_gate_status: str = ""
+    rollback_status: str = ""
+    remaining_attempts: int = 0
+    allowed_next_actions: tuple[str, ...] = ()
+
+
+# ── F5 Reviewed repair approval (checksum-only, no raw diff/patch) ────
+
+
+class ReviewedRepairApprovalRequest(BaseModel):
+    """F5 reviewed repair approval — accepts only checksums, never raw diff/patch."""
+    model_config = ConfigDict(extra="forbid")
+    expected_gate_checksum: str
+    proposal_checksum: str
+    context_pack_checksum: str
+    reviewer_output_checksum: str
+    final_reviewed_diff_checksum: str
+    policy_validation_checksum: str
+    base_repo_state_checksum: str
+    decided_by: str = Field(min_length=1)
+    final_reviewed_artifact_checksum: str = ""
+    repair_revision_id: str = ""
+    repair_revision_checksum: str = ""
+    idempotency_key: str | None = None
+    comments: str = ""
+
+
+class ReviewedRepairApprovalResponse(BaseModel):
+    """Safe projection of a reviewed repair approval + apply result."""
+    model_config = ConfigDict(extra="forbid")
+    gate_id: str
+    job_id: str
+    decision_id: str
+    gate_status: str
+    apply_status: str = ""
+    rerun_status: str = ""
+    proof_artifact_ref: str = ""
+    proof_artifact_checksum: str = ""
+    rollback_status: str = ""
+    result_revision_id: str = ""
+    allowed_next_actions: tuple[str, ...] = ()
+    artifact_refs: dict[str, str] = Field(default_factory=dict)
 
 
 # ── F14 POM dependency editor request schemas ──────────────────────────
@@ -1292,7 +1431,12 @@ def create_app(
                 pipeline_repo=uow.pipeline_definitions,
             )
             try:
-                result = service.create_job(payload.setup_id, policy=payload.policy)
+                result = service.create_job(
+                    payload.setup_id,
+                    policy=payload.policy,
+                    source_profile=payload.source_profile,
+                    target_profile=payload.target_profile,
+                )
             except ValueError as exc:
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
@@ -1404,6 +1548,8 @@ def create_app(
             service = V2WorkerStageService(
                 setup_repo=uow.v2_setups,
                 command_repo=uow.v2_commands,
+                job_repo=uow.v2_jobs,
+                run_config_repo=uow.run_configurations,
             )
             try:
                 result = service.build_stage1_manifest(
@@ -1411,10 +1557,23 @@ def create_app(
                     setup_id=payload.setup_id,
                 )
             except ValueError as exc:
+                if isinstance(exc, RouteRuntimeProfileUnavailableError):
+                    message = public_runtime_profile_error_message(exc)
+                    _append_v2_event(
+                        uow,
+                        job_id=payload.job_id,
+                        stage=1,
+                        event_type="stage_failed",
+                        status="blocked",
+                        message=message,
+                        payload={"setup_id": payload.setup_id},
+                    )
+                else:
+                    message = str(exc)
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
                     "STAGE1_START_FAILED",
-                    str(exc),
+                    message,
                 ) from exc
             _append_v2_event(
                 uow,
@@ -1725,7 +1884,25 @@ def create_app(
 
         actor_type = payload.actor_type.value if hasattr(payload.actor_type, "value") else str(payload.actor_type)
         action_value = payload.action.value if hasattr(payload.action, "value") else str(payload.action)
-        if action_value == GateDecision.CONTINUE.value:
+        if action_value == GateDecision.OVERRIDE_SOURCE_PROFILE.value:
+            result = action_service.override_source_profile(
+                gate_id=gate_id,
+                job_id=job_id,
+                detection_artifact_ref=payload.detection_artifact_ref or "",
+                detected_source_profile=payload.detected_source_profile or "",
+                requested_source_profile=payload.requested_source_profile or "",
+                target_profile=payload.target_profile or "",
+                expected_gate_checksum=payload.expected_gate_checksum,
+                expected_detection_artifact_checksum=(
+                    payload.expected_detection_artifact_checksum or ""
+                ),
+                reason=payload.reason,
+                comments=payload.comments,
+                decided_by=payload.decided_by,
+                actor_type=actor_type,
+                idempotency_key=payload.idempotency_key,
+            )
+        elif action_value == GateDecision.CONTINUE.value:
             result = action_service.continue_from_gate(
                 gate_id=gate_id,
                 job_id=job_id,
@@ -1745,6 +1922,12 @@ def create_app(
             )
         elif action_value == GateDecision.REVISE.value:
             if gate.gate_phase == GatePhase.REPAIR_REVIEW.value:
+                revision_context = _resolve_reviewed_repair_runtime_context(
+                    uow=uow,
+                    job_id=job_id,
+                    gate=gate,
+                    proposal_id=payload.proposal_id or "",
+                )
                 result = repair_gate_service.request_repair_revision(
                     gate_id=gate_id,
                     job_id=job_id,
@@ -1753,6 +1936,20 @@ def create_app(
                     user_feedback=payload.user_feedback,
                     idempotency_key=payload.idempotency_key,
                     expected_gate_checksum=payload.expected_gate_checksum,
+                    command_id="" if revision_context is None else revision_context["command_id"],
+                    model_client=app.state.v2_assistant_model_client,
+                    prior_apply_rerun_info=None if revision_context is None else revision_context["prior_apply_rerun_info"],
+                    source_profile="" if revision_context is None else revision_context["source_profile"],
+                    target_profile="" if revision_context is None else revision_context["target_profile"],
+                    sandbox_path="" if revision_context is None else revision_context["sandbox_path"],
+                    run_dir="" if revision_context is None else revision_context["run_dir"],
+                    legacy_path="" if revision_context is None else revision_context["legacy_path"],
+                    deterministic_rule_id="" if revision_context is None else revision_context["deterministic_rule_id"],
+                    previous_repair_review_checksums=()
+                    if revision_context is None
+                    else revision_context["previous_repair_review_checksums"],
+                    cycle_number=1 if revision_context is None else revision_context["cycle_number"],
+                    h2_required=bool(revision_context and revision_context["h2_required"]),
                 )
             else:
                 result = action_service.request_plan_revision(
@@ -1788,6 +1985,19 @@ def create_app(
                         )
                         is not None
                     )
+                profile_metadata: dict[str, Any] | None = None
+                if gate.gate_phase == GatePhase.APPROVAL_REVIEW.value:
+                    profile_metadata = _approval_review_profile_metadata_for_resume(
+                        uow,
+                        job_id=job_id,
+                        stage_index=gate.stage_index,
+                    )
+                    if profile_metadata is None:
+                        raise _error(
+                            status.HTTP_400_BAD_REQUEST,
+                            "APPROVAL_FAILED",
+                            "checkpoint_profile_metadata_missing",
+                        )
                 result = action_service.approve_transformation(
                     gate_id=gate_id,
                     job_id=job_id,
@@ -1796,6 +2006,7 @@ def create_app(
                     expected_gate_checksum=payload.expected_gate_checksum,
                     actor_type=actor_type,
                     revision_requested_active=revision_requested_active,
+                    profile_metadata=profile_metadata,
                 )
         elif action_value == GateDecision.REJECT.value:
             if gate.gate_phase == GatePhase.REPAIR_REVIEW.value:
@@ -1837,7 +2048,7 @@ def create_app(
                 "STALE_GATE_CHECKSUM",
                 result.reason or "Gate checksum is stale.",
             )
-        if result.status in {"actor_not_authoritative", "invalid_decision", "gate_not_open", "gate_not_found", "command_conflict", "approval_failed", "no_repair_service", "no_action_service"}:
+        if result.status not in {"executed", "idempotent"}:
             raise _error(
                 http_status_for_gate_status(result.status),
                 result.status.upper(),
@@ -1914,6 +2125,157 @@ def create_app(
             _require_v2_job(uow, job_id)
             return _v2_gate_action_response(uow, job_id=job_id, gate_id=gate_id, payload=payload)
 
+    # ── F5: Reviewed repair approval + exact reviewed diff apply ─────────
+
+    @app.post("/v1/v2/jobs/{job_id}/gates/{gate_id}/approve-reviewed-repair")
+    def approve_reviewed_repair(
+        job_id: str,
+        gate_id: str,
+        payload: ReviewedRepairApprovalRequest,
+    ) -> dict[str, Any]:
+        """Approve a reviewed repair gate and apply the exact reviewed diff.
+
+        Accepts only checksums and artifact refs. Rejects raw diff content,
+        patch bodies, paths, commands, and env data.
+
+        Flow:
+        1. Validate all checksum bindings via V2GateActionService.approve_repair
+        2. Load and validate the reviewed diff artifact
+        3. Apply the exact reviewed diff via V2RepairFlowService
+        4. Return safe projection with apply/rerun/proof status
+        """
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+
+            gate_service = V2PhaseGateService(uow.phase_gates)
+            reviewer_service = V2ReviewerService(reviewer_repo=uow.v2_reviewer)
+            repair_flow = V2RepairFlowService(
+                repair_repo=uow.v2_repairs,
+                reviewer_service=reviewer_service,
+            )
+            action_service = V2GateActionService(
+                uow.phase_gates,
+                uow.gate_decisions,
+                gate_service,
+                revision_repo=uow.artifact_revisions,
+                repair_service=repair_flow,
+            )
+            repair_gate_service = V2RepairGateService(
+                gate_service=gate_service,
+                gate_action_service=action_service,
+                repair_flow=repair_flow,
+            )
+
+            gate = uow.phase_gates.get(gate_id)
+            if gate is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "GATE_NOT_FOUND",
+                    f"Gate {gate_id!r} not found.",
+                )
+            if gate.job_id != job_id:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "GATE_JOB_MISMATCH",
+                    "Gate job does not match the requested job.",
+                )
+            if gate.gate_status != "open":
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "GATE_NOT_OPEN",
+                    f"Gate is {gate.gate_status}",
+                )
+
+            gate_phase = getattr(gate, "gate_phase", "")
+            if str(gate_phase) != "repair_review":
+                raise _error(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "WRONG_GATE_PHASE",
+                    f"Gate phase must be repair_review, not {gate_phase}",
+                )
+
+            # Step 1: Approve the repair via the full checksum-bound service path
+            approval_result = repair_gate_service.approve_repair(
+                gate_id=gate_id,
+                job_id=job_id,
+                decided_by=payload.decided_by,
+                proposal_id=payload.repair_revision_id or gate_id,
+                proposal_checksum=payload.proposal_checksum,
+                context_pack_checksum=payload.context_pack_checksum,
+                reviewer_output_checksum=payload.reviewer_output_checksum,
+                final_reviewed_diff_checksum=payload.final_reviewed_diff_checksum,
+                policy_validation_checksum=payload.policy_validation_checksum,
+                base_repo_state_checksum=payload.base_repo_state_checksum,
+                final_reviewed_artifact_checksum=payload.final_reviewed_artifact_checksum,
+                repair_revision_id=payload.repair_revision_id,
+                repair_revision_checksum=payload.repair_revision_checksum,
+                idempotency_key=payload.idempotency_key,
+                expected_gate_checksum=payload.expected_gate_checksum,
+                actor_type="human",
+            )
+
+            if approval_result.status not in ("executed", "idempotent"):
+                raise _error(
+                    http_status_for_gate_status(approval_result.status),
+                    approval_result.status.upper(),
+                    approval_result.reason or approval_result.status,
+                )
+
+            apply_projection: dict[str, Any] = {}
+            apply_context = _resolve_reviewed_repair_runtime_context(
+                uow=uow,
+                job_id=job_id,
+                gate=gate,
+                proposal_id=payload.repair_revision_id or gate_id,
+            )
+            if apply_context is not None:
+                try:
+                    apply_action = repair_flow.apply_reviewed_repair_diff(
+                        proposal_id=apply_context["proposal_id"],
+                        final_diff_ref=apply_context["final_diff_ref"],
+                        final_diff_checksum=payload.final_reviewed_diff_checksum,
+                        reviewer_output_checksum=payload.reviewer_output_checksum,
+                        expected_reviewer_output_checksum=apply_context["reviewer_output_checksum"],
+                        policy_validation_checksum=payload.policy_validation_checksum,
+                        expected_policy_validation_checksum=apply_context["policy_validation_checksum"],
+                        policy_status=apply_context["policy_status"],
+                        expected_base_repo_state_checksum=payload.base_repo_state_checksum,
+                        current_base_repo_state_checksum=apply_context["base_repo_state_checksum"],
+                        target_path=apply_context["target_path"],
+                        run_dir=apply_context["run_dir"],
+                        sandbox_path=apply_context["sandbox_path"],
+                        legacy_path=apply_context["legacy_path"],
+                        deterministic_rule_id=apply_context["deterministic_rule_id"],
+                        risk=apply_context["risk"],
+                        expected_validation=apply_context["expected_validation"],
+                        h2_required=apply_context["h2_required"],
+                    )
+                except ValueError as exc:
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "REVIEWED_REPAIR_APPLY_FAILED",
+                        str(exc),
+                    ) from exc
+                apply_projection = _reviewed_repair_apply_projection(
+                    run_dir=apply_context["run_dir"],
+                    apply_action=apply_action,
+                )
+
+            return {
+                "result": {
+                    "decision_id": approval_result.decision_id,
+                    "gate_id": approval_result.gate_id,
+                    "job_id": job_id,
+                    "action": approval_result.action,
+                    "status": approval_result.status,
+                    "result_gate_id": approval_result.result_gate_id,
+                    "result_revision_id": approval_result.result_revision_id,
+                    "reason": approval_result.reason,
+                    **apply_projection,
+                },
+                "next_actions": ["apply_reviewed_diff"],
+            }
+
     @app.get("/v1/v2/jobs/{job_id}/artifacts/{artifact_kind}")
     def get_v2_job_artifact_preview(
         job_id: str,
@@ -1930,7 +2292,7 @@ def create_app(
         """
         safe_kinds = {
             "phase2_log", "post_transform_test_log", "failure_classification",
-            "repair_plan", "deterministic_repair_plan", "copilot_repair_response",
+            "repair_plan", "deterministic_repair_plan",
             "dependency_policy_report", "dependency_policy_summary",
             "dependency_repair_plan", "orchestration_summary",
             "target_dependency_plan", "rewrite_dry_run.patch",
@@ -2149,6 +2511,7 @@ def create_app(
         """
         launch_result: V2OrchestratorStart | None = None
         launch_status: str | None = None
+        should_launch_resume = False
         with unit_of_work_factory() as uow:
             _require_v2_job(uow, job_id)
             card = uow.v2_approvals.get_card(card_id)
@@ -2178,13 +2541,59 @@ def create_app(
                         job_id=job_id,
                         resume_id=resume.resume_id,
                     )
+                should_launch_resume = is_new_approve and bool(resume.resume_id)
+                if should_launch_resume and resume.resume_id:
+                    approval_gate = _approval_review_gate_for_checksum(
+                        uow,
+                        job_id=job_id,
+                        stage_index=resume.stage_index,
+                        gate_checksum_value=card.request_checksum,
+                    )
+                    if approval_gate is not None:
+                        profile_metadata = _approval_review_profile_metadata_for_resume(
+                            uow,
+                            job_id=job_id,
+                            stage_index=resume.stage_index,
+                        )
+                        if profile_metadata is None:
+                            raise _error(
+                                status.HTTP_400_BAD_REQUEST,
+                                "APPROVAL_FAILED",
+                                "checkpoint_profile_metadata_missing",
+                            )
+                        persist_approved_approval_review_revision(
+                            gate=approval_gate,
+                            revision_repo=uow.artifact_revisions,
+                            decided_by="human",
+                            profile_metadata=profile_metadata,
+                        )
+                        # Resolve the approval_review phase gate so GET /gates/open
+                        # advances to the next pending stage. This mirrors the
+                        # assistant `confirm checksum` path (approve_from_gate).
+                        # Without it the gate stays open and permanently shadows
+                        # later pending stages in the open-gate slot, which is why
+                        # later-stage Approve buttons stopped appearing.
+                        action_service = V2GateActionService(
+                            uow.phase_gates,
+                            uow.gate_decisions,
+                            V2PhaseGateService(uow.phase_gates),
+                            revision_repo=uow.artifact_revisions,
+                            command_repo=uow.v2_commands,
+                        )
+                        action_service.approve_from_gate(
+                            gate_id=approval_gate.gate_id,
+                            job_id=job_id,
+                            decided_by="human",
+                            expected_gate_checksum=card.request_checksum,
+                            profile_metadata=profile_metadata,
+                        )
             except ValueError as exc:
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
                     "APPROVAL_FAILED",
                     str(exc),
                 ) from exc
-        if is_new_approve and resume.resume_id:
+        if should_launch_resume and resume.resume_id:
             launch_result = _start_resume_command(
                 app,
                 job_id=job_id,
@@ -2202,23 +2611,25 @@ def create_app(
                 else "Approval accepted; backend-owned resume command queued."
             )
             with unit_of_work_factory() as event_uow:
-                _append_v2_event(
-                    event_uow,
-                    job_id=job_id,
-                    stage=resume.stage_index,
-                    event_type="approval_resume_queued",
-                    status="retrying" if launch_status_value == "retrying" else "queued",
-                    message=(
-                        "Approval accepted; backend-owned resume command is retrying."
-                        if launch_status_value == "retrying"
-                        else "Approval accepted; backend-owned resume command queued."
-                    ),
-                    payload={
-                        "card_id": card_id,
-                        "resume_id": resume.resume_id,
-                        "resume_status": launch_status_value,
-                    },
-                )
+                if launch_status_value != "rejected":
+                    message = "Approval accepted; backend-owned resume command queued."
+                    if launch_status_value == "retrying":
+                        message = "Approval accepted; backend-owned resume command is retrying."
+                    elif launch_status_value == "started":
+                        message = "Approval accepted; backend-owned resume command started."
+                    _append_v2_event(
+                        event_uow,
+                        job_id=job_id,
+                        stage=resume.stage_index,
+                        event_type="approval_resume_queued",
+                        status=launch_status_value,
+                        message=message,
+                        payload={
+                            "card_id": card_id,
+                            "resume_id": resume.resume_id,
+                            "resume_status": launch_status_value,
+                        },
+                    )
         asyncio.run(app.state.public_event_notifier.notify())
         response = service.resume_to_dict(resume)
         response["launch_status"] = (
@@ -2938,6 +3349,14 @@ def create_app(
         payload: CreateRepairProposalRequest,
     ) -> dict[str, Any]:
         """Create a repair proposal from failed command evidence."""
+        raise _error(
+            status.HTTP_410_GONE,
+            "LEGACY_REPAIR_PROPOSAL_DISABLED",
+            (
+                "Legacy repair flow proposals are disabled for F5. "
+                "Use the reviewed Azure repair chain to create authoritative repair gates."
+            ),
+        )
         repair_data = {
             "failure_hypothesis": payload.hypothesis,
             "patch_summary": payload.patch_summary,
@@ -3574,16 +3993,15 @@ def create_app(
         proposal_id: str,
         payload: ApproveRepairProposalRequest,
     ) -> dict[str, Any]:
-        """Approve a repair proposal with checksum.
-
-        F07: Requires proposal_checksum and context_pack_checksum.
-        Fails closed unless a latest accepted reviewer critique matches
-        both current checksums.
-        """
+        """Fail closed: legacy proposal approval is not F5 authoritative."""
         raise _error(
-            status.HTTP_409_CONFLICT,
-            "REPAIR_APPROVE_APPLY_DISABLED",
-            "Combined approve+apply route is disabled. Prepare apply context and record approval-only first.",
+            status.HTTP_410_GONE,
+            "LEGACY_REPAIR_APPROVAL_DISABLED",
+            (
+                "Legacy repair proposal approval cannot apply F5 repairs. "
+                "Use reviewed repair gates with checksum-bound reviewed diff artifacts. "
+                "REPAIR_APPROVE_APPLY_DISABLED: combined approve+apply route is disabled."
+            ),
         )
 
     # ------------------------------------------------------------------
@@ -3856,56 +4274,807 @@ def create_app(
             )
         return service.critique_to_dict(critique)
 
+    # ── PR-B: Reviewed-diff proposal read APIs ─────────────────────────
+
+    @app.get("/v1/v2/jobs/{job_id}/repair/proposals/current")
+    def get_current_repair_proposal(job_id: str) -> dict[str, Any]:
+        """Return the current (latest user-reviewable) repair proposal for a job.
+
+        Safe read-only projection. No raw patch, path, or env data.
+        """
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            record = uow.v2_repairs.get_current_proposal_for_job(job_id)
+            if record is None:
+                return {"proposal": None, "job_id": job_id}
+            if getattr(record, "diff_ref", None) is not None:
+                try:
+                    projection = build_reviewed_diff_proposal_from_record(
+                        proposal_id=record.proposal_id,
+                        status=record.status,
+                        failure_summary=record.failure_summary,
+                        job_id=getattr(record, "job_id", None) or job_id,
+                        command_id=record.command_id,
+                        gate_id=getattr(record, "gate_id", None),
+                        route_step_index=getattr(record, "route_step_index", None),
+                        attempt_number=getattr(record, "attempt_number", None),
+                        revision_number=getattr(record, "revision_number", None),
+                        diagnosis_ref=getattr(record, "diagnosis_ref", None),
+                        repair_plan_ref=getattr(record, "repair_plan_ref", None),
+                        diff_ref=getattr(record, "diff_ref", None),
+                        diff_checksum=getattr(record, "diff_checksum", None),
+                        reviewer_verdict_id=getattr(record, "reviewer_verdict_id", None),
+                        reviewer_output_checksum=getattr(record, "reviewer_output_checksum", None),
+                        policy_validation_checksum=getattr(record, "policy_validation_checksum", None),
+                    )
+                    return {
+                        "proposal": reviewed_diff_proposal_to_safe_dict(projection),
+                        "job_id": job_id,
+                    }
+                except (ValueError, OSError):
+                    pass
+            return {"proposal": None, "job_id": job_id}
+
+    @app.get("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}")
+    def get_repair_proposal(
+        job_id: str,
+        proposal_id: str,
+    ) -> dict[str, Any]:
+        """Return a specific repair proposal for a job.
+
+        Validates job/proposal ownership. Safe read-only projection.
+        """
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            record = uow.v2_repairs.get_proposal_for_job(job_id, proposal_id)
+            if record is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "PROPOSAL_NOT_FOUND",
+                    f"Proposal {proposal_id!r} not found for job {job_id!r}.",
+                )
+            if getattr(record, "diff_ref", None) is not None:
+                try:
+                    projection = build_reviewed_diff_proposal_from_record(
+                        proposal_id=record.proposal_id,
+                        status=record.status,
+                        failure_summary=record.failure_summary,
+                        job_id=getattr(record, "job_id", None) or job_id,
+                        command_id=record.command_id,
+                        gate_id=getattr(record, "gate_id", None),
+                        route_step_index=getattr(record, "route_step_index", None),
+                        attempt_number=getattr(record, "attempt_number", None),
+                        revision_number=getattr(record, "revision_number", None),
+                        diagnosis_ref=getattr(record, "diagnosis_ref", None),
+                        repair_plan_ref=getattr(record, "repair_plan_ref", None),
+                        diff_ref=getattr(record, "diff_ref", None),
+                        diff_checksum=getattr(record, "diff_checksum", None),
+                        reviewer_verdict_id=getattr(record, "reviewer_verdict_id", None),
+                        reviewer_output_checksum=getattr(record, "reviewer_output_checksum", None),
+                        policy_validation_checksum=getattr(record, "policy_validation_checksum", None),
+                    )
+                    return {
+                        "proposal": reviewed_diff_proposal_to_safe_dict(projection),
+                        "job_id": job_id,
+                    }
+                except (ValueError, OSError):
+                    pass
+            return {"proposal": None, "job_id": job_id}
+
+    @app.get("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/diff")
+    def get_repair_proposal_diff(
+        job_id: str,
+        proposal_id: str,
+    ) -> dict[str, Any]:
+        """Return the SafeDiffPreview for a reviewed repair proposal.
+
+        Validates proposal belongs to job. Returns safe structured diff
+        preview only — never raw patch text.
+        Checksum mismatch is reported via checksum_mismatch flag;
+        raw filesystem path is never exposed.
+        """
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            record = uow.v2_repairs.get_proposal_for_job(job_id, proposal_id)
+            if record is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "PROPOSAL_NOT_FOUND",
+                    f"Proposal {proposal_id!r} not found for job {job_id!r}.",
+                )
+            diff_ref = getattr(record, "diff_ref", None)
+            stored_checksum = getattr(record, "diff_checksum", None)
+            if not diff_ref:
+                return {"safe_diff_preview": None, "job_id": job_id, "reason": "no_diff_ref"}
+            try:
+                preview = build_safe_diff_preview(
+                    proposal_id=proposal_id,
+                    diff_ref=diff_ref,
+                    stored_diff_checksum=stored_checksum,
+                )
+                return {
+                    "safe_diff_preview": safe_diff_preview_to_dict(preview),
+                    "job_id": job_id,
+                }
+            except (ValueError, OSError):
+                return {
+                    "safe_diff_preview": None,
+                    "job_id": job_id,
+                    "reason": "could not load diff",
+                }
+
+    @app.get("/v1/v2/jobs/{job_id}/repair/attempts")
+    def list_repair_attempts(job_id: str) -> dict[str, Any]:
+        """Return attempt history for a job.
+
+        Safe summaries only — no raw patch, path, or env data.
+        """
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            records = uow.v2_repairs.list_attempts_by_job(job_id)
+            return {
+                "attempts": [record_to_attempt_summary(r) for r in records],
+                "job_id": job_id,
+            }
+
+    # ── PR-D: User revision request for reviewed repair proposals ────────
+
+    @app.post("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/revise")
+    def request_repair_proposal_revision(
+        job_id: str,
+        proposal_id: str,
+        payload: RepairProposalRevisionRequest,
+    ) -> dict[str, Any]:
+        """Request a revision of an existing reviewed repair proposal.
+
+        Validates ownership, checksums, and gate state. Creates a
+        UserRevisionRequest event, delegates to the existing revision
+        repair chain (regenerate_proposal -> review -> persist), and
+        returns the new reviewed proposal projection.
+
+        No patch is applied. No sandbox mutation. No validation rerun.
+        The old proposal remains immutable.
+        """
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            record = uow.v2_repairs.get_proposal_for_job(job_id, proposal_id)
+            if record is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "PROPOSAL_NOT_FOUND",
+                    f"Proposal {proposal_id!r} not found for job {job_id!r}.",
+                )
+            diff_ref = getattr(record, "diff_ref", None)
+            diff_checksum = getattr(record, "diff_checksum", None)
+            if not diff_ref or not diff_checksum:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "PROPOSAL_NO_DIFF",
+                    "Proposal has no diff_ref or diff_checksum.",
+                )
+            if payload.previous_diff_checksum != diff_checksum:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "STALE_DIFF_CHECKSUM",
+                    "previous_diff_checksum does not match the current proposal diff checksum.",
+                )
+            stored_verdict_id = getattr(record, "reviewer_verdict_id", None)
+            if not stored_verdict_id or payload.previous_reviewer_verdict_id != stored_verdict_id:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "STALE_REVIEWER_VERDICT",
+                    "previous_reviewer_verdict_id does not match the current proposal reviewer verdict.",
+                )
+            gate_id = getattr(record, "gate_id", None)
+            if not gate_id:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "PROPOSAL_NO_GATE",
+                    "Proposal has no gate_id.",
+                )
+            gate = uow.phase_gates.get(gate_id)
+            if gate is None or gate.job_id != job_id:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "GATE_NOT_FOUND",
+                    f"Gate {gate_id!r} not found for job {job_id!r}.",
+                )
+            if gate.gate_status != "open":
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "GATE_NOT_OPEN",
+                    f"Gate is {gate.gate_status}, not open.",
+                )
+            if payload.expected_gate_checksum:
+                actual_checksum = gate_checksum(
+                    gate_id=gate.gate_id,
+                    job_id=gate.job_id,
+                    gate_phase=gate.gate_phase,
+                    stage_index=gate.stage_index,
+                    source_artifact_checksum=gate.source_artifact_checksum,
+                    source_artifact_refs=tuple(json.loads(gate.source_artifact_refs_json or "[]")),
+                )
+                if payload.expected_gate_checksum != actual_checksum:
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "STALE_GATE_CHECKSUM",
+                        "expected_gate_checksum does not match current gate checksum.",
+                    )
+            user_instruction = (payload.user_instruction or "").strip()
+            if not user_instruction:
+                raise _error(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "EMPTY_USER_INSTRUCTION",
+                    "User instruction must be non-empty.",
+                )
+            if len(user_instruction) > 4000:
+                raise _error(
+                    status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    "INSTRUCTION_TOO_LONG",
+                    "User instruction must be 4000 characters or fewer.",
+                )
+            prohibited_patterns = ("sandbox_path", "argv", "env", "raw_command", "endpoint",
+                                   "deployment", "env_ref", "filesystem_target", "user_supplied_file_path")
+            instruction_lower = user_instruction.lower()
+            for prohibited in prohibited_patterns:
+                if prohibited in instruction_lower:
+                    raise _error(
+                        status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        "FORBIDDEN_INSTRUCTION_CONTENT",
+                        f"User instruction must not contain {prohibited!r}.",
+                    )
+            superseded_statuses = frozenset({"superseded", "approved", "rejected", "exhausted"})
+            if getattr(record, "status", "") in superseded_statuses:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "PROPOSAL_ALREADY_FINAL",
+                    f"Proposal status is {record.status!r}; cannot revise a finalized proposal.",
+                )
+            event_record = _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=getattr(record, "route_step_index", None) or getattr(gate, "stage_index", None),
+                event_type="repair_revision_requested",
+                status="requested",
+                message="User requested revision of repair proposal",
+                payload={
+                    "proposal_id": proposal_id,
+                    "previous_diff_checksum": payload.previous_diff_checksum,
+                    "previous_reviewer_verdict_id": payload.previous_reviewer_verdict_id,
+                    "user_instruction": redact_public_value(user_instruction),
+                    "idempotency_key": payload.idempotency_key or "",
+                },
+            )
+            gate_service = V2PhaseGateService(uow.phase_gates)
+            repair_flow = V2RepairFlowService(repair_repo=uow.v2_repairs)
+            action_service = V2GateActionService(
+                uow.phase_gates,
+                uow.gate_decisions,
+                gate_service,
+                revision_repo=uow.artifact_revisions,
+                repair_service=repair_flow,
+            )
+            repair_gate_service = V2RepairGateService(
+                gate_service=gate_service,
+                gate_action_service=action_service,
+                repair_flow=repair_flow,
+            )
+            revision_context = _resolve_reviewed_repair_runtime_context(
+                uow=uow,
+                job_id=job_id,
+                gate=gate,
+                proposal_id=proposal_id,
+            )
+            result = repair_gate_service.request_repair_revision(
+                gate_id=gate_id,
+                job_id=job_id,
+                decided_by="human",
+                proposal_id=proposal_id,
+                user_feedback=user_instruction,
+                idempotency_key=payload.idempotency_key,
+                expected_gate_checksum=payload.expected_gate_checksum,
+                command_id="" if revision_context is None else revision_context["command_id"],
+                model_client=app.state.v2_assistant_model_client,
+                prior_apply_rerun_info=None if revision_context is None else revision_context["prior_apply_rerun_info"],
+                source_profile="" if revision_context is None else revision_context["source_profile"],
+                target_profile="" if revision_context is None else revision_context["target_profile"],
+                sandbox_path="" if revision_context is None else revision_context["sandbox_path"],
+                run_dir="" if revision_context is None else revision_context["run_dir"],
+                legacy_path="" if revision_context is None else revision_context["legacy_path"],
+                deterministic_rule_id="" if revision_context is None else revision_context["deterministic_rule_id"],
+                previous_repair_review_checksums=()
+                if revision_context is None
+                else revision_context["previous_repair_review_checksums"],
+                cycle_number=1 if revision_context is None else revision_context["cycle_number"],
+                h2_required=bool(revision_context and revision_context["h2_required"]),
+            )
+            if result.status not in ("executed", "idempotent", "created"):
+                if revision_context is None and result.status in ("no_action_service",):
+                    pass
+                else:
+                    raise _error(
+                        http_status_for_gate_status(result.status),
+                        result.status.upper(),
+                        result.reason or result.status,
+                    )
+            new_record = uow.v2_repairs.get_current_proposal_for_job(job_id)
+            new_projection = None
+            if new_record is not None and getattr(new_record, "diff_ref", None) is not None:
+                try:
+                    new_projection = reviewed_diff_proposal_to_safe_dict(
+                        build_reviewed_diff_proposal_from_record(
+                            proposal_id=new_record.proposal_id,
+                            status=new_record.status,
+                            failure_summary=new_record.failure_summary,
+                            job_id=getattr(new_record, "job_id", None) or job_id,
+                            command_id=new_record.command_id,
+                            gate_id=getattr(new_record, "gate_id", None),
+                            route_step_index=getattr(new_record, "route_step_index", None),
+                            attempt_number=getattr(new_record, "attempt_number", None),
+                            revision_number=getattr(new_record, "revision_number", None),
+                            diagnosis_ref=getattr(new_record, "diagnosis_ref", None),
+                            repair_plan_ref=getattr(new_record, "repair_plan_ref", None),
+                            diff_ref=getattr(new_record, "diff_ref", None),
+                            diff_checksum=getattr(new_record, "diff_checksum", None),
+                            reviewer_verdict_id=getattr(new_record, "reviewer_verdict_id", None),
+                            reviewer_output_checksum=getattr(new_record, "reviewer_output_checksum", None),
+                            policy_validation_checksum=getattr(new_record, "policy_validation_checksum", None),
+                        )
+                    )
+                except (ValueError, OSError):
+                    pass
+            return {
+                "job_id": job_id,
+                "previous_proposal_id": proposal_id,
+                "proposal": new_projection,
+                "status": "revision_requested" if new_projection is None else "user_review_required",
+                "event_ids": [event_record.event_id] if event_record else [],
+                "artifact_refs": {
+                    "result_gate_id": result.result_gate_id or "",
+                    "result_revision_id": result.result_revision_id or "",
+                },
+            }
+
+    # ── PR-E: Approve reviewed repair sandbox apply ─────────────────
+
+    @app.post("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/approve")
+    def approve_repair_proposal_sandbox_apply(
+        job_id: str,
+        proposal_id: str,
+        payload: RepairProposalApproveRequest,
+    ) -> dict[str, Any]:
+        """Approve a reviewed repair proposal and apply to sandbox.
+
+        Accepts only IDs and checksums. Rejects raw patch, path, env, argv.
+        Backend reloads all state server-side.
+        Validates 21+ safety checks before applying.
+
+        Flow:
+        1. Validate job/proposal ownership and checksum bindings
+        2. Validate gate state and proposal status
+        3. Read diff from server-side diff_ref
+        4. Evaluate patch proposal (patch gate)
+        5. Apply diff to sandbox only
+        6. Rerun validation
+        7. Route based on validation result
+        """
+        _approvable_statuses = frozenset({
+            "user_review_required", "reviewer_accepted", "approvable",
+        })
+        _finalized_statuses = frozenset({
+            "superseded", "approved", "rejected", "exhausted",
+            "approved_applied", "approve_failed",
+        })
+        # Validate payload path matches body
+        if payload.proposal_id != proposal_id:
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "PROPOSAL_ID_MISMATCH",
+                "Request body proposal_id does not match path proposal_id.",
+            )
+
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+
+            # 1. Load proposal and validate it belongs to job
+            record = uow.v2_repairs.get_proposal_for_job(job_id, proposal_id)
+            if record is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "PROPOSAL_NOT_FOUND",
+                    f"Proposal {proposal_id!r} not found for job {job_id!r}.",
+                )
+
+            # 2. Validate proposal has diff_ref and diff_checksum
+            diff_ref = getattr(record, "diff_ref", None)
+            stored_diff_checksum = getattr(record, "diff_checksum", None)
+            if not diff_ref or not stored_diff_checksum:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "PROPOSAL_NO_DIFF",
+                    "Proposal has no diff_ref or diff_checksum.",
+                )
+
+            # 3. Validate request diff_checksum matches persisted
+            if payload.diff_checksum != stored_diff_checksum:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "STALE_DIFF_CHECKSUM",
+                    "Request diff_checksum does not match persisted proposal diff_checksum.",
+                )
+
+            # 4. Recompute diff checksum from disk
+            diff_path = Path(diff_ref)
+            if not diff_path.is_file():
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "DIFF_FILE_NOT_FOUND",
+                    "Diff file not found on server.",
+                )
+            try:
+                raw_diff = diff_path.read_bytes()
+                actual_diff_checksum = sha256_hex(raw_diff)
+            except OSError:
+                raise _error(
+                    status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    "DIFF_READ_FAILED",
+                    "Failed to read diff file from server.",
+                )
+            if actual_diff_checksum != stored_diff_checksum:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "DIFF_CHECKSUM_MISMATCH",
+                    "Recomputed diff checksum does not match persisted checksum.",
+                )
+
+            # 5. Check SafeDiffPreview.checksum_mismatch
+            try:
+                preview = build_safe_diff_preview(
+                    proposal_id=proposal_id,
+                    diff_ref=diff_ref,
+                    stored_diff_checksum=stored_diff_checksum,
+                )
+                if preview.checksum_mismatch:
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "SAFE_DIFF_CHECKSUM_MISMATCH",
+                        "SafeDiffPreview reports checksum mismatch.",
+                    )
+            except (ValueError, OSError):
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "SAFE_DIFF_PREVIEW_FAILED",
+                    "Failed to build safe diff preview for checksum validation.",
+                )
+
+            # 6. Validate reviewer_verdict_id
+            stored_verdict_id = getattr(record, "reviewer_verdict_id", None)
+            if not stored_verdict_id or payload.reviewer_verdict_id != stored_verdict_id:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "STALE_REVIEWER_VERDICT",
+                    "reviewer_verdict_id does not match the current proposal.",
+                )
+
+            # 7. Validate reviewer verdict exists and is accepted
+            reviewer_service = V2ReviewerService(reviewer_repo=uow.v2_reviewer)
+            verdict = reviewer_service.get_critique(stored_verdict_id)
+            if verdict is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "REVIEWER_VERDICT_NOT_FOUND",
+                    f"Reviewer verdict {stored_verdict_id!r} not found.",
+                )
+            verdict_decision = str(getattr(verdict, "decision", "") or "")
+            if verdict_decision != "accept":
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "REVIEWER_NOT_ACCEPTED",
+                    f"Reviewer decision is {verdict_decision!r}, not 'accept'.",
+                )
+
+            # 8. Validate gate_id matches persisted proposal gate_id
+            stored_gate_id = getattr(record, "gate_id", None)
+            if not stored_gate_id or payload.gate_id != stored_gate_id:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "GATE_ID_MISMATCH",
+                    "Gate ID does not match the current proposal.",
+                )
+
+            # 9. Validate gate exists and belongs to job
+            gate = uow.phase_gates.get(stored_gate_id)
+            if gate is None or gate.job_id != job_id:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "GATE_NOT_FOUND",
+                    f"Gate {stored_gate_id!r} not found for job {job_id!r}.",
+                )
+
+            # 10. Validate gate is open/current/user-review
+            if gate.gate_status not in ("open", "current", "user-review"):
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "GATE_NOT_OPEN",
+                    f"Gate status is {gate.gate_status!r}, not open.",
+                )
+
+            # 11. Validate expected_gate_checksum if provided
+            gate_checksum_value = gate_checksum(
+                gate_id=gate.gate_id,
+                job_id=gate.job_id,
+                gate_phase=gate.gate_phase,
+                stage_index=gate.stage_index,
+                source_artifact_checksum=gate.source_artifact_checksum,
+                source_artifact_refs=tuple(json.loads(gate.source_artifact_refs_json or "[]")),
+            )
+            if payload.expected_gate_checksum is not None and payload.expected_gate_checksum != gate_checksum_value:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "STALE_GATE_CHECKSUM",
+                    "expected_gate_checksum does not match current gate checksum.",
+                )
+
+            # 12. Validate proposal status is approvable
+            proposal_status = getattr(record, "status", "")
+            if proposal_status in _finalized_statuses:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "PROPOSAL_ALREADY_FINAL",
+                    f"Proposal status is {proposal_status!r}; cannot approve a finalized proposal.",
+                )
+            if proposal_status not in _approvable_statuses:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "PROPOSAL_NOT_APPROVABLE",
+                    f"Proposal status is {proposal_status!r}; not approvable.",
+                )
+
+            # 13. Resolve runtime context (server-side only)
+            apply_context = _resolve_reviewed_repair_runtime_context(
+                uow=uow,
+                job_id=job_id,
+                gate=gate,
+                proposal_id=proposal_id,
+            )
+            if apply_context is None:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "RUNTIME_CONTEXT_RESOLUTION_FAILED",
+                    "Could not resolve sandbox/runtime context for this proposal.",
+                )
+
+            sandbox_path = apply_context["sandbox_path"]
+            run_dir_path = apply_context["run_dir"]
+            legacy_path = apply_context["legacy_path"]
+            deterministic_rule_id = apply_context["deterministic_rule_id"]
+            risk = apply_context["risk"]
+            target_path = apply_context["target_path"]
+            command_id = apply_context["command_id"]
+
+            # 14. Evaluate patch proposal (patch gate)
+            diff_text = raw_diff.decode("utf-8", errors="replace")
+            patch_proposal = {
+                "deterministic_rule_id": deterministic_rule_id,
+                "risk": risk,
+                "requires_human_review": False,
+                "description": getattr(record, "failure_summary", "") or "Reviewed repair apply",
+                "unified_diff": diff_text,
+                "expected_validation": list(apply_context.get("expected_validation", ())),
+            }
+            gate_result = evaluate_patch_proposal(
+                proposal=patch_proposal,
+                sandbox_path=sandbox_path,
+                run_dir=run_dir_path,
+                legacy_path=legacy_path,
+                h2_required=apply_context.get("h2_required", False),
+            )
+            if gate_result.status != "ALLOWED":
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "PATCH_GATE_REJECTED",
+                    f"Patch gate rejected: {gate_result.reason}",
+                )
+
+            touched_paths = list(gate_result.touched_paths) if gate_result.touched_paths else []
+
+            # 15. Validate no legacy source modification
+            for tp in touched_paths:
+                resolved_path = (Path(sandbox_path) / tp).resolve()
+                legacy_resolved = Path(legacy_path).resolve()
+                try:
+                    resolved_path.relative_to(legacy_resolved)
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "LEGACY_SOURCE_MODIFICATION",
+                        f"Touched path {tp!r} resolves inside legacy source.",
+                    )
+                except ValueError:
+                    pass  # Path is outside legacy source - good
+
+            # ── Apply to sandbox ────────────────────────────────
+            apply_result = apply_patch_to_sandbox(
+                run_dir=run_dir_path,
+                sandbox_path=sandbox_path,
+                attempt=getattr(record, "attempt_number", None) or 1,
+                unified_diff=diff_text,
+                touched_paths=touched_paths,
+            )
+
+            apply_status = apply_result.status
+            apply_reason = apply_result.reason
+
+            if apply_status != "APPLIED":
+                completed_at = utc_now_text()
+                uow.v2_repairs.update_proposal_prf_fields(
+                    proposal_id,
+                    status="approve_failed",
+                    status_reason=f"Sandbox apply failed: {apply_reason}",
+                    apply_status=apply_status,
+                    rerun_status="",
+                    rollback_status="",
+                    remaining_attempts=0,
+                    completed_at=completed_at,
+                )
+                _append_v2_event(
+                    uow,
+                    job_id=job_id,
+                    stage=getattr(gate, "stage_index", None),
+                    event_type="repair_approve_apply_failed",
+                    status="failed",
+                    message=f"Sandbox apply failed for proposal {proposal_id}: {apply_reason}",
+                    payload={"proposal_id": proposal_id, "apply_status": apply_status},
+                )
+                return RepairProposalApproveResponse(
+                    job_id=job_id,
+                    proposal_id=proposal_id,
+                    status="approve_failed",
+                    apply_status=apply_status,
+                ).model_dump()
+
+            # ── Rerun validation ────────────────────────────────
+            validation: ValidationResult = run_validation_after_patch(
+                run_id=command_id or proposal_id,
+                run_dir=run_dir_path,
+                sandbox_path=sandbox_path,
+                attempt=getattr(record, "attempt_number", None) or 1,
+                h2_required=apply_context.get("h2_required", False),
+                h2_enabled=apply_context.get("h2_required", False),
+            )
+
+            rerun_status = "passed" if validation.passed else "failed"
+            rollback_status = ""
+            remaining_attempts = 0
+            next_gate_id = ""
+            next_gate_status = ""
+            proposal_post_status = "approved_applied"
+            allowed_next_actions: tuple[str, ...] = ()
+
+            if validation.passed:
+                # Handle route progression via repair gate service
+                repair_gate_svc = V2RepairGateService(
+                    gate_service=V2PhaseGateService(uow.phase_gates),
+                )
+                transition = repair_gate_svc.handle_repair_validation_result(
+                    job_id=job_id,
+                    stage_index=int(getattr(gate, "stage_index", 0) or 0),
+                    validation_passed=True,
+                    validation_id=proposal_id,
+                    sandbox_path=sandbox_path,
+                )
+                next_gate_id = transition.gate_id or None
+                next_gate_status = transition.status or None
+                remaining_attempts = transition.remaining_attempts or 0
+                completed_at = utc_now_text()
+                uow.v2_repairs.update_proposal_prf_fields(
+                    proposal_id,
+                    status="approved_applied",
+                    status_reason="Patch applied to sandbox and validation passed.",
+                    apply_status=apply_status,
+                    rerun_status=rerun_status,
+                    rollback_status=None,
+                    remaining_attempts=remaining_attempts,
+                    completed_at=completed_at,
+                    next_gate_id=next_gate_id,
+                    next_gate_status=next_gate_status,
+                )
+                _append_v2_event(
+                    uow,
+                    job_id=job_id,
+                    stage=getattr(gate, "stage_index", None),
+                    event_type="repair_validation_passed",
+                    status="completed",
+                    message=f"Repair validation passed for proposal {proposal_id}",
+                    payload={"proposal_id": proposal_id, "rerun_status": rerun_status},
+                )
+                allowed_next_actions = ("view_result", "continue_migration")
+
+            else:
+                # Validation failed - rollback, then create next repair cycle
+                rollback_ok, rollback_reason = rollback_patch(
+                    sandbox_path=sandbox_path,
+                    snapshot_dir=apply_result.snapshot_dir,
+                    touched_paths=apply_result.touched_paths,
+                    created_paths=apply_result.created_paths,
+                )
+                rollback_status = "rolled_back" if rollback_ok else "rollback_failed"
+                # Create next repair cycle
+                repair_gate_svc = V2RepairGateService(
+                    gate_service=V2PhaseGateService(uow.phase_gates),
+                )
+                transition = repair_gate_svc.handle_repair_validation_result(
+                    job_id=job_id,
+                    stage_index=int(getattr(gate, "stage_index", 0) or 0),
+                    validation_passed=False,
+                    validation_id=proposal_id,
+                    sandbox_path=sandbox_path,
+                )
+                next_gate_id = transition.gate_id or None
+                next_gate_status = transition.status or None
+                remaining_attempts = transition.remaining_attempts or 0
+                completed_at = utc_now_text()
+                uow.v2_repairs.update_proposal_prf_fields(
+                    proposal_id,
+                    status="approve_failed",
+                    status_reason=f"Validation failed after sandbox apply: {'; '.join(validation.errors)}",
+                    apply_status=apply_status,
+                    rerun_status=rerun_status,
+                    rollback_status=rollback_status,
+                    remaining_attempts=remaining_attempts,
+                    completed_at=completed_at,
+                    next_gate_id=next_gate_id,
+                    next_gate_status=next_gate_status,
+                )
+                _append_v2_event(
+                    uow,
+                    job_id=job_id,
+                    stage=getattr(gate, "stage_index", None),
+                    event_type="repair_validation_failed",
+                    status="failed",
+                    message=f"Repair validation failed for proposal {proposal_id}",
+                    payload={
+                        "proposal_id": proposal_id,
+                        "rerun_status": rerun_status,
+                        "rollback_status": rollback_status,
+                    },
+                )
+                allowed_next_actions = ("view_result", "request_revision")
+
+        return RepairProposalApproveResponse(
+            job_id=job_id,
+            proposal_id=proposal_id,
+            status=proposal_post_status,
+            apply_status=apply_status,
+            rerun_status=rerun_status,
+            next_gate_id=next_gate_id,
+            next_gate_status=next_gate_status,
+            rollback_status=rollback_status,
+            remaining_attempts=remaining_attempts,
+            allowed_next_actions=tuple(sorted(allowed_next_actions)),
+        ).model_dump()
+
     @app.post("/v1/v2/jobs/{job_id}/stages/progress")
     def progress_to_next_stage(
         job_id: str,
         payload: StageProgressRequest,
     ) -> dict[str, Any]:
-        """Auto-queue the next stage from the current stage sandbox.
+        """Auto-queue the next route step from persisted backend evidence.
 
-        Stage 2 input = Stage 1 sandbox.
-        Stage 3 input = Stage 2 sandbox.
-        No Boot 4 path. No user-selected stage inputs.
-
-        F15: For manual/F15 policy, client sandbox_path is rejected.
-        Backend resolves sandbox_path from persisted stage output.
+        The selected source/target route controls which executable step
+        is queued next. Legacy stage indices remain for compatibility.
         """
         with unit_of_work_factory() as uow:
-            # F15: Reject client-provided sandbox_path for manual policy
-            resolved_sandbox_path = payload.sandbox_path
-            if resolved_sandbox_path is not None:
-                rc = uow.run_configurations.get_for_job(job_id)
-                if rc is not None:
-                    try:
-                        policy_json = json.loads(rc.policy_json)
-                        continuation_policy = policy_json.get("stage_continuation_policy", "")
-                        if continuation_policy in ("manual", "f15"):
-                            raise _error(
-                                status.HTTP_400_BAD_REQUEST,
-                                "CLIENT_SANDBOX_PATH_REJECTED",
-                                f"Client sandbox_path not allowed for {continuation_policy} policy. "
-                                "Backend resolves from persisted stage output.",
-                            )
-                    except (json.JSONDecodeError, TypeError, AttributeError):
-                        pass
-            # If no sandbox_path provided, resolve from latest command output
-            if resolved_sandbox_path is None:
-                commands = uow.v2_commands.list_by_job(job_id)
-                stage_commands = [c for c in commands if c.stage_index == payload.current_stage]
-                if stage_commands:
-                    latest = max(stage_commands, key=lambda c: c.created_at)
-                    resolved_sandbox_path = latest.output_root_dir or latest.sandbox_root_dir
-
             service = V2StageProgressionService(
                 setup_repo=uow.v2_setups,
                 command_repo=uow.v2_commands,
+                artifact_revision_repo=uow.artifact_revisions,
+                run_config_repo=uow.run_configurations,
             )
             try:
-                result = service.queue_next_stage(
+                result = service.queue_next_stage_from_persisted(
                     job_id=job_id,
                     setup_id=payload.setup_id,
                     current_stage=payload.current_stage,
-                    sandbox_path=resolved_sandbox_path or "",
                 )
             except ValueError as exc:
                 raise _error(
@@ -3913,7 +5082,7 @@ def create_app(
                     "STAGE_PROGRESSION_FAILED",
                     str(exc),
                 ) from exc
-        return service.continuation_to_dict(result)
+        return service.continuation_to_public_dict(result)
 
     # ------------------------------------------------------------------
     # F14 — Stage 3 POM Dependency Review + Apply + Validate + Rollback
@@ -4083,7 +5252,7 @@ def create_app(
                 {
                     "profile_id": p.profile_id,
                     "display_name": p.display_name,
-                    "provider_kind": p.provider_kind,
+                    "status": "active" if p.is_active else "inactive",
                     "is_active": p.is_active,
                     "created_at": p.created_at,
                 }
@@ -4104,10 +5273,7 @@ def create_app(
         return {
             "profile_id": record.profile_id,
             "display_name": record.display_name,
-            "provider_kind": record.provider_kind,
-            "model_env_ref": record.model_env_ref,
-            "endpoint_env_ref": record.endpoint_env_ref,
-            "deployment_env_ref": record.deployment_env_ref,
+            "status": "active" if record.is_active else "inactive",
             "is_active": record.is_active,
             "created_at": record.created_at,
             "created_by": record.created_by,
@@ -4118,24 +5284,38 @@ def create_app(
         request: Request,
     ) -> dict[str, Any]:
         body: dict[str, Any] = await request.json()
+        forbidden_public_fields = {
+            "provider_kind",
+            "model_env_ref",
+            "endpoint_env_ref",
+            "deployment_env_ref",
+            "provider",
+            "endpoint",
+            "deployment",
+            "env_ref",
+        }
+        provided_forbidden = sorted(forbidden_public_fields.intersection(body))
+        if provided_forbidden:
+            raise _error(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "FORBIDDEN_PUBLIC_FIELDS",
+                "Model runtime fields are backend-internal and are not accepted by this product API.",
+            )
         profile_id: str = body.get("profile_id", "")
         display_name: str = body.get("display_name", "")
-        provider_kind: str = body.get("provider_kind", "fake")
-        model_env_ref: str = body.get("model_env_ref", "")
-        endpoint_env_ref: str = body.get("endpoint_env_ref", "")
-        deployment_env_ref: str = body.get("deployment_env_ref", "")
+        provider_kind = "fake"
+        model_env_ref = "V1_MODEL_NAME"
+        endpoint_env_ref = "V1_MODEL_ENDPOINT"
+        deployment_env_ref = "V1_MODEL_DEPLOYMENT"
         actor_id: str = body.get("actor_id", "api")
         correlation_id: str | None = body.get("correlation_id")
 
-        if not profile_id or not display_name or not model_env_ref:
+        if not profile_id or not display_name:
             raise _error(
                 status.HTTP_400_BAD_REQUEST,
                 "INVALID_REQUEST",
-                "profile_id, display_name, and model_env_ref are required",
+                "profile_id and display_name are required",
             )
-
-        if provider_kind not in ("fake", "azure_openai"):
-            provider_kind = "fake"
 
         service = ControlTowerRegistrationService(unit_of_work_factory)
         record = service.register_model_profile(
@@ -4152,7 +5332,7 @@ def create_app(
         return {
             "profile_id": record.profile_id,
             "display_name": record.display_name,
-            "provider_kind": record.provider_kind,
+            "status": "active" if record.is_active else "inactive",
             "is_active": record.is_active,
             "created_at": record.created_at,
         }
@@ -4169,7 +5349,6 @@ def create_app(
                     "invocation_id": inv.invocation_id,
                     "job_id": inv.job_id,
                     "profile_id": inv.profile_id,
-                    "provider_kind": inv.provider_kind,
                     "model_name": inv.model_name,
                     "prompt_tokens": inv.prompt_tokens,
                     "completion_tokens": inv.completion_tokens,
@@ -4190,7 +5369,6 @@ def create_app(
                 {
                     "invocation_id": inv.invocation_id,
                     "profile_id": inv.profile_id,
-                    "provider_kind": inv.provider_kind,
                     "model_name": inv.model_name,
                     "prompt_tokens": inv.prompt_tokens,
                     "completion_tokens": inv.completion_tokens,
@@ -4201,6 +5379,41 @@ def create_app(
                 for inv in uow.v1_model_invocations.list_for_job(job_id)
             ]
         return {"model_invocations": invocations}
+
+    # ------------------------------------------------------------------
+    # V2 LLM invocation ledger activity endpoint (PR-G)
+    # ------------------------------------------------------------------
+
+    @app.get("/v1/v2/jobs/{job_id}/llm/activity")
+    def list_v2_llm_activity(job_id: str) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            records = uow.v2_llm_invocations.list_by_job(job_id)
+            invocations = [
+                {
+                    "invocation_id": r.invocation_id,
+                    "job_id": r.job_id,
+                    "role": r.role,
+                    "responsibility": r.responsibility,
+                    "status": r.status,
+                    "proposal_id": r.proposal_id,
+                    "gate_id": r.gate_id,
+                    "provider_alias": r.provider_alias,
+                    "deployment_alias_hash": r.deployment_alias_hash,
+                    "context_checksum": r.context_checksum,
+                    "output_checksum": r.output_checksum,
+                    "schema_name": r.schema_name,
+                    "fallback_used": bool(r.fallback_used),
+                    "redacted_summary": r.redacted_summary,
+                    "prompt_tokens": r.prompt_tokens,
+                    "completion_tokens": r.completion_tokens,
+                    "total_tokens": r.total_tokens,
+                    "latency_ms": r.latency_ms,
+                    "created_at": r.created_at,
+                    "completed_at": r.completed_at,
+                }
+                for r in records
+            ]
+        return {"invocations": invocations}
 
     # ------------------------------------------------------------------
     # Context pack manifest endpoints (V1-11A)
@@ -4978,9 +6191,17 @@ def create_app(
 
         # Collect continuation events
         events = query_service.get_continuation_policy_events(job_id)
+
+        # Resolve pipeline_id from run configuration
+        resolved_pipeline_id = "springboot-216-to-356-java21-three-stage"
+        with unit_of_work_factory() as uow:
+            run_config = uow.run_configurations.get_for_job(job_id) if hasattr(uow, "run_configurations") else None
+            if run_config is not None:
+                resolved_pipeline_id = run_config.pipeline_id
+
         return {
             "job_id": job_id,
-            "pipeline_id": "springboot-216-to-356-java21-three-stage",
+            "pipeline_id": resolved_pipeline_id,
             "stages": stages,
             "continuation_events": [
                 {
@@ -5430,6 +6651,89 @@ def create_app(
         except Exception:
             pass
         return "mvn clean compile test"
+
+    # ── V2 Final Report routes ───────────────────────────────────
+    from migration_factory.control_tower.application.v2_final_report_service import (
+        V2FinalReportService,
+        REPORT_ARTIFACT_KINDS,
+        REPORT_CONTENT_TYPES,
+    )
+
+    _report_service = V2FinalReportService(unit_of_work_factory)
+
+    @app.get("/v1/v2/jobs/{job_id}/report")
+    def get_v2_final_report(job_id: str) -> dict[str, Any]:
+        from migration_factory.control_tower.application.v2_final_report_service import (
+            V2FinalReportResult,
+        )
+        try:
+            result = _report_service.get_report_status(job_id)
+        except ValueError as exc:
+            raise _error(404, "V2_JOB_NOT_FOUND", str(exc))
+        return _report_result_to_dict(result)
+
+    @app.post("/v1/v2/jobs/{job_id}/report")
+    def generate_v2_final_report(job_id: str, request: GenerateReportRequest = None) -> dict[str, Any]:
+        del request
+        try:
+            result = _report_service.generate_report(job_id)
+        except ValueError as exc:
+            raise _error(404, "V2_JOB_NOT_FOUND", str(exc))
+        return _report_result_to_dict(result)
+
+    @app.get("/v1/v2/jobs/{job_id}/report-artifacts/{artifact_id}/download")
+    def download_v2_report_artifact(job_id: str, artifact_id: str):
+        from fastapi.responses import StreamingResponse
+        import hashlib
+
+        with unit_of_work_factory() as uow:
+            job = uow.v2_jobs.get(job_id) if hasattr(uow, "v2_jobs") else None
+            if job is None:
+                raise _error(404, "V2_JOB_NOT_FOUND", "V2 job not found.")
+
+            # Resolve artifact from artifact repository
+            from migration_factory.control_tower.domain.entities import ArtifactRecord
+            artifact = None
+            if hasattr(uow, "artifacts") and hasattr(uow.artifacts, "list_for_job"):
+                for art in uow.artifacts.list_for_job(job_id):
+                    if art.artifact_id == artifact_id:
+                        artifact = art
+                        break
+            if artifact is None:
+                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+            if artifact.artifact_type not in REPORT_ARTIFACT_KINDS:
+                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+            if artifact.job_id != job_id:
+                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+
+            # Resolve file path from artifact record
+            file_path = Path(artifact.relative_path).resolve()
+
+            # Containment check: ensure the resolved path is within
+            # a reports/ directory or the sandbox final directory
+            file_path_str = str(file_path).replace("\\", "/")
+            if not any(marker in file_path_str for marker in ("/reports/", "/final/", "\\reports\\", "\\final\\")):
+                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+
+            if not file_path.is_file():
+                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact file not found.")
+
+            actual_sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
+            if actual_sha256 != artifact.checksum:
+                raise _error(409, "V2_REPORT_ARTIFACT_CHECKSUM_MISMATCH", "Artifact integrity check failed.")
+
+            ext = REPORT_CONTENT_TYPES.get(artifact.artifact_type, "application/octet-stream").split("/")[-1]
+            filename = f"{job_id}_{artifact.artifact_type}.{ext}"
+            media_type = REPORT_CONTENT_TYPES.get(artifact.artifact_type, "application/octet-stream")
+
+            return StreamingResponse(
+                content=open(file_path, "rb"),
+                media_type=media_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "Content-Length": str(file_path.stat().st_size),
+                },
+            )
 
     return app
 
@@ -5905,6 +7209,16 @@ def _classify_v2_assistant_intent(question: str) -> str:
         if not has_pom_or_dep or looks_like_status_question:
             return "model_status"
 
+    # javax -> jakarta replacement questions are Stage 3 dependency/POM review,
+    # not generic migration status. The backend may explain or propose, but must
+    # not apply changes from chat alone.
+    if (
+        any(term in lowered for term in ("javax", "jakarta"))
+        and any(term in lowered for term in ("replace", "migrate", "change", "update", "review", "check"))
+        and any(term in lowered for term in ("stage 3", "stage3", "final stage", "pom", "dependency"))
+    ):
+        return "stage3_dependency_review"
+
     # 2. Check if the user explicitly says NOT to apply/execute —
     #    this negates capability_boundary and shifts toward proposal
     user_says_dont_apply = any(phrase in lowered for phrase in (
@@ -6268,11 +7582,23 @@ def _handle_gate_aware_ask(
                     revision_repo=uow.artifact_revisions,
                     command_repo=uow.v2_commands,
                 )
+                profile_metadata = _approval_review_profile_metadata_for_resume(
+                    uow,
+                    job_id=job_id,
+                    stage_index=open_gate.stage_index,
+                )
+                if profile_metadata is None:
+                    raise _error(
+                        status.HTTP_400_BAD_REQUEST,
+                        "APPROVAL_FAILED",
+                        "checkpoint_profile_metadata_missing",
+                    )
                 gate_result = action_service.approve_from_gate(
                     gate_id=open_gate.gate_id,
                     job_id=job_id,
                     decided_by="human",
                     expected_gate_checksum=context.checksum,
+                    profile_metadata=profile_metadata,
                 )
 
                 existing_resume_status = (
@@ -6289,6 +7615,20 @@ def _handle_gate_aware_ask(
 
                 resume_launch: V2OrchestratorStart | None = None
                 if is_new_approve and resume.resume_id:
+                    if open_gate.gate_phase == GatePhase.APPROVAL_REVIEW.value:
+                        try:
+                            persist_approved_approval_review_revision(
+                                gate=open_gate,
+                                revision_repo=uow.artifact_revisions,
+                                decided_by="human",
+                                profile_metadata=profile_metadata,
+                            )
+                        except ValueError as exc:
+                            raise _error(
+                                status.HTTP_400_BAD_REQUEST,
+                                "APPROVAL_FAILED",
+                                str(exc),
+                            ) from exc
                     resume_launch = _start_resume_command(
                         app,
                         job_id=job_id,
@@ -6296,23 +7636,25 @@ def _handle_gate_aware_ask(
                         stage_index=resume.stage_index,
                     )
                     with unit_of_work_factory() as event_uow:
-                        _append_v2_event(
-                            event_uow,
-                            job_id=job_id,
-                            stage=resume.stage_index,
-                            event_type="approval_resume_queued",
-                            status="retrying" if resume_launch.status == "retrying" else "queued",
-                            message=(
-                                "Approval accepted; backend-owned resume command is retrying."
-                                if resume_launch.status == "retrying"
-                                else "Approval accepted; backend-owned resume command queued."
-                            ),
-                            payload={
-                                "card_id": pending_card.card_id,
-                                "resume_id": resume.resume_id,
-                                "resume_status": resume_launch.status,
-                            },
-                        )
+                        if resume_launch.status != "rejected":
+                            message = "Approval accepted; backend-owned resume command queued."
+                            if resume_launch.status == "retrying":
+                                message = "Approval accepted; backend-owned resume command is retrying."
+                            elif resume_launch.status == "started":
+                                message = "Approval accepted; backend-owned resume command started."
+                            _append_v2_event(
+                                event_uow,
+                                job_id=job_id,
+                                stage=resume.stage_index,
+                                event_type="approval_resume_queued",
+                                status=resume_launch.status,
+                                message=message,
+                                payload={
+                                    "card_id": pending_card.card_id,
+                                    "resume_id": resume.resume_id,
+                                    "resume_status": resume_launch.status,
+                                },
+                            )
 
                 resume_status = resume_launch.status if resume_launch is not None else existing_resume_status
                 if resume_status is None and resume.resume_id:
@@ -7298,7 +8640,7 @@ def _approval_review_model_payload(model_result: V2AssistantModelResult) -> dict
 def _resume_launch_state_from_events(uow: Any, *, job_id: str, resume_id: str) -> str | None:
     events = uow.v2_events.list_by_job(job_id)
     for event in reversed(events):
-        if event.type not in {"approval_resume_queued", "resume_started"}:
+        if event.type not in {"approval_resume_queued", "resume_started", "resume_rejected"}:
             continue
         try:
             payload = json.loads(event.payload_json or "{}")
@@ -7307,11 +8649,102 @@ def _resume_launch_state_from_events(uow: Any, *, job_id: str, resume_id: str) -
         event_resume_id = str(payload.get("resume_id") or payload.get("command_id") or "").strip()
         if event_resume_id != resume_id:
             continue
+        if event.type == "resume_rejected":
+            return "rejected"
         if event.type == "resume_started":
             return "started"
         launch_status = str(payload.get("resume_status") or event.status or "queued").strip()
         return launch_status or "queued"
     return None
+
+
+def _approval_review_gate_for_checksum(
+    uow: Any,
+    *,
+    job_id: str,
+    stage_index: int,
+    gate_checksum_value: str,
+) -> Any | None:
+    for gate in uow.phase_gates.list_by_job_and_stage(job_id, stage_index):
+        try:
+            refs = json.loads(gate.source_artifact_refs_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            refs = []
+        current_checksum = gate_checksum(
+            gate_id=gate.gate_id,
+            job_id=gate.job_id,
+            gate_phase=gate.gate_phase,
+            stage_index=gate.stage_index,
+            source_artifact_checksum=gate.source_artifact_checksum,
+            source_artifact_refs=refs if isinstance(refs, list) else [],
+        )
+        if current_checksum == gate_checksum_value:
+            return gate
+    return None
+
+
+def _approval_review_profile_metadata_for_resume(
+    uow: Any,
+    *,
+    job_id: str,
+    stage_index: int,
+) -> dict[str, Any] | None:
+    run_config_repo = getattr(uow, "run_configurations", None)
+    setup_repo = getattr(uow, "v2_setups", None)
+    command_repo = getattr(uow, "v2_commands", None)
+    artifact_revision_repo = getattr(uow, "artifact_revisions", None)
+    if run_config_repo is None or setup_repo is None:
+        return None
+
+    route_service = V2StageProgressionService(
+        setup_repo=setup_repo,
+        command_repo=command_repo,
+        artifact_revision_repo=artifact_revision_repo,
+        run_config_repo=run_config_repo,
+    )
+    route = route_service.compute_route_for_job(job_id)
+    if route is None or not route.valid:
+        return None
+
+    metadata = route_to_dict(route)
+    try:
+        metadata["runtime_profile"] = resolve_runtime_profile_for_route(
+            route.source_profile,
+            route.target_profile,
+        )
+    except RouteRuntimeProfileUnavailableError:
+        metadata["runtime_profile"] = ""
+
+    metadata["stage_index"] = stage_index
+    metadata["run_id"] = _approval_review_run_id_for_stage(
+        uow,
+        job_id=job_id,
+        stage_index=stage_index,
+    )
+    return metadata
+
+
+def _approval_review_run_id_for_stage(
+    uow: Any,
+    *,
+    job_id: str,
+    stage_index: int,
+) -> str:
+    command_repo = getattr(uow, "v2_commands", None)
+    if command_repo is None:
+        return ""
+
+    for command in command_repo.list_by_job_and_stage(job_id, stage_index):
+        try:
+            argv = json.loads(getattr(command, "argv_json", "") or "[]")
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(argv, list):
+            continue
+        run_id = _argv_value(argv, "--run-id")
+        if run_id:
+            return run_id
+    return ""
 
 
 def _start_resume_command(
@@ -7332,7 +8765,17 @@ def _start_resume_command(
             message="runner unavailable",
         )
     try:
-        return runner.start_resume(job_id=job_id, resume_id=resume_id)
+        result = runner.start_resume(job_id=job_id, resume_id=resume_id)
+        if result is None:
+            return V2OrchestratorStart(
+                command_id=resume_id,
+                job_id=job_id,
+                stage_index=stage_index,
+                pid=None,
+                status="queued",
+                message="runner returned no launch result",
+            )
+        return result
     except sqlite3.OperationalError as exc:
         if _is_sqlite_locked_error(exc):
             return V2OrchestratorStart(
@@ -9068,7 +10511,7 @@ def _resolve_assistant_artifact_previews(
     # Only resolve kinds that are both in safe_kinds AND appear in events
     safe_kinds = {
         "phase2_log", "post_transform_test_log", "failure_classification",
-        "repair_plan", "deterministic_repair_plan", "copilot_repair_response",
+        "repair_plan", "deterministic_repair_plan",
         "dependency_policy_report", "dependency_policy_summary",
         "dependency_repair_plan", "orchestration_summary",
         "target_dependency_plan", "rewrite_dry_run.patch",
@@ -12066,7 +13509,7 @@ def _build_v2_assistant_prompt(
         "pending_approvals": pending_approvals,
         "approved_approvals": approved_cards,
         "failure_summary": {
-            "failures": [_f for f in grouped_failures for _f in [{"type": f["type"], "stage": f["stage"], "title": f["title"], "message": f["message"], "build_status": f["build_status"], "final_status": f["final_status"], "result_kind": f["result_kind"], "repair_loop_status": f["repair_loop_status"], "copilot_status": f["copilot_status"], "event_types": f["event_types"], "repair_events": f["repair_events"]}]],
+            "failures": [_f for f in grouped_failures for _f in [{"type": f["type"], "stage": f["stage"], "title": f["title"], "message": f["message"], "build_status": f["build_status"], "final_status": f["final_status"], "result_kind": f["result_kind"], "repair_loop_status": f["repair_loop_status"], "event_types": f["event_types"], "repair_events": f["repair_events"]}]],
             "count": len(grouped_failures),
         },
         "artifact_kinds": artifact_kinds[-20:],
@@ -12148,6 +13591,242 @@ def _v2_resume_run_dir_from_commands(commands: tuple[Any, ...], stage_index: int
     )
 
 
+def _resolve_reviewed_repair_runtime_context(
+    *,
+    uow: Any,
+    job_id: str,
+    gate: Any,
+    proposal_id: str,
+) -> dict[str, Any] | None:
+    proposal = uow.v2_repairs.get_proposal(proposal_id)
+    if proposal is None or not getattr(proposal, "command_id", ""):
+        return None
+
+    job = uow.v2_jobs.get(job_id)
+    if job is None or not getattr(job, "setup_id", ""):
+        return None
+
+    setup = uow.v2_setups.get(job.setup_id)
+    if setup is None:
+        return None
+
+    commands = tuple(uow.v2_commands.list_by_job(job_id))
+    events = tuple(uow.v2_events.list_by_job(job_id))
+
+    sandbox_resolution = _resolve_stage_sandbox_root(
+        stage_index=int(getattr(gate, "stage_index", 0) or 0),
+        events=events,
+        commands=commands,
+    )
+    if sandbox_resolution is None:
+        return None
+    sandbox_path, _ = sandbox_resolution
+
+    try:
+        run_dir = _v2_resume_run_dir_from_commands(
+            commands,
+            int(getattr(gate, "stage_index", 0) or 0),
+            str(proposal.command_id),
+        )
+    except HTTPException:
+        return None
+
+    checksum_refs, artifact_refs = _parse_reviewed_repair_gate_refs(
+        getattr(gate, "source_artifact_refs_json", "")
+    )
+    if not checksum_refs:
+        return None
+
+    required_checksums = (
+        checksum_refs.get("context_pack_checksum", ""),
+        checksum_refs.get("reviewer_output_checksum", ""),
+        checksum_refs.get("final_reviewed_diff_checksum", ""),
+        checksum_refs.get("policy_validation_checksum", ""),
+        checksum_refs.get("base_repo_state_checksum", ""),
+    )
+    if any(not value for value in required_checksums):
+        return None
+
+    final_diff_ref = _first_reviewed_diff_ref(artifact_refs)
+    if not final_diff_ref:
+        return None
+
+    diff_path = Path(final_diff_ref)
+    if not diff_path.is_file():
+        return None
+
+    try:
+        diff_content = diff_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    touched_paths, path_errors = extract_touched_paths(diff_content)
+    if path_errors or not touched_paths:
+        return None
+
+    deterministic_artifact_ref = _first_artifact_ref(
+        artifact_refs,
+        "deterministic_repair_artifact.json",
+    )
+    deterministic_rule_id = ""
+    if deterministic_artifact_ref:
+        try:
+            deterministic_payload = json.loads(
+                Path(deterministic_artifact_ref).read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError, TypeError):
+            deterministic_payload = {}
+        deterministic_rule_id = str(
+            deterministic_payload.get("deterministic_rule_id") or ""
+        )
+    if not deterministic_rule_id:
+        return None
+
+    primary_output_ref = _first_artifact_ref(
+        artifact_refs,
+        "primary_repair_llm_output.json",
+    )
+    final_artifact_ref = _first_artifact_ref(
+        artifact_refs,
+        "final_reviewed_repair_artifact.json",
+    )
+
+    risk = ""
+    for candidate_ref in (final_artifact_ref, primary_output_ref):
+        if not candidate_ref:
+            continue
+        try:
+            payload = json.loads(Path(candidate_ref).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            continue
+        risk = str(payload.get("risk") or "").upper()
+        if risk:
+            break
+    if not risk:
+        risk = "LOW"
+
+    expected_validation = tuple(
+        str(value)
+        for value in (
+            checksum_refs.get("expected_validation_checksum", ""),
+        )
+        if value
+    )
+
+    repair_rerun_result = _read_json_artifact(run_dir, "repair_rerun_result.json")
+    previous_checksums = tuple(
+        value
+        for value in checksum_refs.values()
+        if value
+    )
+
+    h2_required = False
+    if isinstance(repair_rerun_result, dict):
+        h2_required = str(repair_rerun_result.get("h2_status", "")).lower() in {"required", "true", "yes"}
+
+    return {
+        "proposal_id": str(proposal_id),
+        "command_id": str(proposal.command_id),
+        "sandbox_path": str(sandbox_path),
+        "run_dir": run_dir,
+        "legacy_path": str(setup.legacy_app_path),
+        "deterministic_rule_id": deterministic_rule_id,
+        "source_profile": str(getattr(proposal, "source_profile", "") or ""),
+        "target_profile": str(getattr(proposal, "target_profile", "") or ""),
+        "previous_repair_review_checksums": previous_checksums or (str(getattr(gate, "source_artifact_checksum", "") or ""),),
+        "cycle_number": max(1, len(previous_checksums) + 1),
+        "prior_apply_rerun_info": repair_rerun_result,
+        "final_diff_ref": str(final_diff_ref),
+        "reviewer_output_checksum": str(checksum_refs.get("reviewer_output_checksum", "") or ""),
+        "policy_validation_checksum": str(checksum_refs.get("policy_validation_checksum", "") or ""),
+        "base_repo_state_checksum": str(checksum_refs.get("base_repo_state_checksum", "") or ""),
+        "policy_status": "allowed",
+        "risk": risk,
+        "expected_validation": expected_validation,
+        "h2_required": h2_required,
+        "target_path": ",".join(touched_paths),
+    }
+
+
+def _parse_reviewed_repair_gate_refs(source_artifact_refs_json: str) -> tuple[dict[str, str], tuple[str, ...]]:
+    try:
+        parsed = json.loads(source_artifact_refs_json)
+    except (json.JSONDecodeError, TypeError):
+        return {}, ()
+    if not isinstance(parsed, list):
+        return {}, ()
+
+    checksum_refs: dict[str, str] = {}
+    artifact_refs: list[str] = []
+    for item in parsed:
+        if not isinstance(item, str) or not item:
+            continue
+        if ":" in item:
+            key, value = item.split(":", 1)
+            if key.endswith("_checksum") or key == "checksum":
+                checksum_refs[key] = value
+                continue
+        artifact_refs.append(item)
+    return checksum_refs, tuple(artifact_refs)
+
+
+def _first_artifact_ref(artifact_refs: tuple[str, ...], filename: str) -> str:
+    for item in artifact_refs:
+        if item.endswith(filename):
+            return item
+    return ""
+
+
+def _first_reviewed_diff_ref(artifact_refs: tuple[str, ...]) -> str:
+    for item in artifact_refs:
+        lowered = item.lower()
+        if lowered.endswith(".diff") or lowered.endswith("final_reviewed_repair.diff"):
+            return item
+    return ""
+
+
+def _read_json_artifact(run_dir: str, filename: str) -> dict[str, Any] | None:
+    path = Path(run_dir) / "repairs" / filename
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return None
+    if isinstance(payload, dict):
+        return payload
+    return None
+
+
+def _reviewed_repair_apply_projection(*, run_dir: str, apply_action: Any) -> dict[str, Any]:
+    projection: dict[str, Any] = {
+        "apply_status": str(getattr(apply_action, "status", "") or ""),
+        "apply_reason": str(getattr(apply_action, "result_summary", "") or ""),
+    }
+
+    rerun_result = _read_json_artifact(run_dir, "repair_rerun_result.json")
+    if isinstance(rerun_result, dict):
+        projection["rerun_status"] = "passed" if bool(rerun_result.get("passed", False)) else "failed"
+        projection["rerun_checksum"] = str(rerun_result.get("artifact_checksum", "") or "")
+
+    proof_result = _read_json_artifact(run_dir, "repair_proof.json")
+    if isinstance(proof_result, dict):
+        projection["proof_status"] = str(proof_result.get("status", "") or "")
+        projection["proof_artifact_checksum"] = str(proof_result.get("artifact_checksum", "") or "")
+
+    rollback_result = _read_json_artifact(run_dir, "repair_rollback_result.json")
+    if isinstance(rollback_result, dict):
+        projection["rollback_status"] = str(rollback_result.get("status", "") or "")
+        projection["rollback_checksum"] = str(rollback_result.get("artifact_checksum", "") or "")
+
+    terminal_failure = _read_json_artifact(run_dir, "repair_terminal_failure.json")
+    if isinstance(terminal_failure, dict):
+        projection["terminal_failure_status"] = str(terminal_failure.get("status", "") or "")
+        projection["terminal_failure_checksum"] = str(terminal_failure.get("artifact_checksum", "") or "")
+
+    return projection
+
+
 def _argv_value(argv: list[Any], option: str) -> str:
     for index, value in enumerate(argv[:-1]):
         if value == option:
@@ -12163,6 +13842,7 @@ _PIPELINE_PHASES = (
     ("human_approval", "Human Approval", {
         "approval_required", "approval_blocked", "stage_blocked_for_approval",
         "approval_started", "approval_completed", "approval_resume_queued", "resume_started",
+        "resume_rejected",
     }),
     ("sandbox_transform", "Transform Agent", {
         "sandbox_transform_started", "sandbox_transform_completed", "sandbox_transform_failed",
@@ -12172,7 +13852,6 @@ _PIPELINE_PHASES = (
     ("test_validation", "Test Validation", {"test_started", "test_completed", "test_failed"}),
     ("failure_repair", "Repair/Failure", {
         "repair_started", "repair_fallback_generated", "repair_completed",
-        "copilot_repair_invalid_response", "copilot_availability_checked",
     }),
     ("result_contract", "Result Contract", {"result_contract_failed"}),
     ("final_report", "Final Report", {
@@ -12189,6 +13868,7 @@ _IMPORTANT_EVENT_TYPES = {
     "approval_completed",
     "stage_blocked_for_approval",
     "approval_resume_queued",
+    "resume_rejected",
     "artifact_written",
     "proof_updated",
     "stage_failed",
@@ -12196,7 +13876,6 @@ _IMPORTANT_EVENT_TYPES = {
     "model_invocation_started",
     "model_invocation_completed",
     "model_invocation_failed",
-    "copilot_status_checked",
     "sandbox_transform_started",
     "sandbox_transform_completed",
     "sandbox_transform_failed",
@@ -12204,7 +13883,6 @@ _IMPORTANT_EVENT_TYPES = {
     "build_failed",
     "repair_started",
     "repair_fallback_generated",
-    "copilot_repair_invalid_response",
     "next_stage_queued",
     "final_report_started",
     "final_report_completed",
@@ -12228,6 +13906,7 @@ def _active_stage_index(events: tuple[Any, ...]) -> int:
             "stage_failed", "stage_started", "resume_started",
             "sandbox_transform_started", "build_started", "test_started",
             "approval_required", "stage_blocked_for_approval",
+            "resume_rejected",
             "final_report_started", "final_report_completed", "final_report_failed",
             "stage_report_started", "stage_report_completed", "stage_report_failed",
         }
@@ -12340,7 +14019,11 @@ def _pipeline_row_status(key: str, events: list[Any]) -> str:
             return "pass"
         if any(event.type == "approval_started" for event in events):
             return "running"
-        if any(event.status == "blocked" or event.type in {"approval_required", "stage_blocked_for_approval"} for event in events):
+        if any(
+            event.status == "blocked"
+            or event.type in {"approval_required", "stage_blocked_for_approval", "resume_rejected"}
+            for event in events
+        ):
             return "blocked"
         return "pending"
     latest = events[-1]
@@ -12484,15 +14167,13 @@ _PRIMARY_EVENT_PRIORITY = {
     "test_failed": 3,
     "stage_failed": 4,
     "result_contract_failed": 5,
-    "copilot_repair_invalid_response": 6,
-    "repair_started": 7,
+    "repair_started": 6,
 }
 
 
 _REPAIR_EVENT_TYPES = {
     "repair_started",
     "repair_fallback_generated",
-    "copilot_repair_invalid_response",
     "repair_proposal_revised",
     "reviewer_critique_created",
     "repair_patch_gate_completed",
@@ -12603,7 +14284,6 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
             "final_status": str(payload.get("final_status", "")),
             "final_proof_level": str(payload.get("final_proof_level", "")),
             "repair_loop_status": str(payload.get("repair_loop_status", "")),
-            "copilot_status": str(payload.get("copilot_invocation_status", "")),
             "repair_fallback": str(payload.get("repair_fallback_generated", "")),
             # SA4 diagnostic fields
             "matched_line": _safe_failure_str(payload.get("matched_line")),
@@ -13644,8 +15324,7 @@ def _next_operator_action(result_kind: str) -> str:
                                   "Upgrade Maven or switch profile.",
         "project_detection_error": "Could not detect a Java project at the sandbox path. "
                                     "Verify that the previous stage produced valid output.",
-        "build_timeout": "Build exceeded the timeout. Consider increasing AI_MIGRATION_COPILOT_TIMEOUT_SECONDS "
-                          "or investigating performance issues.",
+        "build_timeout": "Build exceeded the timeout. Consider adjusting the timeout configuration.",
         "startup_validation_failed": "Application started but validation checks failed. "
                                       "Review logs for startup errors or health check failures.",
         "command_error": "Build command failed. Review the matched_line and stderr for details.",
@@ -13689,7 +15368,7 @@ def _event_phase_key(event: Any) -> str:
             return "test_validation"
         if any(k in kind for k in ("final", "proof", "orchestration", "report")):
             return "final_report"
-        if any(k in kind for k in ("repair", "copilot", "fallback")):
+        if any(k in kind for k in ("repair", "fallback")):
             return "failure_repair"
     return ""
 
@@ -13826,7 +15505,7 @@ def _stage_status_from_event(event_type: str, event_status: str) -> str:
         "build_started", "test_started",
     } or event_status == "running":
         return "running"
-    if event_type in {"approval_required", "stage_blocked_for_approval"} or event_status == "blocked":
+    if event_type in {"approval_required", "stage_blocked_for_approval", "resume_rejected"} or event_status == "blocked":
         return "blocked"
     if event_type in {"stage_queued", "next_stage_queued"} or event_status == "queued":
         return "queued"
@@ -14116,6 +15795,29 @@ class _ParsedModelOutput:
     schema_validated: bool
     fallback_used: bool
     failure_reason: str = ""
+
+
+def _report_result_to_dict(result: Any) -> dict[str, Any]:
+    return {
+        "job_id": result.job_id,
+        "status": result.status,
+        "eligible": result.eligible,
+        "blockers": list(result.blockers),
+        "generated_at": result.generated_at,
+        "input_checksum": result.input_checksum,
+        "redacted_summary": result.redacted_summary,
+        "artifacts": [
+            {
+                "artifact_id": a.artifact_id,
+                "kind": a.kind,
+                "checksum_sha256": a.checksum_sha256,
+                "size_bytes": a.size_bytes,
+                "content_type": a.content_type,
+                "download_url": a.download_url,
+            }
+            for a in result.artifacts
+        ],
+    }
 
 
 def _parse_and_validate_model_output(

@@ -125,6 +125,9 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         STATUS_APPLIED,
         apply_approved_sandbox_transform,
     )
+    from migration_factory.control_tower.application.v2_profile_runtime import (
+        resolve_runtime_profile_for_state,
+    )
 
     emit_control_tower_event(
         phase="sandbox_transform",
@@ -133,12 +136,13 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
     )
     started = time.monotonic()
     try:
+        runtime_profile = resolve_runtime_profile_for_state(state)
         result = apply_approved_sandbox_transform(
             run_dir=Path(state.get("run_dir", "")),
             legacy_app=Path(state.get("legacy_app_path", "")),
             modernized_app=Path(state.get("modernized_app_path", "")),
             ai_hub=state.get("ai_hub_path", ""),
-            profile=state.get("profile_id", ""),
+            profile=runtime_profile,
             approved_by=state.get("approved_by") or "human",
             quiet=True,
             status_writer=None,
@@ -212,6 +216,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
                 "sandbox_path": str(result.sandbox_path or ""),
                 "transform_log_path": str(result.log_file),
                 "artifact_refs": artifact_refs,
+                "profile_id": runtime_profile,
                 "final_status": result.status,
                 "stop_reason": message,
                 "timing": _merged_timing_state(Path(state.get("run_dir", "")), state),
@@ -294,6 +299,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         "sandbox_path": str(result.sandbox_path),
         "transform_log_path": str(result.log_file),
         "artifact_refs": artifact_refs,
+        "profile_id": runtime_profile,
         "final_status": STATUS_APPLIED,
         "stop_reason": result.message,
         "timing": _merged_timing_state(Path(state.get("run_dir", "")), state),
@@ -306,23 +312,18 @@ def _merge_repair_updates(
     *,
     h2_startup_report: dict[str, Any] | None = None,
 ) -> MigrationState:
-    from migration_factory.repair_loop.orchestrator import run_post_failure_repair_loop
-
-    updates = run_post_failure_repair_loop(failed_state, h2_startup_report=h2_startup_report)
     result: MigrationState = dict(failed_state)
     artifact_refs = dict(result.get("artifact_refs", {}) or {})
-    artifact_refs.update(dict(updates.get("artifact_refs", {}) or {}))
-    result.update(updates)
     result["artifact_refs"] = artifact_refs
-    repair_status = str(updates.get("repair_loop_status") or "")
-    if repair_status == "REPAIR_VALIDATED":
-        result["orchestration_status"] = "PASS"
-        result["final_status"] = "REPAIR_VALIDATED"
-        result["stop_reason"] = "safe deterministic repair patch validated in sandbox"
-    elif repair_status and repair_status != "DISABLED":
-        result["final_status"] = repair_status
-        if repair_status == "REPAIR_BLOCKED_HUMAN_REVIEW":
-            result["stop_reason"] = "Copilot repair proposal requires human review"
+    result["repair_loop_status"] = "REPAIR_REVIEW_REQUIRED"
+    result["repair_blocker"] = "f5_reviewed_repair_required"
+    result["final_status"] = "REPAIR_REVIEW_REQUIRED"
+    result["stop_reason"] = (
+        "Build/test failure requires F5 reviewed Azure repair chain and "
+        "checksum-bound human approval."
+    )
+    if h2_startup_report is not None:
+        result["h2_startup_report_available"] = True
     return result
 
 
@@ -411,13 +412,42 @@ def _run_analysis_service(state: MigrationState) -> MigrationState:
     errors = list(getattr(result, "errors", []) or [])
     warnings = list(getattr(result, "warnings", []) or [])
     status = "PASS" if getattr(result, "status", "") == "COMPLETED" and not errors else "FAIL"
+    artifact_refs = dict(getattr(result, "artifact_paths", {}) or {})
+    review_updates: dict[str, Any] = {}
+    if status == "PASS" and state.get("job_id"):
+        from migration_factory.orchestrator.review_chain import (
+            ReviewChainProductionError,
+            produce_phase_review_chain,
+        )
+
+        try:
+            review_updates = produce_phase_review_chain(
+                state,
+                phase="analysis",
+                stage_index=1,
+                artifact_refs=artifact_refs,
+                deterministic_facts={
+                    "assist_status": getattr(result, "assist_status", ""),
+                    "rewrite_status": getattr(result, "rewrite_status", ""),
+                    "artifact_kinds": sorted(artifact_refs),
+                    "warning_count": len(warnings),
+                },
+                warnings=warnings,
+            )
+        except ReviewChainProductionError as exc:
+            errors.append(str(exc))
+            status = "FAIL"
     return {
         "analysis_status": status,
         "current_unit": "analysis",
         "errors": errors,
         "blockers": list(errors),
         "warnings": warnings,
-        "artifact_refs": dict(getattr(result, "artifact_paths", {}) or {}),
+        "artifact_refs": {
+            **artifact_refs,
+            **dict(review_updates.get("artifact_refs", {}) or {}),
+        },
+        **({"review_chain": review_updates["review_chain"]} if review_updates.get("review_chain") else {}),
     }
 
 

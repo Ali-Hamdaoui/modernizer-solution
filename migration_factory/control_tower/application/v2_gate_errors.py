@@ -24,11 +24,16 @@ _STATUS_TO_HTTP: dict[str, int] = {
     "idempotency_conflict": 409,
     "command_conflict": 409,
     "invalid_decision": 422,
+    "invalid_source_profile_override": 422,
+    "artifact_ref_mismatch": 422,
+    "gate_job_mismatch": 400,
     "no_accepted_analysis": 422,
     "no_accepted_plan": 422,
     "approval_failed": 422,
     "actor_not_authoritative": 403,
     "no_repair_service": 500,
+    "missing_repair_checksum": 422,
+    "repair_checksum_mismatch": 422,
 }
 
 # Rejection statuses (non-success)
@@ -181,6 +186,8 @@ _STATUS_TO_ERROR_CLASS: dict[str, type[GateError]] = {
     "approval_failed": ApprovalFailedError,
     "actor_not_authoritative": ActorNotAuthoritativeError,
     "no_repair_service": NoRepairServiceError,
+    "missing_repair_checksum": InvalidDecisionError,
+    "repair_checksum_mismatch": StaleChecksumError,
 }
 
 

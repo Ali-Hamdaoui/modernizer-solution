@@ -1,7 +1,0 @@
-# Example only: Analysis Agent catalog/profile fixture for OpenRewrite dry-run.
-# Not loaded by production code unless explicitly copied to a run profile path.
-
-openrewrite.plugin: org.openrewrite.maven:rewrite-maven-plugin:5.40.0
-openrewrite.recipe_artifacts: org.openrewrite.recipe:rewrite-spring:6.0.0
-openrewrite.active_recipes: org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_0
-openrewrite.dry_run: dryRun

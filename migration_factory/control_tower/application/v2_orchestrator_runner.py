@@ -23,9 +23,28 @@ from migration_factory.control_tower.application.v2_settings import (
 )
 from migration_factory.control_tower.application.v2_approval_mapping import V2ApprovalMappingService
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json, utc_now_text
+from migration_factory.control_tower.application.v2_stage_progression import (
+    TERMINAL_STAGE_INDEX,
+    route_to_dict,
+)
+from migration_factory.control_tower.application.v2_profile_runtime import (
+    RouteRuntimeProfileUnavailableError,
+    ensure_runtime_profile_available,
+    public_runtime_profile_error_message,
+    resolve_runtime_profile_for_run_configuration,
+)
 from migration_factory.control_tower.domain.gate_checksum import gate_checksum
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import (
     V2StageCommandRecord,
+)
+from migration_factory.repair_loop.failure_evidence import (
+    FailureSource,
+    build_failure_evidence,
+    failure_evidence_to_dict,
+)
+from migration_factory.repair_loop.repair_context import (
+    build_repair_context_pack,
+    context_pack_to_dict,
 )
 
 
@@ -155,6 +174,13 @@ class V2RunnerReconciliationResult:
     result_json_status: str | None = None
 
 
+@dataclass(frozen=True)
+class _ResumeValidationResult:
+    ok: bool
+    reason: str = ""
+    stage_index: int = -1
+
+
 class V2OrchestratorRunner:
     """Launches the persisted runner manifest in a background subprocess."""
 
@@ -191,9 +217,25 @@ class V2OrchestratorRunner:
         # have empty stored argv. Build real argv here.
         command_phase = _resolve_phase_from_checksum(manifest_checksum)
         if command_phase and not argv:
-            argv = _build_phase_argv(
-                self, job_id, command_id, command, stage_index, command_phase,
-            )
+            try:
+                argv = _build_phase_argv(
+                    self, job_id, command_id, command, stage_index, command_phase,
+                )
+            except RouteRuntimeProfileUnavailableError as exc:
+                message = public_runtime_profile_error_message(exc)
+                self._event(
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="stage_failed",
+                    status="blocked",
+                    message=message,
+                    payload={
+                        "command_id": command_id,
+                        "command_phase": command_phase,
+                        "error_code": exc.code,
+                    },
+                )
+                raise
 
         thread = threading.Thread(
             target=self._run_process,
@@ -219,6 +261,8 @@ class V2OrchestratorRunner:
         )
 
     def start_resume(self, *, job_id: str, resume_id: str) -> V2OrchestratorStart:
+        rejected: _ResumeValidationResult | None = None
+        original_command_id: str | None = None
         try:
             with self._unit_of_work_factory() as uow:
                 resume = uow.v2_approvals.get_resume(resume_id)
@@ -227,10 +271,17 @@ class V2OrchestratorRunner:
                 if resume.job_id != job_id:
                     raise ValueError(f"V2 resume command {resume_id!r} does not belong to job {job_id!r}")
 
-                argv = _load_json_list(resume.command_json)
-                stage_index = resume.stage_index
-                env_manifest = _load_env_manifest_for_stage(uow, job_id, stage_index)
-                original_command_id = _blocked_command_id_for_stage(uow, job_id, stage_index)
+                validation = _validate_resume_checkpoint(uow, job_id=job_id, resume=resume)
+                if not validation.ok:
+                    rejected = validation
+                    stage_index = validation.stage_index
+                    argv = []
+                    env_manifest = {}
+                else:
+                    argv = _load_json_list(resume.command_json)
+                    stage_index = resume.stage_index
+                    env_manifest = _load_env_manifest_for_stage(uow, job_id, stage_index)
+                    original_command_id = _blocked_command_id_for_stage(uow, job_id, stage_index)
         except sqlite3.OperationalError as exc:
             if _is_sqlite_locked_error(exc):
                 return V2OrchestratorStart(
@@ -242,6 +293,24 @@ class V2OrchestratorRunner:
                     message=str(exc),
                 )
             raise
+
+        if rejected is not None:
+            self._event(
+                job_id=job_id,
+                stage=rejected.stage_index if rejected.stage_index > 0 else None,
+                event_type="resume_rejected",
+                status="blocked",
+                message="Resume checkpoint validation rejected the request.",
+                payload={"resume_id": resume_id, "reason": rejected.reason},
+            )
+            return V2OrchestratorStart(
+                command_id=resume_id,
+                job_id=job_id,
+                stage_index=rejected.stage_index,
+                pid=None,
+                status="rejected",
+                message=rejected.reason,
+            )
 
         thread = threading.Thread(
             target=self._run_process,
@@ -315,24 +384,6 @@ class V2OrchestratorRunner:
 
         try:
             process_env = _build_env(env_manifest)
-            copilot_enabled = bool(
-                process_env.get("AI_MIGRATION_COPILOT_PROVIDER")
-                or process_env.get("AI_MIGRATION_COPILOT_MODEL")
-            )
-
-            self._event(
-                job_id=job_id,
-                stage=stage_index,
-                event_type="copilot_status_checked",
-                status="completed",
-                message="Copilot/model runtime configuration checked for orchestrator subprocess.",
-                payload={
-                    "command_id": command_id,
-                    "copilot_config_present": copilot_enabled,
-                    "provider_configured": bool(process_env.get("AI_MIGRATION_COPILOT_PROVIDER")),
-                    "model_configured": bool(process_env.get("AI_MIGRATION_COPILOT_MODEL")),
-                },
-            )
 
             process = self._popen_factory(
                 _normalized_argv(argv),
@@ -748,7 +799,45 @@ class V2OrchestratorRunner:
         if sandbox_path:
             result["sandbox_path"] = sandbox_path
 
+        self._maybe_write_repair_failure_context(
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            result=result,
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
+        )
+
         # ── Phase-specific handling: planning bypasses full-stage proof ──
+        if command_phase == "analysis":
+            self._emit_artifacts(
+                job_id=job_id,
+                stage_index=stage_index,
+                command_id=command_id,
+                result=result,
+            )
+            orchestration_status = str(result.get("orchestration_status", ""))
+            if orchestration_status == "PASS":
+                self._handle_reviewed_phase_completed(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    result=result,
+                    phase="analysis",
+                    gate_phase="analysis_review",
+                    required_event_type="analysis_review_required",
+                )
+            else:
+                self._event(
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="stage_failed",
+                    status="failed",
+                    message=f"Analysis phase did not produce valid proof: orchestration_status={orchestration_status}",
+                    payload={"command_id": command_id, "orchestration_status": orchestration_status},
+                )
+            return
+
         if command_phase == "planning":
             self._emit_artifacts(
                 job_id=job_id,
@@ -757,17 +846,23 @@ class V2OrchestratorRunner:
                 result=result,
             )
             orchestration_status = str(result.get("orchestration_status", ""))
-            if orchestration_status == "PASS" and sandbox_path:
+            # Planning is a reviewed checkpoint phase, not a transform phase.
+            # It must produce accepted reviewed artifacts, but it does not
+            # need to emit a sandbox output path.
+            if orchestration_status == "PASS":
                 self._persist_command_runtime_state(
                     command_id=command_id,
                     status="completed",
                     result=_with_runner_status(result, "completed"),
                 )
-                self._handle_planning_phase_completed(
+                self._handle_reviewed_phase_completed(
                     job_id=job_id,
                     stage_index=stage_index,
                     command_id=command_id,
                     result=result,
+                    phase="planning",
+                    gate_phase="planning_review",
+                    required_event_type="planning_review_required",
                 )
             else:
                 self._persist_command_runtime_state(
@@ -788,13 +883,11 @@ class V2OrchestratorRunner:
                     status="failed",
                     message=(
                         f"Planning phase did not produce valid proof: "
-                        f"orchestration_status={orchestration_status}, "
-                        f"sandbox_path={'present' if sandbox_path else 'missing'}"
+                        f"orchestration_status={orchestration_status}"
                     ),
                     payload={
                         "command_id": command_id,
                         "orchestration_status": orchestration_status,
-                        "sandbox_path": sandbox_path,
                     },
                 )
             return
@@ -1044,45 +1137,41 @@ class V2OrchestratorRunner:
             },
         )
 
-        # Emit report completion events based on stage index
-        if stage_index == 3:
-            report_type = "final_report"
-            report_label = "Final migration proof report"
-        else:
-            report_type = "stage_report"
-            report_label = f"Stage {stage_index} report"
-
-        self._event(
-            job_id=job_id,
-            stage=stage_index,
-            event_type=f"{report_type}_started",
-            status="running",
-            message=f"{report_label} generation started.",
-            payload={"command_id": command_id, "sandbox_path": sandbox_path},
-        )
-        self._event(
-            job_id=job_id,
-            stage=stage_index,
-            event_type=f"{report_type}_completed",
-            status="completed",
-            message=f"{report_label} completed.",
-            payload={"command_id": command_id, "final_status": final_status},
-        )
+        # Terminal Stage 4: emit stage_completed only.
+        # migration_completed is deferred to backend governance
+        # after terminal gate/artifact acceptance.
+        if stage_index == 4:
+            return
 
         if stage_index == 3:
             self._event(
                 job_id=job_id,
                 stage=stage_index,
-                event_type="migration_completed",
+                event_type="stage_completed",
                 status="completed",
-                message="Migration completed successfully.",
+                message=f"Stage {stage_index} completed.",
                 payload={
                     "command_id": command_id,
                     "final_status": final_status,
-                    "sandbox_path": sandbox_path,
                 },
             )
-            return
+        else:
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="stage_report_started",
+                status="running",
+                message=f"Stage {stage_index} report started.",
+                payload={"command_id": command_id},
+            )
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="stage_report_completed",
+                status="completed",
+                message=f"Stage {stage_index} report completed.",
+                payload={"command_id": command_id, "final_status": final_status},
+            )
 
         if command_phase == "planning":
             self._handle_planning_phase_completed(
@@ -1096,6 +1185,7 @@ class V2OrchestratorRunner:
                 job_id=job_id,
                 stage_index=stage_index,
                 sandbox_path=sandbox_path,
+                command_id=command_id,
                 result=result,
             )
 
@@ -1373,7 +1463,6 @@ class V2OrchestratorRunner:
         result: dict[str, Any],
     ) -> None:
         repair_status = str(result.get("repair_loop_status", ""))
-        copilot_status = str(result.get("copilot_invocation_status", ""))
         fallback = result.get("repair_fallback_generated")
 
         if repair_status.upper() not in _NON_ACTIVE_REPAIR_STATUSES:
@@ -1396,15 +1485,114 @@ class V2OrchestratorRunner:
                 payload={"command_id": command_id},
             )
 
-        if copilot_status == "INVALID_RESPONSE":
-            self._event(
-                job_id=job_id,
-                stage=stage_index,
-                event_type="copilot_repair_invalid_response",
-                status="failed",
-                message="Copilot repair response was invalid.",
-                payload={"command_id": command_id, "copilot_invocation_status": copilot_status},
+    def _maybe_write_repair_failure_context(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        result: dict[str, Any],
+        stdout_tail: str,
+        stderr_tail: str,
+    ) -> None:
+        build_status = str(result.get("build_status", ""))
+        test_status = str(result.get("test_status", ""))
+        if _is_failure_status(build_status):
+            failure_source = FailureSource.BUILD
+        elif _is_failure_status(test_status):
+            failure_source = FailureSource.TEST
+        else:
+            return
+
+        run_dir = _result_run_dir(result, cwd=self._cwd)
+        if run_dir is None:
+            return
+
+        artifact_refs = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
+        changed_files = tuple(str(path) for path in result.get("changed_files", ()) if str(path).strip()) if isinstance(result.get("changed_files"), (list, tuple)) else ()
+        accepted_checksums = tuple(
+            str(value)
+            for value in (
+                result.get("accepted_artifact_checksums")
+                if isinstance(result.get("accepted_artifact_checksums"), (list, tuple))
+                else ()
             )
+            if str(value).strip()
+        )
+        failure_summary = _first_text(
+            result.get("failure_summary"),
+            result.get("message"),
+            build_status if failure_source == FailureSource.BUILD else test_status,
+            result.get("final_status"),
+            "Build/test failure",
+        )
+        evidence = build_failure_evidence(
+            failure_source=failure_source,
+            stage_index=stage_index,
+            job_id=job_id,
+            command_id=command_id,
+            failure_summary=failure_summary,
+            changed_files=changed_files,
+            source_profile=str(result.get("source_profile") or ""),
+            target_profile=str(result.get("target_profile") or ""),
+            accepted_artifact_checksums=accepted_checksums,
+            artifact_refs={str(k): str(v) for k, v in artifact_refs.items() if v},
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
+            safe_log_preview=_first_text(result.get("safe_log_preview"), stderr_tail, stdout_tail),
+        )
+        context_pack = build_repair_context_pack(
+            failure_evidence=evidence,
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            source_profile=str(result.get("source_profile") or ""),
+            target_profile=str(result.get("target_profile") or ""),
+            changed_files=changed_files,
+            accepted_artifact_checksums=accepted_checksums,
+        )
+
+        repair_dir = run_dir / "repairs"
+        repair_dir.mkdir(parents=True, exist_ok=True)
+        evidence_path = repair_dir / "repair_failure_evidence.json"
+        context_path = repair_dir / "repair_context_pack.json"
+        evidence_path.write_text(
+            json.dumps(failure_evidence_to_dict(evidence), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        context_path.write_text(
+            json.dumps(context_pack_to_dict(context_pack), indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        self._event(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="repair_failure_evidence_written",
+            status="completed",
+            message="Repair failure evidence artifact written.",
+            payload={
+                "command_id": command_id,
+                "failure_source": evidence.failure_source.value,
+                "failure_evidence_ref": _safe_artifact_ref(evidence_path),
+                "failure_evidence_checksum": evidence.content_checksum,
+                "failure_evidence_artifact_checksum": evidence.artifact_checksum,
+            },
+        )
+        self._event(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="repair_context_pack_written",
+            status="completed",
+            message="Repair context pack artifact written.",
+            payload={
+                "command_id": command_id,
+                "context_pack_ref": _safe_artifact_ref(context_path),
+                "context_pack_checksum": context_pack.context_pack_checksum,
+                "failure_evidence_checksum": evidence.content_checksum,
+                "base_repo_state_checksum": context_pack.base_repo_state_checksum,
+            },
+        )
 
     def _emit_diagnostic_failure_events(
         self,
@@ -1419,7 +1607,6 @@ class V2OrchestratorRunner:
         final_status = str(result.get("final_status", ""))
         final_proof = str(result.get("final_proof_level", ""))
         transform_status = str(result.get("transform_status", ""))
-        copilot_status = str(result.get("copilot_invocation_status", ""))
         fallback = result.get("repair_fallback_generated")
 
         build_validation = result.get("build_validation") or {}
@@ -1495,7 +1682,6 @@ class V2OrchestratorRunner:
                 "transform_status": transform_status,
                 "final_proof_level": final_proof,
                 "build_status": build_status,
-                "copilot_invocation_status": copilot_status,
                 "repair_fallback_generated": bool(fallback),
                 **public_contract,
                 **evidence_payload,
@@ -1547,10 +1733,12 @@ class V2OrchestratorRunner:
         job_id: str,
         stage_index: int,
         sandbox_path: str,
+        command_id: str,
         result: dict[str, Any] | None = None,
     ) -> None:
         from migration_factory.control_tower.application.v2_stage_progression import (
             V2StageProgressionService,
+            route_to_dict,
         )
         from migration_factory.control_tower.application.v2_phase_gate_service import (
             CreateGateRequest,
@@ -1562,6 +1750,7 @@ class V2OrchestratorRunner:
         )
 
         next_stage = stage_index + 1
+        queued_target_stage = next_stage
         next_command_id: str | None = None
 
         auto_queue_policy = resolve_auto_queue_next_stage_policy()
@@ -1593,18 +1782,71 @@ class V2OrchestratorRunner:
                 job = uow.v2_jobs.get(job_id)
                 if job is None:
                     return
+                command = uow.v2_commands.get(command_id)
+                command_from_resume = False
+                if command is None:
+                    resume = uow.v2_approvals.get_resume(command_id)
+                    if resume is None:
+                        self._save_stage_progression_blocked(
+                            uow,
+                            job_id=job_id,
+                            stage_index=stage_index,
+                            next_stage=next_stage,
+                            reason="missing_command_metadata",
+                            command_id=command_id,
+                        )
+                        return
+                    command_from_resume = True
+                    if resume.job_id != job_id or int(resume.stage_index) != int(stage_index):
+                        self._save_stage_progression_blocked(
+                            uow,
+                            job_id=job_id,
+                            stage_index=stage_index,
+                            next_stage=next_stage,
+                            reason="resume_command_mismatch",
+                            command_id=command_id,
+                        )
+                        return
+                    command = _resolve_original_stage_command_for_resume(
+                        uow,
+                        job_id=job_id,
+                        stage_index=stage_index,
+                    )
+                if command is None:
+                    self._save_stage_progression_blocked(
+                        uow,
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        next_stage=next_stage,
+                        reason="missing_original_stage_command_metadata",
+                        command_id=command_id,
+                    )
+                    return
 
                 # Load stage continuation policy from run configuration
                 raw_policy = StageContinuationPolicy.AUTO_ON_GREEN
                 run_config = uow.run_configurations.get_for_job(job_id)
-                if run_config is not None and run_config.policy_json:
-                    try:
-                        import json
-                        policy_dict = json.loads(run_config.policy_json)
-                        policy = RunPolicy(**policy_dict)
-                        raw_policy = policy.stage_continuation_policy
-                    except (json.JSONDecodeError, Exception):
-                        pass
+                source_profile = "springboot-2.7-java11"
+                target_profile = "springboot-4.0-java21"
+                if run_config is not None:
+                    if run_config.policy_json:
+                        try:
+                            import json
+                            policy_dict = json.loads(run_config.policy_json)
+                            policy = RunPolicy(**policy_dict)
+                            raw_policy = policy.stage_continuation_policy
+                        except (json.JSONDecodeError, Exception):
+                            pass
+                    if run_config.payload_json:
+                        try:
+                            import json
+                            payload = json.loads(run_config.payload_json)
+                            if payload.get("source_profile"):
+                                source_profile = str(payload["source_profile"])
+                            if payload.get("target_profile"):
+                                target_profile = str(payload["target_profile"])
+                        except (json.JSONDecodeError, Exception):
+                            pass
 
                 # Resolve effective policy:
                 # For MANUAL_ON_WARNING_OR_FAILURE, check if the result has
@@ -1621,18 +1863,66 @@ class V2OrchestratorRunner:
                 service = V2StageProgressionService(
                     setup_repo=uow.v2_setups,
                     command_repo=uow.v2_commands,
+                    artifact_revision_repo=uow.artifact_revisions,
+                    run_config_repo=uow.run_configurations,
                 )
+                route = service.compute_route_for_job(job_id, run_config)
+                source_profile = route.source_profile
+                target_profile = route.target_profile
+                current_route_step_index = _resolve_route_step_index_for_command(
+                    command=command,
+                    result=result,
+                    route=route,
+                )
+                if command_from_resume and route.route_steps and current_route_step_index is None:
+                    self._save_stage_progression_blocked(
+                        uow,
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        next_stage=next_stage,
+                        reason="missing_route_step_index",
+                        command_id=command_id,
+                    )
+                    return
                 queued = service.queue_next_stage(
                     job_id=job_id,
                     setup_id=job.setup_id,
                     current_stage=stage_index,
                     sandbox_path=sandbox_path,
                     stage_continuation_policy=effective_policy,
+                    current_stage_result=result,
+                    profile_route=route,
+                    current_route_step_index=current_route_step_index,
                 )
+                queued_target_stage = queued.to_stage
 
-                # Handle blocked policy: create stage_completion_review gate
+                if queued.status == "completed":
+                    route_payload = route_to_dict(route) if route.valid else {}
+                    uow.v2_events.save(
+                        job_id=job_id,
+                        stage=stage_index,
+                        event_type="migration_completed",
+                        status="completed",
+                        message=(
+                            f"Selected target profile '{target_profile}' reached. "
+                            "Migration completed."
+                        ),
+                        payload={
+                            "from_stage": stage_index,
+                            "to_stage": queued_target_stage,
+                            "reason": queued.reason,
+                            "route": route_payload,
+                            "command_id": command_id,
+                        },
+                    )
+                    return
+
+                # Handle blocked policy or target_reached
                 if queued.status == "blocked":
                     import json
+                    from migration_factory.control_tower.domain.gate_checksum import (
+                        gate_checksum,
+                    )
 
                     # Compute source artifact checksum from result if available
                     source_checksum = ""
@@ -1642,18 +1932,23 @@ class V2OrchestratorRunner:
                             sha256_canonical_json,
                         )
                         source_checksum = sha256_canonical_json(result)
-                        # Extract artifact refs
                         refs_dict = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
                         ref_values = [str(v) for v in refs_dict.values() if v and isinstance(v, str)]
                         if sandbox_path:
                             ref_values.append(sandbox_path)
                         artifact_refs = tuple(sorted(ref_values))
 
-                    # Determine gate phase based on stage index
-                    # Stage 1 (analysis) → analysis_review
-                    # Stage 2 (planning) → planning_review
-                    # Stage 3 (completion) → stage_completion_review
-                    if stage_index == 1:
+                    # Determine event type and gate phase based on reason + stage
+                    reason = queued.reason
+                    if reason == "target_reached":
+                        gate_phase = "stage_completion_review"
+                        event_type = "target_reached"
+                        phase_label = "target"
+                    elif reason == "profile_incompatible":
+                        gate_phase = "stage_completion_review"
+                        event_type = "profile_incompatible"
+                        phase_label = "profile"
+                    elif stage_index == 1:
                         gate_phase = "analysis_review"
                         event_type = "analysis_review_required"
                         phase_label = "analysis"
@@ -1666,7 +1961,6 @@ class V2OrchestratorRunner:
                         event_type = "stage_completion_review_required"
                         phase_label = "stage"
 
-                    # Create the gate (no event_repo — events emitted manually)
                     gate_service = V2PhaseGateService(
                         gate_repo=uow.phase_gates,
                     )
@@ -1679,7 +1973,6 @@ class V2OrchestratorRunner:
                         created_by="system",
                     ))
 
-                    # Emit gate lifecycle events for SSE/assistant context
                     uow.v2_events.save(
                         job_id=job_id,
                         stage=stage_index,
@@ -1696,37 +1989,56 @@ class V2OrchestratorRunner:
                         },
                     )
 
+                    route_payload = route_to_dict(route) if route.valid else {}
+                    if reason == "target_reached":
+                        target_msg = (
+                            f"Target profile '{target_profile}' reached at stage {stage_index}. "
+                            f"No further stages will execute."
+                        )
+                    elif reason == "profile_incompatible":
+                        target_msg = (
+                            f"Source profile '{source_profile}' and target profile "
+                            f"'{target_profile}' form an incompatible pair. "
+                            f"Stage progression is blocked: {route.reason}"
+                        )
+                    else:
+                        target_msg = (
+                            f"Stage {stage_index} ({phase_label}) completed under manual policy. "
+                            f"{gate_phase} gate review required before "
+                            f"stage {queued_target_stage} can start."
+                        )
                     uow.v2_events.save(
                         job_id=job_id,
                         stage=stage_index,
                         event_type=event_type,
                         status="blocked",
-                        message=(
-                            f"Stage {stage_index} ({phase_label}) completed under manual policy. "
-                            f"{gate_phase} gate review required before "
-                            f"stage {next_stage} can start."
-                        ),
+                        message=target_msg,
                         payload={
                             "from_stage": stage_index,
-                            "to_stage": next_stage,
+                            "to_stage": queued_target_stage,
                             "gate_id": gate_result.gate_id,
                             "gate_checksum": gate_result.gate_checksum,
                             "gate_status": gate_result.status,
-                            "reason": queued.reason,
+                            "reason": reason,
+                            "route": route_payload,
                         },
                     )
                     return
 
                 uow.v2_events.save(
                     job_id=job_id,
-                    stage=next_stage,
+                    stage=queued_target_stage,
                     event_type="next_stage_queued",
                     status="queued",
-                    message=f"Stage {next_stage} command manifest queued for real orchestrator execution.",
+                    message=(
+                        f"Stage {queued_target_stage} route step command manifest queued "
+                        "for real orchestrator execution."
+                    ),
                     payload={
                         "from_stage": stage_index,
-                        "to_stage": next_stage,
+                        "to_stage": queued_target_stage,
                         "sandbox_path": sandbox_path,
+                        "route": route_to_dict(route) if route.valid else {},
                     },
                 )
 
@@ -1737,16 +2049,56 @@ class V2OrchestratorRunner:
                     stage_commands = [
                         cmd
                         for cmd in commands
-                        if int(getattr(cmd, "stage_index", 0)) == next_stage
+                        if int(getattr(cmd, "stage_index", 0)) == queued_target_stage
                     ]
                     if stage_commands:
                         next_command_id = str(getattr(stage_commands[-1], "command_id", ""))
 
-        except ValueError:
+        except ValueError as exc:
+            try:
+                with self._unit_of_work_factory() as uow:
+                    uow.v2_events.save(
+                        job_id=job_id,
+                        stage=next_stage,
+                        event_type="stage_progression_blocked",
+                        status="blocked",
+                        message=f"Stage {next_stage} was not queued: {exc}",
+                        payload={
+                            "from_stage": stage_index,
+                            "to_stage": next_stage,
+                            "reason": str(exc),
+                        },
+                    )
+            except Exception:
+                pass
             return
 
-        if next_command_id and not self._stage_has_started(job_id=job_id, stage_index=next_stage):
+        if next_command_id and not self._stage_has_started(job_id=job_id, stage_index=queued_target_stage):
             self.start(job_id=job_id, command_id=next_command_id)
+
+    def _save_stage_progression_blocked(
+        self,
+        uow: Any,
+        *,
+        job_id: str,
+        stage_index: int,
+        next_stage: int,
+        reason: str,
+        command_id: str,
+    ) -> None:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="stage_progression_blocked",
+            status="blocked",
+            message=f"Stage {next_stage} was not queued: {reason}",
+            payload={
+                "from_stage": stage_index,
+                "to_stage": next_stage,
+                "reason": reason,
+                "command_id": command_id,
+            },
+        )
 
     def _stage_has_started(self, *, job_id: str, stage_index: int) -> bool:
         with self._unit_of_work_factory() as uow:
@@ -1842,52 +2194,105 @@ class V2OrchestratorRunner:
         if result is None:
             return
 
+        self._handle_reviewed_phase_completed(
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            result=result,
+            phase="planning",
+            gate_phase="planning_review",
+            required_event_type="planning_review_required",
+        )
+        return
+
+    def _handle_reviewed_phase_completed(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        result: dict[str, Any],
+        phase: str,
+        gate_phase: str,
+        required_event_type: str,
+    ) -> None:
+        from migration_factory.control_tower.application.v2_review_chain_contracts import (
+            validate_runtime_review_chain_result,
+        )
+
+        failures = validate_runtime_review_chain_result(
+            result,
+            phase=phase,
+            stage_index=stage_index,
+            expected_job_id=job_id,
+        )
+        if failures:
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="reviewer_failed",
+                status="failed",
+                message=f"{phase.title()} review chain failed closed.",
+                payload={"command_id": command_id, "failures": failures},
+            )
+            self._event(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="stage_failed",
+                status="failed",
+                message=f"{phase.title()} phase missing accepted checksum-bound reviewer output.",
+                payload={"command_id": command_id, "review_chain_failed": True},
+            )
+            return
+
         self._event(
             job_id=job_id,
             stage=stage_index,
-            event_type="planning_started",
+            event_type=f"{phase}_started",
             status="running",
-            message="Planning phase started.",
+            message=f"{phase.title()} phase started.",
             payload={"command_id": command_id},
         )
         self._event(
             job_id=job_id,
             stage=stage_index,
-            event_type="planning_completed",
+            event_type=f"{phase}_completed",
             status="completed",
-            message="Planning phase completed.",
+            message=f"{phase.title()} phase completed.",
             payload={"command_id": command_id},
         )
 
-        # Collect planning artifact refs from orchestrator result
-        planning_artifacts: dict[str, str] = {}
+        # Collect reviewed phase artifact refs from orchestrator result.
+        phase_artifacts: dict[str, str] = {}
         artifact_refs = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
         if artifact_refs:
-            planning_artifacts = {str(k): str(v) for k, v in artifact_refs.items() if v}
+            phase_artifacts = {str(k): str(v) for k, v in artifact_refs.items() if v}
 
-        # Compute source checksum from result (planning output evidence)
+        # Compute source checksum from result (reviewed output evidence)
         from migration_factory.control_tower.domain.checksums import sha256_canonical_json
         source_checksum = sha256_canonical_json(result)
 
         # Build artifact refs tuple
-        ref_values = list(planning_artifacts.values())
+        ref_values = list(phase_artifacts.values())
         sandbox_path = _result_sandbox_path(result)
         if sandbox_path and sandbox_path not in ref_values:
             ref_values.append(sandbox_path)
         artifact_refs_tuple = tuple(sorted(ref_values))
 
         # Emit artifact written events
-        for kind, path in planning_artifacts.items():
+        for kind, path in phase_artifacts.items():
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="artifact_written",
                 status="completed",
-                message=f"Planning artifact: {kind}",
+                message=f"{phase.title()} artifact: {kind}",
                 payload={"command_id": command_id, "artifact_kind": kind, "relative_path": _safe_artifact_ref(path)},
             )
 
-        # Create planning_review gate AFTER real planning artifacts exist
+        # Create the review gate only after the supplied phase result has
+        # passed the reviewed-output contract. Production Analysis/Planning
+        # producer integration for creating this chain remains separate.
         with self._unit_of_work_factory() as uow:
             from migration_factory.control_tower.application.v2_phase_gate_service import (
                 CreateGateRequest,
@@ -1897,7 +2302,7 @@ class V2OrchestratorRunner:
 
             gate_result = gate_service.create_gate(CreateGateRequest(
                 job_id=job_id,
-                gate_phase="planning_review",
+                gate_phase=gate_phase,
                 stage_index=stage_index,
                 source_artifact_checksum=source_checksum,
                 source_artifact_refs=artifact_refs_tuple,
@@ -1910,22 +2315,22 @@ class V2OrchestratorRunner:
                     stage=stage_index,
                     event_type="f15_gate_opened",
                     status="open",
-                    message=f"planning_review gate opened for stage {stage_index}",
+                    message=f"{gate_phase} gate opened for stage {stage_index}",
                     payload={
                         "gate_id": gate_result.gate_id,
                         "gate_checksum": gate_result.gate_checksum,
-                        "gate_phase": "planning_review",
+                        "gate_phase": gate_phase,
                         "stage_index": stage_index,
                     },
                 )
                 uow.v2_events.save(
                     job_id=job_id,
                     stage=stage_index,
-                    event_type="planning_review_required",
+                    event_type=required_event_type,
                     status="blocked",
                     message=(
-                        f"Stage {stage_index} planning completed. "
-                        f"planning_review gate review required before proceeding."
+                        f"Stage {stage_index} {phase} completed with reviewed Markdown. "
+                        f"{gate_phase} gate review required before proceeding."
                     ),
                     payload={
                         "from_stage": stage_index,
@@ -1960,10 +2365,6 @@ def _build_phase_argv(
     Loads the job/setup from the DB and constructs proper argv with
     --phase <phase> flag.
     """
-    from migration_factory.control_tower.application.v2_worker_stage import (
-        STAGE_JDK_MAP,
-    )
-
     with runner._unit_of_work_factory() as uow:
         job = uow.v2_jobs.get(job_id)
         if job is None:
@@ -1973,16 +2374,35 @@ def _build_phase_argv(
         if setup is None:
             raise ValueError(f"Setup {job.setup_id!r} not found for phase command {command_id!r}")
 
+        run_configuration = uow.run_configurations.get_for_job(job_id)
+        if run_configuration is None:
+            raise ValueError(
+                "ROUTE_RUNTIME_PROFILE_UNAVAILABLE: persisted run configuration not found for job "
+                f"{job_id!r}"
+            )
+        route = _current_route_for_job(uow, job_id)
+        runtime_profile = ""
+        if route is not None and getattr(route, "route_steps", None):
+            for route_step in route.route_steps:
+                if int(getattr(route_step, "stage_index", -1)) == stage_index:
+                    runtime_profile = str(getattr(route_step, "runtime_profile", "") or "").strip()
+                    if runtime_profile:
+                        break
+        if not runtime_profile:
+            runtime_profile = resolve_runtime_profile_for_run_configuration(run_configuration)
+        ensure_runtime_profile_available(setup.ai_hub_path, runtime_profile)
+
         effective_run_id = f"v2-{job_id[:8]}-s{stage_index}-{command_phase}"
         argv = [
             sys.executable,
             "-m",
             "migration_factory.orchestrator.runner",
             "--run-id", effective_run_id,
+            "--job-id", job_id,
             "--legacy", setup.legacy_app_path,
             "--modernized", setup.output_parent_path,
             "--ai-hub", setup.ai_hub_path,
-            "--profile", "springboot-2.1.6-to-2.7-java11",
+            "--profile", runtime_profile,
             "--mode", "full_sandbox_migration",
             "--phase", command_phase,
         ]
@@ -2137,6 +2557,284 @@ def _process_exists(pid: int) -> bool:
     return True
 
 
+def _resolve_original_stage_command_for_resume(
+    uow: Any,
+    *,
+    job_id: str,
+    stage_index: int,
+) -> Any | None:
+    commands = uow.v2_commands.list_by_job_and_stage(job_id, stage_index)
+    if not commands:
+        return None
+
+    def _has_route_metadata(command: Any) -> bool:
+        try:
+            env_manifest = _load_json_dict(getattr(command, "env_json", "{}"))
+        except (json.JSONDecodeError, TypeError, ValueError):
+            env_manifest = {}
+        return bool(
+            env_manifest.get("ROUTE_STEP_INDEX")
+            or env_manifest.get("ROUTE_STEP_RUNTIME_PROFILE")
+            or _argv_option_value(
+                _safe_argv_for_command(command),
+                "--profile",
+            )
+        )
+
+    for command in commands:
+        if _has_route_metadata(command):
+            return command
+    return commands[0]
+
+
+def _safe_argv_for_command(command: Any) -> list[str]:
+    try:
+        return _load_json_list(getattr(command, "argv_json", "[]"))
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return []
+
+
+def _resolve_route_step_index_for_command(
+    *,
+    command: Any,
+    result: dict[str, Any] | None,
+    route: Any,
+) -> int | None:
+    env_manifest = _load_json_dict(getattr(command, "env_json", "{}"))
+    argv = _safe_argv_for_command(command)
+
+    candidate_values: list[Any] = [
+        env_manifest.get("ROUTE_STEP_INDEX"),
+        env_manifest.get("ROUTE_STEP_RUNTIME_PROFILE"),
+        _argv_option_value(argv, "--profile"),
+    ]
+    if isinstance(result, dict):
+        candidate_values.extend([
+            result.get("route_step_index"),
+            result.get("profile_id"),
+            result.get("runtime_profile"),
+            result.get("route_step_runtime_profile"),
+        ])
+
+    for candidate in candidate_values:
+        try:
+            route_step_index = int(str(candidate).strip())
+        except (TypeError, ValueError):
+            route_step_index = None
+        if route_step_index is not None and route_step_index >= 1:
+            return route_step_index
+        runtime_profile = str(candidate or "").strip()
+        if runtime_profile:
+            resolved = _route_step_index_for_runtime_profile(route, runtime_profile)
+            if resolved is not None:
+                return resolved
+
+    return None
+
+
+def _route_step_index_for_runtime_profile(route: Any, runtime_profile: str) -> int | None:
+    for index, step in enumerate(getattr(route, "route_steps", ()), start=1):
+        if str(getattr(step, "runtime_profile", "")).strip() == runtime_profile:
+            return index
+    return None
+
+
+def _argv_option_value(argv: list[str], option_name: str) -> str:
+    for index, value in enumerate(argv):
+        if value == option_name and index + 1 < len(argv):
+            return argv[index + 1]
+        if value.startswith(f"{option_name}="):
+            return value.split("=", 1)[1]
+    return ""
+
+
+def _validate_resume_checkpoint(
+    uow: Any,
+    *,
+    job_id: str,
+    resume: Any,
+) -> _ResumeValidationResult:
+    """Validate a queued resume against backend-owned checkpoint evidence."""
+    stage_index = int(getattr(resume, "stage_index", -1))
+    card = uow.v2_approvals.get_card(str(getattr(resume, "card_id", "")))
+    if card is None:
+        return _ResumeValidationResult(False, "checkpoint_not_found", stage_index)
+    if card.job_id != job_id or getattr(resume, "job_id", "") != job_id:
+        return _ResumeValidationResult(False, "foreign_job", stage_index)
+    if card.stage_index != stage_index:
+        return _ResumeValidationResult(False, "stage_mismatch", stage_index)
+    if card.status != "approved":
+        return _ResumeValidationResult(False, "checkpoint_not_accepted", stage_index)
+
+    gate = _find_gate_for_resume_checksum(
+        uow,
+        job_id=job_id,
+        stage_index=stage_index,
+        checkpoint_checksum=card.request_checksum,
+    )
+    if gate is None:
+        return _ResumeValidationResult(False, "checkpoint_checksum_mismatch", stage_index)
+    if gate.gate_status == "superseded":
+        return _ResumeValidationResult(False, "checkpoint_stale", stage_index)
+
+    accepted = _find_accepted_revision_for_gate(
+        uow,
+        job_id=job_id,
+        stage_index=stage_index,
+        evidence_checksum=gate.source_artifact_checksum,
+    )
+    if accepted is None:
+        return _ResumeValidationResult(False, "accepted_artifact_not_found", stage_index)
+    if accepted.superseded_by_revision_id is not None:
+        return _ResumeValidationResult(False, "accepted_artifact_superseded", stage_index)
+
+    checkpoint_route = _extract_checkpoint_route(
+        gate.source_artifact_refs_json,
+        accepted.artifact_refs_json,
+    )
+    if checkpoint_route is None:
+        return _ResumeValidationResult(False, "checkpoint_profile_metadata_missing", stage_index)
+
+    current_route = _current_route_for_job(uow, job_id)
+    if current_route is None or not current_route.valid:
+        return _ResumeValidationResult(False, "profile_incompatible", stage_index)
+
+    current_route_dict = route_to_dict(current_route)
+    for key in (
+        "source_profile",
+        "target_profile",
+        "included_stages",
+        "excluded_stages",
+        "skipped_stages",
+    ):
+        if checkpoint_route.get(key) != current_route_dict.get(key):
+            return _ResumeValidationResult(False, "checkpoint_route_changed", stage_index)
+
+    if stage_index not in current_route.included_stages and stage_index not in (1,):
+        return _ResumeValidationResult(False, "checkpoint_stage_not_in_route", stage_index)
+
+    return _ResumeValidationResult(True, stage_index=stage_index)
+
+
+def _find_gate_for_resume_checksum(
+    uow: Any,
+    *,
+    job_id: str,
+    stage_index: int,
+    checkpoint_checksum: str,
+) -> Any | None:
+    for gate in uow.phase_gates.list_by_job_and_stage(job_id, stage_index):
+        refs = _json_loads(gate.source_artifact_refs_json, default=[])
+        current_checksum = gate_checksum(
+            gate_id=gate.gate_id,
+            job_id=gate.job_id,
+            gate_phase=gate.gate_phase,
+            stage_index=gate.stage_index,
+            source_artifact_checksum=gate.source_artifact_checksum,
+            source_artifact_refs=refs if isinstance(refs, list) else [],
+        )
+        if current_checksum == checkpoint_checksum:
+            return gate
+    return None
+
+
+def _find_accepted_revision_for_gate(
+    uow: Any,
+    *,
+    job_id: str,
+    stage_index: int,
+    evidence_checksum: str,
+) -> Any | None:
+    for revision in uow.artifact_revisions.list_by_job_and_stage(job_id, stage_index):
+        if revision.revision_status != "accepted":
+            continue
+        if revision.evidence_checksum == evidence_checksum:
+            return revision
+    return None
+
+
+def _current_route_for_job(uow: Any, job_id: str) -> Any | None:
+    from migration_factory.control_tower.application.v2_stage_progression import (
+        V2StageProgressionService,
+    )
+
+    service = V2StageProgressionService(
+        setup_repo=uow.v2_setups,
+        command_repo=uow.v2_commands,
+        artifact_revision_repo=uow.artifact_revisions,
+        run_config_repo=uow.run_configurations,
+    )
+    return service.compute_route_for_job(job_id)
+
+
+def _extract_checkpoint_route(*raw_values: str) -> dict[str, Any] | None:
+    for raw in raw_values:
+        value = _json_loads(raw, default=None)
+        found = _find_route_metadata(value)
+        if found is not None:
+            return found
+    return None
+
+
+def _find_route_metadata(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        candidate = value.get("profile_metadata") if isinstance(value.get("profile_metadata"), dict) else value
+        if _looks_like_route_metadata(candidate):
+            return _normalize_route_metadata(candidate)
+        for nested in value.values():
+            found = _find_route_metadata(nested)
+            if found is not None:
+                return found
+    if isinstance(value, list):
+        for item in value:
+            found = _find_route_metadata(item)
+            if found is not None:
+                return found
+    return None
+
+
+def _looks_like_route_metadata(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and "source_profile" in value
+        and "target_profile" in value
+        and "included_stages" in value
+    )
+
+
+def _normalize_route_metadata(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source_profile": str(value.get("source_profile") or ""),
+        "target_profile": str(value.get("target_profile") or ""),
+        "included_stages": _int_list(value.get("included_stages")),
+        "excluded_stages": _int_list(value.get("excluded_stages")),
+        "skipped_stages": _int_list(value.get("skipped_stages")),
+    }
+
+
+def _int_list(value: Any) -> list[int]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    result: list[int] = []
+    for item in value:
+        try:
+            result.append(int(item))
+        except (TypeError, ValueError):
+            return []
+    return result
+
+
+def _json_loads(raw: Any, *, default: Any) -> Any:
+    if isinstance(raw, (dict, list)):
+        return raw
+    if not isinstance(raw, str):
+        return default
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return default
+
+
 def _extract_final_json(stdout: str) -> dict[str, Any] | None:
     """Extract the orchestrator result JSON from stdout.
 
@@ -2237,6 +2935,30 @@ def _result_sandbox_path(result: dict[str, Any]) -> str:
             return ""
 
     return ""
+
+
+def _result_run_dir(result: dict[str, Any], *, cwd: Path) -> Path | None:
+    direct = _first_text(result.get("run_dir"))
+    if direct:
+        return Path(direct)
+
+    run_id = str(result.get("run_id") or "").strip()
+    if run_id:
+        artifact_refs = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
+        for candidate in (result.get("sandbox_path"), result.get("modernized_app_path"), *artifact_refs.values()):
+            text = str(candidate or "")
+            marker = f".migration{os.sep}runs{os.sep}{run_id}"
+            alt_marker = f".migration/runs/{run_id}"
+            normalized = text.replace("\\", "/")
+            if alt_marker in normalized:
+                prefix = normalized[: normalized.index(alt_marker) + len(alt_marker)]
+                return Path(prefix)
+            if marker in text:
+                prefix = text[: text.index(marker) + len(marker)]
+                return Path(prefix)
+        return cwd / ".migration" / "runs" / run_id
+
+    return None
 
 
 def _safe_artifact_ref(value: Any) -> str:
@@ -2385,7 +3107,6 @@ def _canonical_event_type(phase: str, suffix: str, *, stage_index: int) -> str:
         "build": f"build_{suffix}",
         "test": f"test_{suffix}",
         "repair": f"repair_{suffix}",
-        "copilot_repair": f"copilot_repair_{suffix}",
     }
 
     if phase == "final_report":

@@ -180,6 +180,26 @@ def _headers() -> dict[str, str]:
     }
 
 
+def _seed_api_repair_proposal(
+    conn: sqlite3.Connection,
+    *,
+    command_id: str = "cmd1",
+    failure_summary: str = "Build failed",
+    hypothesis: str = "Missing dep",
+    patch_summary: str = "Add dep",
+    affected_paths: tuple[str, ...] = ("pom.xml",),
+) -> str:
+    service = V2RepairFlowService(repair_repo=SqliteV2RepairRepository(conn))
+    proposal = service.create_proposal(
+        command_id=command_id,
+        failure_summary=failure_summary,
+        hypothesis=hypothesis,
+        patch_summary=patch_summary,
+        affected_paths=affected_paths,
+    )
+    return proposal.proposal_id
+
+
 # ── F07: Reviewer critique schema ───────────────────────────────────
 
 
@@ -933,20 +953,7 @@ class TestF07ReviewerCritiqueAPI:
         fake_client = _fake_model_client(reviewer_decision="accept")
         client, conn = _api_client(tmp_path, fake_model_client=fake_client)
 
-        # First create a proposal so it exists
-        create_resp = client.post(
-            "/v1/v2/commands/cmd1/repair/flow-proposal",
-            json={
-                "command_id": "cmd1",
-                "failure_summary": "Build failed",
-                "hypothesis": "Missing dep",
-                "patch_summary": "Add dep",
-                "affected_paths": ["pom.xml"],
-            },
-            headers=_headers(),
-        )
-        assert create_resp.status_code == 200
-        proposal_id = create_resp.json()["proposal_id"]
+        proposal_id = _seed_api_repair_proposal(conn)
 
         response = client.post(
             f"/v1/v2/commands/cmd1/repair/proposal/{proposal_id}/reviewer-critique",
@@ -970,20 +977,7 @@ class TestF07ReviewerCritiqueAPI:
         fake_client = _fake_model_client(reviewer_decision="accept")
         client, conn = _api_client(tmp_path, fake_model_client=fake_client)
 
-        # Create proposal first
-        create_resp = client.post(
-            "/v1/v2/commands/cmd1/repair/flow-proposal",
-            json={
-                "command_id": "cmd1",
-                "failure_summary": "Build failed",
-                "hypothesis": "Missing dep",
-                "patch_summary": "Add dep",
-                "affected_paths": ["pom.xml"],
-            },
-            headers=_headers(),
-        )
-        assert create_resp.status_code == 200
-        proposal_id = create_resp.json()["proposal_id"]
+        proposal_id = _seed_api_repair_proposal(conn)
 
         # Client tries to send decision directly — extra field rejected
         response = client.post(
@@ -1003,18 +997,7 @@ class TestF07ReviewerCritiqueAPI:
         fake_client = _fake_model_client(reviewer_decision="accept")
         client, conn = _api_client(tmp_path, fake_model_client=fake_client)
 
-        create_resp = client.post(
-            "/v1/v2/commands/cmd1/repair/flow-proposal",
-            json={
-                "command_id": "cmd1",
-                "failure_summary": "Build failed",
-                "hypothesis": "Missing dep",
-                "patch_summary": "Add dep",
-                "affected_paths": ["pom.xml"],
-            },
-            headers=_headers(),
-        )
-        proposal_id = create_resp.json()["proposal_id"]
+        proposal_id = _seed_api_repair_proposal(conn)
 
         # Create a critique via model-backed endpoint
         client.post(
@@ -1040,18 +1023,7 @@ class TestF07ReviewerCritiqueAPI:
         fake_client = _fake_model_client(reviewer_decision="accept")
         client, conn = _api_client(tmp_path, fake_model_client=fake_client)
 
-        create_resp = client.post(
-            "/v1/v2/commands/cmd1/repair/flow-proposal",
-            json={
-                "command_id": "cmd1",
-                "failure_summary": "Build failed",
-                "hypothesis": "Missing dep",
-                "patch_summary": "Add dep",
-                "affected_paths": ["pom.xml"],
-            },
-            headers=_headers(),
-        )
-        proposal_id = create_resp.json()["proposal_id"]
+        proposal_id = _seed_api_repair_proposal(conn)
 
         create_resp2 = client.post(
             f"/v1/v2/commands/cmd1/repair/proposal/{proposal_id}/reviewer-critique",
@@ -1078,18 +1050,7 @@ class TestF07ReviewerCritiqueAPI:
         fake_client = _fake_model_client(reviewer_decision="accept")
         client, conn = _api_client(tmp_path, fake_model_client=fake_client)
 
-        create_resp = client.post(
-            "/v1/v2/commands/cmd1/repair/flow-proposal",
-            json={
-                "command_id": "cmd1",
-                "failure_summary": "Build failed",
-                "hypothesis": "Missing dep",
-                "patch_summary": "Add dep",
-                "affected_paths": ["pom.xml"],
-            },
-            headers=_headers(),
-        )
-        proposal_id = create_resp.json()["proposal_id"]
+        proposal_id = _seed_api_repair_proposal(conn)
 
         # Client tries to fabricate an accept decision
         response = client.post(

@@ -166,6 +166,64 @@ def test_planning_node_accepts_profile_id_alias(tmp_path: Path) -> None:
     assert 'profile: "java17"' in plan_text
 
 
+def test_java21_runtime_validation_route_reaches_planning_when_openrewrite_is_blocked(tmp_path: Path) -> None:
+    app_dir = tmp_path / "app"
+    hub_dir = Path(__file__).resolve().parents[3] / "modernizer-solution-ai-hub"
+    run_id = "runtime-validation-route"
+
+    analysis_dir = app_dir / ".migration" / "runs" / run_id / "analysis"
+    _write_analysis_fixture(analysis_dir)
+    (analysis_dir / "analysis_report.json").write_text(
+        json.dumps(
+            {
+                "status": "PASS",
+                "source_stack": {
+                    "build_tool": "maven",
+                    "java": "17",
+                    "spring_boot": "3.5.15",
+                },
+                "inventory": {
+                    "build_tool": "maven",
+                    "java_version": "17",
+                    "spring_boot_version": "3.5.15",
+                    "javax_count": 0,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (analysis_dir / "rewrite_impact_summary.json").write_text(
+        json.dumps(
+            {
+                "overall_impact": "BLOCKED",
+                "blocked_reasons": ["OpenRewrite dry-run unavailable"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = planning_node(
+        {
+            "run_id": run_id,
+            "profile": "springboot-3.5-java17-to-java21",
+            "modernized_app_path": str(app_dir),
+            "ai_hub_path": str(hub_dir),
+        }
+    )
+
+    assert result["planning_status"] == "PASS"
+    planning_dir = app_dir / ".migration" / "runs" / run_id / "planning"
+    plan_payload = yaml.safe_load((planning_dir / "migration_plan.yaml").read_text(encoding="utf-8"))
+    units_payload = yaml.safe_load((planning_dir / "migration_units.yaml").read_text(encoding="utf-8"))
+
+    assert plan_payload["executable"] is True
+    assert [unit["id"] for unit in units_payload["units"]] == ["baseline", "java-21-runtime-validation"]
+    assert any(
+        "OpenRewrite impact is blocked for a Java 21 runtime-validation route" in warning
+        for warning in result["warnings"]
+    )
+
+
 def test_planning_runner_writes_artifacts_under_modernized_run(tmp_path: Path, monkeypatch) -> None:
     legacy_dir = tmp_path / "legacy"
     app_dir = tmp_path / "app"

@@ -10,9 +10,12 @@ results that callers use to queue work via existing services.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
+
+from pydantic import ValidationError
 
 from migration_factory.control_tower.application.v2_phase_gate_service import (
     CreateGateRequest,
@@ -27,6 +30,7 @@ from migration_factory.control_tower.domain.checksums import (
 from migration_factory.control_tower.domain.entities import (
     ArtifactRevisionRecord,
     GateDecisionRecord,
+    PhaseGateRecord,
 )
 from migration_factory.control_tower.domain.gate_checksum import (
     GateChecksumMismatchError,
@@ -58,6 +62,9 @@ from migration_factory.control_tower.schemas.phase_gate import (
     HUMAN_AUTHORITATIVE_ACTIONS,
     is_valid_decision_for_phase,
 )
+from migration_factory.control_tower.schemas.source_profile_override import (
+    SourceProfileOverrideRequest,
+)
 
 
 # ── result types ──────────────────────────────────────────────────────
@@ -84,6 +91,158 @@ class GateActionResult:
     result_command_id: str | None = None
     result_revision_id: str | None = None
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class RepairApprovalChecksumBinding:
+    """Checksum set required to approve a reviewed F5 repair gate."""
+
+    proposal_checksum: str
+    context_pack_checksum: str
+    reviewer_output_checksum: str
+    final_reviewed_diff_checksum: str
+    policy_validation_checksum: str
+    base_repo_state_checksum: str
+    final_reviewed_artifact_checksum: str = ""
+    repair_revision_id: str = ""
+    repair_revision_checksum: str = ""
+
+
+def persist_approved_approval_review_revision(
+    *,
+    gate: PhaseGateRecord,
+    revision_repo: SqliteArtifactRevisionRepository | None,
+    decided_by: str,
+    profile_metadata: dict[str, Any] | None = None,
+) -> str | None:
+    """Persist the backend-owned accepted evidence for an approval_review gate.
+
+    The approval checkpoint validator expects an accepted revision whose
+    evidence checksum matches the approval gate's source checksum.
+    """
+    if revision_repo is None:
+        return None
+    if gate.gate_phase != GatePhase.APPROVAL_REVIEW.value:
+        return None
+
+    accepted = revision_repo.find_accepted(
+        gate.job_id,
+        gate.stage_index,
+        "approval_review",
+    )
+    if accepted is not None:
+        if accepted.evidence_checksum != gate.source_artifact_checksum:
+            raise ValueError(
+                "Approval review gate already has an accepted revision with a different checksum."
+            )
+        if _artifact_refs_include_profile_metadata(accepted.artifact_refs_json):
+            return accepted.revision_id
+        if profile_metadata is None:
+            return accepted.revision_id
+        latest = accepted
+    else:
+        latest = revision_repo.find_latest_by_kind(
+            gate.job_id,
+            gate.stage_index,
+            "approval_review",
+        )
+
+    artifact_refs = _approval_review_artifact_refs(
+        gate.source_artifact_refs_json,
+        profile_metadata=profile_metadata,
+    )
+    if accepted is not None and latest is accepted:
+        latest = accepted
+    now = utc_now_text()
+    revision_id = uuid4().hex
+    revision_repo.save(
+        ArtifactRevisionRecord(
+            revision_id=revision_id,
+            job_id=gate.job_id,
+            stage_index=gate.stage_index,
+            revision_kind="approval_review",
+            revision_status="accepted",
+            revision_order=(latest.revision_order + 1) if latest else 1,
+            evidence_checksum=gate.source_artifact_checksum,
+            prior_revision_checksum=latest.evidence_checksum if latest else None,
+            artifact_refs_json=json.dumps(
+                artifact_refs,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            prior_revision_id=latest.revision_id if latest else None,
+            superseded_by_revision_id=None,
+            accepted_at_gate_id=gate.gate_id,
+            created_at=now,
+            created_by=decided_by,
+            accepted_at=now,
+            accepted_by=decided_by,
+        )
+    )
+    return revision_id
+
+
+def _approval_review_artifact_refs(
+    raw_refs_json: str,
+    *,
+    profile_metadata: dict[str, Any] | None = None,
+) -> list[Any]:
+    try:
+        parsed = json.loads(raw_refs_json or "[]")
+    except (json.JSONDecodeError, TypeError, ValueError):
+        parsed = []
+
+    if isinstance(parsed, list):
+        refs: list[Any] = list(parsed)
+    elif isinstance(parsed, dict):
+        refs = [parsed]
+    else:
+        refs = []
+
+    if profile_metadata is None:
+        return refs
+
+    profile_ref = _approval_review_profile_metadata_ref(profile_metadata)
+    for index, ref in enumerate(refs):
+        if not isinstance(ref, dict):
+            continue
+        nested = ref.get("profile_metadata")
+        if isinstance(nested, dict):
+            refs[index] = {
+                **ref,
+                "profile_metadata": {
+                    **nested,
+                    **profile_metadata,
+                },
+            }
+            return refs
+
+    refs.append(profile_ref)
+    return refs
+
+
+def _approval_review_profile_metadata_ref(profile_metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": "profile_route",
+        "path_or_ref": "metadata:profile-route",
+        "checksum": str(profile_metadata.get("route_checksum") or ""),
+        "profile_metadata": dict(profile_metadata),
+    }
+
+
+def _artifact_refs_include_profile_metadata(raw_refs_json: str) -> bool:
+    try:
+        parsed = json.loads(raw_refs_json or "[]")
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return False
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+    if not isinstance(parsed, list):
+        return False
+    for ref in parsed:
+        if isinstance(ref, dict) and isinstance(ref.get("profile_metadata"), dict):
+            return True
+    return False
 
 
 # ── service ──────────────────────────────────────────────────────────
@@ -207,7 +366,7 @@ class V2GateActionService:
                         ),
                     )
 
-        return self._execute_action(
+        result = self._execute_action(
             gate_id=gate_id,
             job_id=job_id,
             action=GateDecision.CONTINUE,
@@ -216,6 +375,60 @@ class V2GateActionService:
             expected_gate_checksum=expected_gate_checksum,
             actor_type=GateActorType.HUMAN.value,
         )
+        if (
+            result.status == "executed"
+            and gate is not None
+            and self._revision_repo is not None
+            and gate_phase_val in (GatePhase.ANALYSIS_REVIEW, GatePhase.PLANNING_REVIEW)
+        ):
+            revision_kind = (
+                "analysis"
+                if gate_phase_val == GatePhase.ANALYSIS_REVIEW
+                else "planning"
+            )
+            if self._revision_repo.find_accepted(
+                gate.job_id,
+                gate.stage_index,
+                revision_kind,
+            ) is None:
+                latest = self._revision_repo.find_latest_by_kind(
+                    gate.job_id,
+                    gate.stage_index,
+                    revision_kind,
+                )
+                now = utc_now_text()
+                revision_id = uuid4().hex
+                self._revision_repo.save(
+                    ArtifactRevisionRecord(
+                        revision_id=revision_id,
+                        job_id=gate.job_id,
+                        stage_index=gate.stage_index,
+                        revision_kind=revision_kind,
+                        revision_status="accepted",
+                        revision_order=(latest.revision_order + 1) if latest else 1,
+                        evidence_checksum=gate.source_artifact_checksum,
+                        prior_revision_checksum=latest.evidence_checksum if latest else None,
+                        artifact_refs_json=gate.source_artifact_refs_json,
+                        prior_revision_id=latest.revision_id if latest else None,
+                        superseded_by_revision_id=None,
+                        accepted_at_gate_id=gate.gate_id,
+                        created_at=now,
+                        created_by=decided_by,
+                        accepted_at=now,
+                        accepted_by=decided_by,
+                    )
+                )
+                return GateActionResult(
+                    action=result.action,
+                    gate_id=result.gate_id,
+                    decision_id=result.decision_id,
+                    status=result.status,
+                    result_gate_id=result.result_gate_id,
+                    result_command_id=result.result_command_id,
+                    result_revision_id=revision_id,
+                    reason=result.reason,
+                )
+        return result
 
     # ── action: reanalyze ───────────────────────────────────────────
 
@@ -438,6 +651,7 @@ class V2GateActionService:
         user_feedback: str = "",
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
+        open_followup_gate: bool = True,
     ) -> GateActionResult:
         """Request a repair revision at a repair_review gate.
 
@@ -470,6 +684,7 @@ class V2GateActionService:
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
             request_checksum=request_checksum,
+            open_followup_gate=open_followup_gate,
         )
         if base_result.status not in ("executed", "idempotent"):
             return base_result
@@ -539,6 +754,7 @@ class V2GateActionService:
         expected_gate_checksum: str | None = None,
         actor_type: str = GateActorType.HUMAN.value,
         revision_requested_active: bool = False,
+        profile_metadata: dict[str, Any] | None = None,
     ) -> GateActionResult:
         """Validate and execute an 'approve' decision."""
         gate = self._gate_repo.get(gate_id)
@@ -570,7 +786,7 @@ class V2GateActionService:
                     "evidence is generated."
                 ),
             )
-        return self._execute_action(
+        result = self._execute_action(
             gate_id=gate_id,
             job_id=effective_job_id,
             action=GateDecision.APPROVE,
@@ -578,6 +794,38 @@ class V2GateActionService:
             idempotency_key=idempotency_key,
             expected_gate_checksum=expected_gate_checksum,
             actor_type=actor_type,
+        )
+        if result.status != "executed" or gate.gate_phase != GatePhase.APPROVAL_REVIEW.value:
+            return result
+        try:
+            revision_id = persist_approved_approval_review_revision(
+                gate=gate,
+                revision_repo=self._revision_repo,
+                decided_by=decided_by,
+                profile_metadata=profile_metadata,
+            )
+        except ValueError as exc:
+            return GateActionResult(
+                action=GateDecision.APPROVE.value,
+                gate_id=gate_id,
+                decision_id=result.decision_id,
+                status="approval_failed",
+                result_gate_id=result.result_gate_id,
+                result_command_id=result.result_command_id,
+                result_revision_id=None,
+                reason=str(exc),
+            )
+        if revision_id is None:
+            return result
+        return GateActionResult(
+            action=result.action,
+            gate_id=result.gate_id,
+            decision_id=result.decision_id,
+            status=result.status,
+            result_gate_id=result.result_gate_id,
+            result_command_id=result.result_command_id,
+            result_revision_id=revision_id,
+            reason=result.reason,
         )
 
     # ── action: reject ──────────────────────────────────────────────
@@ -674,6 +922,13 @@ class V2GateActionService:
         proposal_id: str,
         proposal_checksum: str,
         context_pack_checksum: str,
+        reviewer_output_checksum: str = "",
+        final_reviewed_diff_checksum: str = "",
+        policy_validation_checksum: str = "",
+        base_repo_state_checksum: str = "",
+        final_reviewed_artifact_checksum: str = "",
+        repair_revision_id: str = "",
+        repair_revision_checksum: str = "",
         idempotency_key: str | None = None,
         expected_gate_checksum: str | None = None,
         actor_type: str = GateActorType.HUMAN.value,
@@ -722,6 +977,13 @@ class V2GateActionService:
                     "proposal_id": proposal_id,
                     "proposal_checksum": proposal_checksum,
                     "context_pack_checksum": context_pack_checksum,
+                    "reviewer_output_checksum": reviewer_output_checksum,
+                    "final_reviewed_diff_checksum": final_reviewed_diff_checksum,
+                    "policy_validation_checksum": policy_validation_checksum,
+                    "base_repo_state_checksum": base_repo_state_checksum,
+                    "final_reviewed_artifact_checksum": final_reviewed_artifact_checksum,
+                    "repair_revision_id": repair_revision_id,
+                    "repair_revision_checksum": repair_revision_checksum,
                     "actor_type": GateActorType.HUMAN.value,
                 }
             )
@@ -737,6 +999,13 @@ class V2GateActionService:
                 "proposal_id": proposal_id,
                 "proposal_checksum": proposal_checksum,
                 "context_pack_checksum": context_pack_checksum,
+                "reviewer_output_checksum": reviewer_output_checksum,
+                "final_reviewed_diff_checksum": final_reviewed_diff_checksum,
+                "policy_validation_checksum": policy_validation_checksum,
+                "base_repo_state_checksum": base_repo_state_checksum,
+                "final_reviewed_artifact_checksum": final_reviewed_artifact_checksum,
+                "repair_revision_id": repair_revision_id,
+                "repair_revision_checksum": repair_revision_checksum,
             }
         )
         existing = self._decision_repo.find_by_idempotency_key(
@@ -807,6 +1076,23 @@ class V2GateActionService:
                 reason=f"approve_repair only works on repair_review gates, not {gate_phase.value}",
             )
 
+        binding_result = self._validate_reviewed_repair_binding(
+            gate=gate,
+            binding=RepairApprovalChecksumBinding(
+                proposal_checksum=proposal_checksum,
+                context_pack_checksum=context_pack_checksum,
+                reviewer_output_checksum=reviewer_output_checksum,
+                final_reviewed_diff_checksum=final_reviewed_diff_checksum,
+                policy_validation_checksum=policy_validation_checksum,
+                base_repo_state_checksum=base_repo_state_checksum,
+                final_reviewed_artifact_checksum=final_reviewed_artifact_checksum,
+                repair_revision_id=repair_revision_id,
+                repair_revision_checksum=repair_revision_checksum,
+            ),
+        )
+        if binding_result is not None:
+            return binding_result
+
         # 5. Require repair service
         if self._repair_service is None:
             return GateActionResult(
@@ -851,7 +1137,147 @@ class V2GateActionService:
         if result.status not in ("executed", "idempotent"):
             return result
 
+        if (
+            result.status == "executed"
+            and self._revision_repo is not None
+            and repair_revision_id
+        ):
+            accepted_revision_id = uuid4().hex
+            latest = self._revision_repo.find_latest_by_kind(
+                gate.job_id,
+                gate.stage_index,
+                "repair",
+            )
+            now = utc_now_text()
+            self._revision_repo.save(
+                ArtifactRevisionRecord(
+                    revision_id=accepted_revision_id,
+                    job_id=gate.job_id,
+                    stage_index=gate.stage_index,
+                    revision_kind="repair",
+                    revision_status="accepted",
+                    revision_order=(latest.revision_order + 1) if latest else 1,
+                    evidence_checksum=gate.source_artifact_checksum,
+                    prior_revision_checksum=repair_revision_checksum or None,
+                    artifact_refs_json=gate.source_artifact_refs_json,
+                    prior_revision_id=repair_revision_id,
+                    superseded_by_revision_id=None,
+                    accepted_at_gate_id=gate_id,
+                    created_at=now,
+                    created_by=decided_by,
+                    accepted_at=now,
+                    accepted_by=decided_by,
+                )
+            )
+            return GateActionResult(
+                action=result.action,
+                gate_id=result.gate_id,
+                decision_id=result.decision_id,
+                status=result.status,
+                result_gate_id=result.result_gate_id,
+                result_command_id=result.result_command_id,
+                result_revision_id=accepted_revision_id,
+                reason=result.reason,
+            )
+
         return result
+
+    def _validate_reviewed_repair_binding(
+        self,
+        *,
+        gate: Any,
+        binding: RepairApprovalChecksumBinding,
+    ) -> GateActionResult | None:
+        refs = self._parse_gate_ref_checksums(gate.source_artifact_refs_json)
+        reviewed_gate = any(
+            key in refs
+            for key in (
+                "reviewer_output_checksum",
+                "final_reviewed_diff_checksum",
+                "policy_validation_checksum",
+                "base_repo_state_checksum",
+            )
+        )
+        if not reviewed_gate:
+            return None
+
+        required = {
+            "context_pack_checksum": binding.context_pack_checksum,
+            "reviewer_output_checksum": binding.reviewer_output_checksum,
+            "final_reviewed_diff_checksum": binding.final_reviewed_diff_checksum,
+            "policy_validation_checksum": binding.policy_validation_checksum,
+            "base_repo_state_checksum": binding.base_repo_state_checksum,
+        }
+        missing = [name for name, value in required.items() if not value]
+        if missing:
+            return GateActionResult(
+                action=GateDecision.CONTINUE.value,
+                gate_id=gate.gate_id,
+                decision_id="",
+                status="missing_repair_checksum",
+                reason="Missing reviewed repair checksum(s): " + ", ".join(missing),
+            )
+
+        expected = {
+            "context_pack_checksum": binding.context_pack_checksum,
+            "reviewer_output_checksum": binding.reviewer_output_checksum,
+            "final_reviewed_diff_checksum": binding.final_reviewed_diff_checksum,
+            "policy_validation_checksum": binding.policy_validation_checksum,
+            "base_repo_state_checksum": binding.base_repo_state_checksum,
+        }
+        if binding.final_reviewed_artifact_checksum:
+            expected["final_artifact_checksum"] = binding.final_reviewed_artifact_checksum
+        for name, supplied in expected.items():
+            actual = refs.get(name)
+            if actual is not None and actual != supplied:
+                return GateActionResult(
+                    action=GateDecision.CONTINUE.value,
+                    gate_id=gate.gate_id,
+                    decision_id="",
+                    status="repair_checksum_mismatch",
+                    reason=f"{name} does not match the reviewed repair gate",
+                )
+
+        required_binding = {
+            "failure_evidence_checksum": refs.get("failure_evidence_checksum", ""),
+            "context_pack_checksum": binding.context_pack_checksum,
+            "primary_output_checksum": refs.get("primary_output_checksum", ""),
+            "reviewer_output_checksum": binding.reviewer_output_checksum,
+            "final_reviewed_diff_checksum": binding.final_reviewed_diff_checksum,
+            "policy_validation_checksum": binding.policy_validation_checksum,
+            "base_repo_state_checksum": binding.base_repo_state_checksum,
+            "final_artifact_checksum": (
+                binding.final_reviewed_artifact_checksum
+                or refs.get("final_artifact_checksum", "")
+            ),
+        }
+        expected_gate_source_checksum = sha256_canonical_json(required_binding)
+        if gate.source_artifact_checksum != expected_gate_source_checksum:
+            return GateActionResult(
+                action=GateDecision.CONTINUE.value,
+                gate_id=gate.gate_id,
+                decision_id="",
+                status="repair_checksum_mismatch",
+                reason="Reviewed repair binding no longer matches gate source checksum",
+            )
+        return None
+
+    @staticmethod
+    def _parse_gate_ref_checksums(source_artifact_refs_json: str) -> dict[str, str]:
+        try:
+            parsed = json.loads(source_artifact_refs_json)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        if not isinstance(parsed, list):
+            return {}
+        refs: dict[str, str] = {}
+        for item in parsed:
+            if not isinstance(item, str) or ":" not in item:
+                continue
+            key, value = item.split(":", 1)
+            if key.endswith("_checksum") or key == "checksum":
+                refs[key] = value
+        return refs
 
     # ── action: approve_transformation ─────────────────────────────
 
@@ -865,6 +1291,7 @@ class V2GateActionService:
         expected_gate_checksum: str | None = None,
         actor_type: str = GateActorType.HUMAN.value,
         revision_requested_active: bool = False,
+        profile_metadata: dict[str, Any] | None = None,
     ) -> GateActionResult:
         """Approve transformation at an approval_review gate.
 
@@ -952,7 +1379,7 @@ class V2GateActionService:
         command_id = uuid4().hex
 
         # Execute the approval action (validates gate open, phase, checksum)
-        return self._execute_action(
+        result = self._execute_action(
             gate_id=gate_id,
             job_id=job_id,
             action=GateDecision.APPROVE,
@@ -961,6 +1388,38 @@ class V2GateActionService:
             expected_gate_checksum=expected_gate_checksum,
             result_command_id=command_id,
             actor_type=actor_type,
+        )
+        if result.status != "executed" or gate.gate_phase != GatePhase.APPROVAL_REVIEW.value:
+            return result
+        try:
+            revision_id = persist_approved_approval_review_revision(
+                gate=gate,
+                revision_repo=self._revision_repo,
+                decided_by=decided_by,
+                profile_metadata=profile_metadata,
+            )
+        except ValueError as exc:
+            return GateActionResult(
+                action=GateDecision.APPROVE.value,
+                gate_id=gate_id,
+                decision_id=result.decision_id,
+                status="approval_failed",
+                result_gate_id=result.result_gate_id,
+                result_command_id=result.result_command_id,
+                result_revision_id=None,
+                reason=str(exc),
+            )
+        if revision_id is None:
+            return result
+        return GateActionResult(
+            action=result.action,
+            gate_id=result.gate_id,
+            decision_id=result.decision_id,
+            status=result.status,
+            result_gate_id=result.result_gate_id,
+            result_command_id=result.result_command_id,
+            result_revision_id=revision_id,
+            reason=result.reason,
         )
 
     def reject_repair(
@@ -995,6 +1454,157 @@ class V2GateActionService:
 
     # ── internal pipeline ───────────────────────────────────────────
 
+    def override_source_profile(
+        self,
+        *,
+        gate_id: str,
+        job_id: str,
+        detection_artifact_ref: str,
+        detected_source_profile: str,
+        requested_source_profile: str,
+        target_profile: str,
+        expected_gate_checksum: str,
+        expected_detection_artifact_checksum: str,
+        reason: str,
+        comments: str,
+        decided_by: str,
+        actor_type: str = GateActorType.HUMAN.value,
+        idempotency_key: str | None = None,
+    ) -> GateActionResult:
+        """Persist a governed manual source-profile override decision."""
+        try:
+            request = SourceProfileOverrideRequest(
+                job_id=job_id,
+                gate_id=gate_id,
+                detection_artifact_ref=detection_artifact_ref,
+                detected_source_profile=detected_source_profile,
+                requested_source_profile=requested_source_profile,
+                target_profile=target_profile,
+                expected_gate_checksum=expected_gate_checksum,
+                expected_detection_artifact_checksum=expected_detection_artifact_checksum,
+                reason=reason,
+                comments=comments,
+                decided_by=decided_by,
+                actor_type=actor_type,
+            )
+        except (ValidationError, ValueError) as exc:
+            return GateActionResult(
+                action=GateDecision.OVERRIDE_SOURCE_PROFILE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="invalid_source_profile_override",
+                reason=str(exc),
+            )
+
+        gate = self._gate_repo.get(gate_id)
+        if gate is None:
+            return GateActionResult(
+                action=GateDecision.OVERRIDE_SOURCE_PROFILE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="gate_not_found",
+            )
+        if gate.job_id != job_id:
+            return GateActionResult(
+                action=GateDecision.OVERRIDE_SOURCE_PROFILE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="gate_job_mismatch",
+                reason="Gate job does not match the override request job.",
+            )
+        if gate.gate_phase != GatePhase.ANALYSIS_REVIEW.value:
+            return GateActionResult(
+                action=GateDecision.OVERRIDE_SOURCE_PROFILE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="invalid_decision",
+                reason="Source-profile overrides are only allowed at analysis_review gates.",
+            )
+        if gate.source_artifact_checksum != request.expected_detection_artifact_checksum:
+            return GateActionResult(
+                action=GateDecision.OVERRIDE_SOURCE_PROFILE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="stale_checksum",
+                reason="Detection artifact checksum is stale. Refresh the gate view and retry.",
+            )
+
+        try:
+            source_artifact_refs = json.loads(gate.source_artifact_refs_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            source_artifact_refs = []
+        if request.detection_artifact_ref not in source_artifact_refs:
+            return GateActionResult(
+                action=GateDecision.OVERRIDE_SOURCE_PROFILE.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="artifact_ref_mismatch",
+                reason="Detection artifact reference is not bound to this gate.",
+            )
+
+        safe_artifact = request.to_safe_artifact()
+        request_checksum = sha256_canonical_json(
+            {
+                "action": GateDecision.OVERRIDE_SOURCE_PROFILE.value,
+                "override": safe_artifact,
+                "idempotency_key": idempotency_key,
+            }
+        )
+
+        revision_id: str | None = None
+        revision_order = 1
+        if self._revision_repo is not None:
+            latest = self._revision_repo.find_latest_by_kind(
+                job_id,
+                gate.stage_index,
+                "source_profile_override",
+            )
+            if latest is not None:
+                revision_order = latest.revision_order + 1
+            revision_id = uuid4().hex
+
+        result = self._execute_action(
+            gate_id=gate_id,
+            job_id=job_id,
+            action=GateDecision.OVERRIDE_SOURCE_PROFILE,
+            decided_by=decided_by,
+            idempotency_key=idempotency_key,
+            expected_gate_checksum=expected_gate_checksum,
+            result_revision_id=revision_id,
+            reason=reason,
+            actor_type=actor_type,
+            request_checksum=request_checksum,
+        )
+        if result.status != "executed" or self._revision_repo is None or revision_id is None:
+            return result
+
+        now = utc_now_text()
+        self._revision_repo.save(
+            ArtifactRevisionRecord(
+                revision_id=revision_id,
+                job_id=job_id,
+                stage_index=gate.stage_index,
+                revision_kind="source_profile_override",
+                revision_status="accepted",
+                revision_order=revision_order,
+                evidence_checksum=request_checksum,
+                prior_revision_checksum=None,
+                artifact_refs_json=json.dumps(
+                    safe_artifact,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                prior_revision_id=None,
+                superseded_by_revision_id=None,
+                accepted_at_gate_id=gate_id,
+                created_at=now,
+                created_by=decided_by,
+                accepted_at=now,
+                accepted_by=decided_by,
+            )
+        )
+        return result
+
     def _execute_action(
         self,
         *,
@@ -1009,6 +1619,7 @@ class V2GateActionService:
         reason: str = "",
         actor_type: str = "human",
         request_checksum: str | None = None,
+        open_followup_gate: bool = True,
     ) -> GateActionResult:
         """Common validation and execution pipeline for all gate actions.
 
@@ -1046,13 +1657,22 @@ class V2GateActionService:
                 status="gate_not_found",
             )
 
-        # 2. Idempotency check (before status check — idempotent
-        #    requests return the same result regardless of gate state)
+        # 2. Gate status must be OPEN for new actions.
+        #    Check before idempotency so resolved/closed gates
+        #    return gate_not_open rather than idempotency_conflict.
+        if gate.gate_status != "open":
+            return GateActionResult(
+                action=action.value,
+                gate_id=gate_id,
+                decision_id="",
+                status="gate_not_open",
+                reason=f"Gate is {gate.gate_status}",
+            )
+
+        # 3. Idempotency check (for open gates only)
         # Default key stays stable for same actor on same gate/action,
         # but no longer collides across different actors.
-        effective_idempotency_key = (
-            idempotency_key or f"{gate_id}:{action.value}:{decided_by}"
-        )
+        effective_idempotency_key = idempotency_key or f"{gate_id}:{action.value}:{decided_by}"
         request_checksum = request_checksum or sha256_canonical_json(
             {
                 "gate_id": gate_id,
@@ -1085,16 +1705,6 @@ class V2GateActionService:
                     f"Idempotency key '{effective_idempotency_key}' was reused "
                     "for a different request payload"
                 ),
-            )
-
-        # 3. Gate status must be OPEN for new actions
-        if gate.gate_status != "open":
-            return GateActionResult(
-                action=action.value,
-                gate_id=gate_id,
-                decision_id="",
-                status="gate_not_open",
-                reason=f"Gate is {gate.gate_status}",
             )
 
         # 3aa. Actor authority check — non-human actors cannot perform
@@ -1219,7 +1829,7 @@ class V2GateActionService:
 
         result_gate_id: str | None = None
         # For reanalyze/revise, create a new open gate
-        if action in (GateDecision.REANALYZE, GateDecision.REVISE):
+        if open_followup_gate and action in (GateDecision.REANALYZE, GateDecision.REVISE):
             new_gate = self._gate_service.create_gate(CreateGateRequest(
                 job_id=gate.job_id,
                 gate_phase=gate.gate_phase,

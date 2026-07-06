@@ -67,6 +67,13 @@ ALLOWED_UNIT_ORDERS: tuple[tuple[str, ...], ...] = (
         "existing-test-migration",
     ),
     *ROUTE_UNIT_ORDERS.values(),
+    (
+        "baseline",
+        "spring-boot-4-0",
+        "jakarta",
+        "dependency-cleanup",
+        "existing-test-migration",
+    ),
 )
 APPROVAL_OPTIONS = APPROVAL_DECISION_VALUES
 

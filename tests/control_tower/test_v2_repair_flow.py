@@ -41,6 +41,7 @@ from migration_factory.repair_loop.patch_apply import (
     apply_patch_to_sandbox,
     validate_patch_artifact,
 )
+from migration_factory.control_tower.domain.checksums import sha256_canonical_json
 
 
 def test_create_proposal() -> None:
@@ -406,6 +407,15 @@ def test_v2_approved_repair_routes_through_patch_gate_and_writes_ledger(
     assert action.verification_h2_status == "H2_STARTUP_PASSED"
     assert json.loads(action.verification_artifact_refs_json) == {}
     assert action.verification_failure_classification_ref == ""
+    assert (run_dir / "repairs" / "repair_apply_result.json").is_file()
+    assert (run_dir / "repairs" / "repair_rerun_result.json").is_file()
+    assert (run_dir / "repairs" / "repair_proof.json").is_file()
+    assert ledger["artifact_refs"]["repair_apply_result"].endswith("repair_apply_result.json")
+    assert ledger["artifact_refs"]["repair_rerun_result"].endswith("repair_rerun_result.json")
+    assert ledger["artifact_refs"]["repair_proof"].endswith("repair_proof.json")
+    proof = json.loads((run_dir / "repairs" / "repair_proof.json").read_text(encoding="utf-8"))
+    assert proof["status"] == "REPAIR_VALIDATED"
+    assert proof["binding_checksum"] == "binding-1"
     assert [event[0] for event in events] == [
         "repair_patch_gate_completed",
         "repair_patch_applied",
@@ -501,6 +511,14 @@ def test_v2_repair_bridge_rolls_back_on_validation_failure(
     assert ledger["final_status"] == "REPAIR_FAILED"
     assert ledger["attempts"][0]["rollback"]["status"] == "ROLLED_BACK"
     assert ledger["attempts"][0]["status"] == "ROLLED_BACK"
+    assert (run_dir / "repairs" / "repair_apply_result.json").is_file()
+    assert (run_dir / "repairs" / "repair_rerun_result.json").is_file()
+    assert (run_dir / "repairs" / "repair_rollback_result.json").is_file()
+    assert (run_dir / "repairs" / "repair_terminal_failure.json").is_file()
+    rollback = json.loads((run_dir / "repairs" / "repair_rollback_result.json").read_text(encoding="utf-8"))
+    assert rollback["status"] == "ROLLED_BACK"
+    terminal = json.loads((run_dir / "repairs" / "repair_terminal_failure.json").read_text(encoding="utf-8"))
+    assert terminal["max_attempts_exhausted"] is True
     assert [event[0] for event in events] == [
         "repair_patch_gate_completed",
         "repair_patch_applied",
@@ -509,7 +527,7 @@ def test_v2_repair_bridge_rolls_back_on_validation_failure(
     ]
 
 
-def test_apply_approved_proposal_uses_persisted_context(
+def test_apply_approved_proposal_fails_closed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -642,22 +660,112 @@ def test_apply_approved_proposal_uses_persisted_context(
         encoding="utf-8",
     )
 
+    with pytest.raises(ValueError, match="Legacy repair proposal apply is disabled"):
+        service.apply_approved_proposal(
+            proposal_id=proposal.proposal_id,
+            command_id="cmd-1",
+            validation_runner=lambda **kwargs: _validation(True),
+        )
+    assert not (run_dir / "repairs" / "repair_apply_result.json").exists()
+
+
+def test_apply_reviewed_repair_diff_loads_exact_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = V2RepairFlowService()
+    proposal = _proposal(service)
+    _approve(service, proposal.proposal_id)
+    run_dir = tmp_path / "run"
+    sandbox = _sandbox(tmp_path)
+    diff_path = tmp_path / "final_reviewed_repair.diff"
+    diff_path.write_text(_h2_patch(), encoding="utf-8")
     calls: list[dict] = []
+
     monkeypatch.setattr(
         v2_repair_flow,
         "apply_patch_to_sandbox",
         lambda **kwargs: calls.append(kwargs) or _apply_result(Path(kwargs["run_dir"])),
     )
-    result = service.apply_approved_proposal(
+
+    action = service.apply_reviewed_repair_diff(
         proposal_id=proposal.proposal_id,
-        command_id="cmd-1",
+        final_diff_ref=diff_path,
+        final_diff_checksum=sha256_canonical_json({"unified_diff": _h2_patch()}),
+        reviewer_output_checksum="reviewer-ok",
+        expected_reviewer_output_checksum="reviewer-ok",
+        policy_validation_checksum="policy-ok",
+        expected_policy_validation_checksum="policy-ok",
+        policy_status="allowed",
+        expected_base_repo_state_checksum="repo-ok",
+        current_base_repo_state_checksum="repo-ok",
+        target_path="pom.xml",
+        run_id="run-1",
+        run_dir=run_dir,
+        sandbox_path=sandbox,
+        legacy_path=tmp_path / "legacy",
+        deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+        h2_required=True,
         validation_runner=lambda **kwargs: _validation(True),
     )
 
-    assert result.status == "applied"
+    assert action.status == "applied"
     assert calls
-    assert calls[0]["run_dir"] == run_dir
-    assert calls[0]["sandbox_path"] == str(run_dir / "sandbox")
+    assert calls[0]["unified_diff"] == _h2_patch()
+
+
+def test_apply_reviewed_repair_diff_rejects_user_edited_artifact(tmp_path: Path) -> None:
+    service = V2RepairFlowService()
+    proposal = _proposal(service)
+    _approve(service, proposal.proposal_id)
+    diff_path = tmp_path / "final_reviewed_repair.diff"
+    diff_path.write_text(_h2_patch().replace("runtime", "test"), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        service.apply_reviewed_repair_diff(
+            proposal_id=proposal.proposal_id,
+            final_diff_ref=diff_path,
+            final_diff_checksum=sha256_canonical_json({"unified_diff": _h2_patch()}),
+            reviewer_output_checksum="reviewer-ok",
+            expected_reviewer_output_checksum="reviewer-ok",
+            policy_validation_checksum="policy-ok",
+            expected_policy_validation_checksum="policy-ok",
+            policy_status="allowed",
+            expected_base_repo_state_checksum="repo-ok",
+            current_base_repo_state_checksum="repo-ok",
+            target_path="pom.xml",
+            run_dir=tmp_path / "run",
+            sandbox_path=_sandbox(tmp_path),
+            legacy_path=tmp_path / "legacy",
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+        )
+
+
+def test_apply_reviewed_repair_diff_rejects_stale_repo(tmp_path: Path) -> None:
+    service = V2RepairFlowService()
+    proposal = _proposal(service)
+    _approve(service, proposal.proposal_id)
+    diff_path = tmp_path / "final_reviewed_repair.diff"
+    diff_path.write_text(_h2_patch(), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="base repository state is stale"):
+        service.apply_reviewed_repair_diff(
+            proposal_id=proposal.proposal_id,
+            final_diff_ref=diff_path,
+            final_diff_checksum=sha256_canonical_json({"unified_diff": _h2_patch()}),
+            reviewer_output_checksum="reviewer-ok",
+            expected_reviewer_output_checksum="reviewer-ok",
+            policy_validation_checksum="policy-ok",
+            expected_policy_validation_checksum="policy-ok",
+            policy_status="allowed",
+            expected_base_repo_state_checksum="repo-old",
+            current_base_repo_state_checksum="repo-new",
+            target_path="pom.xml",
+            run_dir=tmp_path / "run",
+            sandbox_path=_sandbox(tmp_path),
+            legacy_path=tmp_path / "legacy",
+            deterministic_rule_id="DEPENDENCY_ADD_H2_RUNTIME",
+        )
 
 
 def test_apply_approved_proposal_is_idempotent(
@@ -798,24 +906,12 @@ def test_apply_approved_proposal_is_idempotent(
         lambda **kwargs: calls.append(kwargs) or _apply_result(Path(kwargs["run_dir"])),
     )
     monkeypatch.setattr(v2_repair_flow, "run_validation_after_patch", lambda **kwargs: _validation(True))
-    first = service.apply_approved_proposal(
-        proposal_id=proposal.proposal_id,
-        command_id="cmd-idem",
-    )
-    second = service.apply_approved_proposal(
-        proposal_id=proposal.proposal_id,
-        command_id="cmd-idem",
-    )
-
-    assert first.status == "applied"
-    assert second.status == "idempotent"
-    assert second.action_id == first.action_id
-    assert first.verification_status == "passed"
-    assert second.verification_status == "passed"
-    assert second.verification_build_status == first.verification_build_status
-    assert second.verification_test_status == first.verification_test_status
-    assert second.verification_h2_status == first.verification_h2_status
-    assert len(calls) == 1
+    with pytest.raises(ValueError, match="Legacy repair proposal apply is disabled"):
+        service.apply_approved_proposal(
+            proposal_id=proposal.proposal_id,
+            command_id="cmd-idem",
+        )
+    assert calls == []
 
 
 def test_prepare_apply_context_persists_repair_review_context(tmp_path: Path) -> None:

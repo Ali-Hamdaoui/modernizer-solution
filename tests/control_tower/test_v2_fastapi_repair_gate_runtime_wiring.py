@@ -34,7 +34,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository i
 from ._helpers import canonical_json, seed_runner_profile, sha256_json
 from .test_v2_repair_strategy_packet import _powermock_classification, _powermock_evidence
 from .test_v2_repair_apply_candidate_r8_1 import _jackson_evidence, _jackson_pom
-from .v1_fixtures import make_v1_pipeline_definition
+from .v1_fixtures import make_v1_pipeline_definition, make_v2_pipeline_definition
 from migration_factory.control_tower.schemas.run_configuration import (
     RunPolicy,
     StageContinuationPolicy,
@@ -178,35 +178,38 @@ def _ready_setup(conn: sqlite3.Connection) -> str:
         )
     )
     seed_runner_profile(conn)
-    pipeline_payload = make_v1_pipeline_definition()
-    conn.execute(
-        """
-        INSERT INTO pipeline_definitions (
-            pipeline_id, pipeline_version, display_name, schema_version,
-            graph_version, graph_state_schema_version, payload_json, payload_checksum,
-            created_at, created_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            pipeline_payload["pipeline_id"],
-            pipeline_payload["pipeline_version"],
-            pipeline_payload["display_name"],
-            pipeline_payload["schema_version"],
-            pipeline_payload["graph_version"],
-            pipeline_payload["graph_state_schema_version"],
-            canonical_json(pipeline_payload),
-            sha256_json(pipeline_payload),
-            now,
-            "test",
-        ),
-    )
+    for pipeline_payload in (make_v1_pipeline_definition(), make_v2_pipeline_definition()):
+        conn.execute(
+            """
+            INSERT INTO pipeline_definitions (
+                pipeline_id, pipeline_version, display_name, schema_version,
+                graph_version, graph_state_schema_version, payload_json, payload_checksum,
+                created_at, created_by
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                pipeline_payload["pipeline_id"],
+                pipeline_payload["pipeline_version"],
+                pipeline_payload["display_name"],
+                pipeline_payload["schema_version"],
+                pipeline_payload["graph_version"],
+                pipeline_payload["graph_state_schema_version"],
+                canonical_json(pipeline_payload),
+                sha256_json(pipeline_payload),
+                now,
+                "test",
+            ),
+        )
     return setup.setup_id
 
 
-def _create_job(client: TestClient, setup_id: str) -> str:
+def _create_job(client: TestClient, setup_id: str, policy: dict | None = None) -> str:
+    payload: dict = {"setup_id": setup_id}
+    if policy is not None:
+        payload["policy"] = policy
     response = client.post(
         "/v1/v2/migration-jobs",
-        json={"setup_id": setup_id},
+        json=payload,
         headers=_mutation_headers(),
     )
     assert response.status_code == 201, response.text
@@ -277,8 +280,10 @@ def test_repair_strategy_read_endpoints_return_safe_persisted_packets(tmp_path: 
 def test_live_powermock_failure_persists_strategy_overlays_summary_and_chatbot(tmp_path: Path) -> None:
     app, client, conn = _app_and_client(tmp_path)
     setup_id = _ready_setup(conn)
-    job_id = _create_job(client, setup_id)
-    _seed_policy(conn, job_id)
+    job_id = _create_job(client, setup_id, policy={
+        "stage_continuation_policy": "auto_on_green",
+        "enable_build_repair": True,
+    })
     sandbox = tmp_path / "sandbox"
     test_source = sandbox / "src" / "test" / "java" / "LegacyPowerMockTest.java"
     test_source.parent.mkdir(parents=True)
@@ -418,7 +423,6 @@ def test_fastapi_create_app_repair_gate_callback_creates_repair_review_gate(tmp_
     app, client, conn = _app_and_client(tmp_path)
     setup_id = _ready_setup(conn)
     job_id = _create_job(client, setup_id)
-    _seed_policy(conn, job_id)
 
     callback = app.state.v2_orchestrator_runner._diagnosis_callback
     callback(
@@ -525,8 +529,10 @@ def test_failure_summary_exposes_post_repair_next_candidate_blocked_reason(tmp_p
 def test_fastapi_create_app_skips_repair_gate_when_disabled(tmp_path: Path) -> None:
     app, client, conn = _app_and_client(tmp_path)
     setup_id = _ready_setup(conn)
-    job_id = _create_job(client, setup_id)
-    _seed_policy(conn, job_id, enable_build_repair=False)
+    job_id = _create_job(client, setup_id, policy={
+        "stage_continuation_policy": "auto_on_green",
+        "enable_build_repair": False,
+    })
 
     callback = app.state.v2_orchestrator_runner._diagnosis_callback
     callback(
@@ -550,8 +556,10 @@ def test_fastapi_create_app_skips_repair_gate_when_disabled(tmp_path: Path) -> N
 def test_live_diagnosis_persists_repair_candidate_then_approve_and_apply(tmp_path: Path) -> None:
     app, client, conn = _app_and_client(tmp_path)
     setup_id = _ready_setup(conn)
-    job_id = _create_job(client, setup_id)
-    _seed_policy(conn, job_id)
+    job_id = _create_job(client, setup_id, policy={
+        "stage_continuation_policy": "auto_on_green",
+        "enable_build_repair": True,
+    })
     app.state.v2_failure_diagnosis_service._llm_repair_shadow_client = _FakeShadowClient()
     app.state.v2_failure_diagnosis_service._llm_repair_shadow_enabled = True
     legacy = tmp_path / "legacy" / "src" / "test" / "java" / "ExampleTest.java"

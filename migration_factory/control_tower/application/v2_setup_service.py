@@ -130,9 +130,7 @@ def compute_setup_checksum(request: CreateSetupRequest) -> str:
 
 def is_ai_smoke_required(skip_endpoint_smoke: bool) -> bool:
     """Return True when AI smoke must pass before migration can start."""
-    flag = os.environ.get("AI_MIGRATION_COPILOT_REQUIRED", "").strip().lower()
-    env_required = flag in {"1", "true", "yes", "on"}
-    return env_required or not skip_endpoint_smoke
+    return not skip_endpoint_smoke
 
 
 # ── Setup service ────────────────────────────────────────────────────
@@ -794,6 +792,7 @@ def _check_ai_hub_profiles(hub: Path) -> bool:
         "springboot-2.1.6-to-2.7-java11",
         "springboot-2.7-to-3.5-java17",
         "springboot-3.5-java17-to-java21",
+        "springboot-3.5-java21-to-4.0-java21",
     )
     return all((profiles_dir / f"{profile}.yaml").is_file() for profile in required)
 
@@ -808,6 +807,7 @@ def _check_ai_hub_catalogs(hub: Path) -> bool:
         "springboot-2.1.6-to-2.7-java11",
         "springboot-2.7-to-3.5-java17",
         "springboot-3.5-java17-to-java21",
+        "springboot-3.5-java21-to-4.0-java21",
     )
     for profile in required_profiles:
         profile_path = profiles_dir / f"{profile}.yaml"

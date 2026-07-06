@@ -265,18 +265,12 @@ def settings_projection_to_dict(projection: SettingsProjection) -> dict[str, Any
     return {
         "azure": {
             "profile_id": projection.azure.profile_id,
-            "provider": projection.azure.provider,
-            "endpoint": {
-                "env_ref": projection.azure.endpoint.env_ref,
-                "configured": projection.azure.endpoint.configured,
-            },
-            "auth_mode": projection.azure.auth_mode,
+            "status": "configured" if projection.azure.endpoint.configured else "not_configured",
+            "connection_configured": projection.azure.endpoint.configured,
             "api_version_configured": projection.azure.api_version_configured,
             "roles": {
                 role_name: {
-                    "env_ref": role.env_ref,
                     "configured": role.configured,
-                    "deployment_label": role.deployment_label,
                     "enabled": role.enabled,
                 }
                 for role_name, role in projection.azure.roles.items()

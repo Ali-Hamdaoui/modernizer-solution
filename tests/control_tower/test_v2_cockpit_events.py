@@ -17,6 +17,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository i
     V2PreflightResultRecord,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_approval_repository import V2ApprovalDecisionRecord
+from tests.control_tower._helpers import canonical_json, seed_runner_profile, sha256_json
 
 from tests.control_tower._helpers import canonical_json, seed_runner_profile, sha256_json
 from tests.control_tower.v1_fixtures import make_v1_pipeline_definition
@@ -94,7 +95,30 @@ class _FakeV2Runner:
         return None
 
 
+def _seed_v2_pipeline(conn: sqlite3.Connection) -> None:
+    payload = {
+        "schema_version": "1.0.0",
+        "pipeline_id": "springboot-216-to-400-java21-four-stage",
+        "pipeline_version": "2026.06",
+        "display_name": "V2 migration pipeline (4-stage with Boot 4)",
+        "graph_version": "1.0",
+        "graph_state_schema_version": "1.0",
+        "stages": (
+            {"stage_index": 1, "stage_id": "analysis", "profile_id": "analysis-profile", "command_jdk": "jdk-17", "input_source": {"kind": "legacy_source"}, "continuation_policy_id": "default", "target": {"spring_boot": "3.5.14", "java": 17}},
+            {"stage_index": 2, "stage_id": "planning", "profile_id": "planning-profile", "command_jdk": "jdk-21", "input_source": {"kind": "previous_stage", "previous_stage_index": 1}, "continuation_policy_id": "default", "target": {"spring_boot": "3.5.14", "java": 21}},
+            {"stage_index": 3, "stage_id": "finalize", "profile_id": "finalize-profile", "command_jdk": "jdk-21", "input_source": {"kind": "previous_stage", "previous_stage_index": 2}, "continuation_policy_id": "default", "target": {"spring_boot": "3.5.14", "java": 21}},
+            {"stage_index": 4, "stage_id": "boot4-migration", "profile_id": "springboot-3.5-java21-to-4.0-java21", "command_jdk": "jdk-21", "input_source": {"kind": "previous_stage", "previous_stage_index": 3}, "continuation_policy_id": "default", "target": {"spring_boot": "4.0.0", "java": 21}},
+        ),
+    }
+    conn.execute(
+        """INSERT INTO pipeline_definitions (pipeline_id, pipeline_version, display_name, schema_version, graph_version, graph_state_schema_version, payload_json, payload_checksum, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (payload["pipeline_id"], payload["pipeline_version"], payload["display_name"], payload["schema_version"], payload["graph_version"], payload["graph_state_schema_version"], canonical_json(payload), sha256_json(payload), utc_now_text(), "tester"),
+    )
+
+
 def _ready_setup(conn: sqlite3.Connection) -> str:
+    seed_runner_profile(conn)
+    _seed_v2_pipeline(conn)
     repo = SqliteV2SetupRepository(conn)
     service = V2SetupService(repo)
     setup = service.create_setup(
@@ -190,10 +214,11 @@ def test_v2_job_read_stages_and_empty_approvals(tmp_path: Path) -> None:
     stages_response = client.get(f"/v1/v2/migration-jobs/{job_id}/stages")
     assert stages_response.status_code == 200
     stages = stages_response.json()["stages"]
-    assert [stage["stage_index"] for stage in stages] == [1, 2, 3]
+    assert [stage["stage_index"] for stage in stages] == [1, 2, 3, 4]
     assert stages[0]["chain_status"] == "completed"
     assert stages[1]["chain_status"] == "pending"
     assert stages[2]["input_source_kind"] == "stage_2_sandbox"
+    assert stages[3]["chain_status"] == "pending"
 
     approvals_response = client.get(f"/v1/v2/jobs/{job_id}/approvals")
     assert approvals_response.status_code == 200
@@ -404,7 +429,6 @@ def test_v2_failure_summary_endpoint_with_failures(tmp_path: Path) -> None:
                 "final_status": "FALLBACK_REPAIR_PLAN",
                 "final_proof_level": "not_verified",
                 "repair_loop_status": "FALLBACK_REPAIR_PLAN",
-                "copilot_invocation_status": "INVALID_RESPONSE",
                 "repair_fallback_generated": True,
             },
         )
@@ -419,10 +443,10 @@ def test_v2_failure_summary_endpoint_with_failures(tmp_path: Path) -> None:
         uow.v2_events.save(
             job_id=job_id,
             stage=1,
-            event_type="copilot_repair_invalid_response",
-            status="failed",
-            message="Copilot response invalid",
-            payload={"copilot_invocation_status": "INVALID_RESPONSE"},
+            event_type="repair_completed",
+            status="completed",
+            message="Deterministic repair fallback applied",
+            payload={"repair_fallback_generated": True},
         )
 
     response = client.get(f"/v1/v2/migration-jobs/{job_id}/failure-summary")
@@ -432,7 +456,7 @@ def test_v2_failure_summary_endpoint_with_failures(tmp_path: Path) -> None:
     assert body["repair_loop_active"] is True
     assert len(body["failures"]) >= 1
     assert any(f["build_status"] == "BUILD_FAILED_IN_SANDBOX" for f in body["failures"])
-    assert any(f["copilot_status"] == "INVALID_RESPONSE" for f in body["failures"])
+    assert any(f["repair_loop_status"] == "FALLBACK_REPAIR_PLAN" for f in body["failures"])
     assert any(f["final_proof_level"] == "not_verified" for f in body["failures"])
 
 
@@ -575,7 +599,7 @@ def test_failure_summary_groups_real_stage2_dependency_build_failure_sequence(tm
         ("build_failed", "failed", "Build failed in sandbox", {"build_status": "BUILD_FAILED_IN_SANDBOX", "result_kind": "dependency_error"}),
         ("repair_started", "running", "Repair started", {"repair_loop_status": "FALLBACK_REPAIR_PLAN"}),
         ("repair_fallback_generated", "completed", "Deterministic fallback repair plan generated", {"repair_fallback_generated": True}),
-        ("copilot_repair_invalid_response", "failed", "Copilot repair invalid response", {"copilot_invocation_status": "INVALID_RESPONSE"}),
+        ("repair_proposal_revised", "completed", "Repair proposal revised via deterministic fallback", {"repair_fallback_generated": True}),
         ("transform_failed", "failed", "Transform failed", {"final_status": "FALLBACK_REPAIR_PLAN"}),
         ("stage_failed", "failed", "Stage failed", {"final_status": "FALLBACK_REPAIR_PLAN"}),
     ]
@@ -601,7 +625,7 @@ def test_failure_summary_groups_real_stage2_dependency_build_failure_sequence(tm
     assert failure["result_kind"] == "dependency_error"
     assert failure["build_status"] == "BUILD_FAILED_IN_SANDBOX"
     assert failure["final_status"] == "FALLBACK_REPAIR_PLAN"
-    assert failure["copilot_status"] == "INVALID_RESPONSE"
+    assert failure["repair_loop_status"] == "FALLBACK_REPAIR_PLAN"
     assert failure["event_types"] == [
         "build_failed",
         "sandbox_transform_failed",
@@ -611,7 +635,7 @@ def test_failure_summary_groups_real_stage2_dependency_build_failure_sequence(tm
     assert [event["type"] for event in failure["repair_events"]] == [
         "repair_started",
         "repair_fallback_generated",
-        "copilot_repair_invalid_response",
+        "repair_proposal_revised",
     ]
     assert body["repair_events"] == []
 

@@ -36,6 +36,7 @@ class GateActorType(str, Enum):
 HUMAN_AUTHORITATIVE_ACTIONS: frozenset[str] = frozenset({
     "approve",
     "reject",
+    "override_source_profile",
 })
 
 
@@ -73,6 +74,7 @@ class GateDecision(str, Enum):
     REVISE = "revise"
     APPROVE = "approve"
     REJECT = "reject"
+    OVERRIDE_SOURCE_PROFILE = "override_source_profile"
 
 
 # ── PhaseGate pydantic model ──────────────────────────────────────────
@@ -196,6 +198,7 @@ _VALID_PHASE_DECISIONS: dict[GatePhase, frozenset[GateDecision]] = {
     GatePhase.ANALYSIS_REVIEW: frozenset({
         GateDecision.CONTINUE,
         GateDecision.REANALYZE,
+        GateDecision.OVERRIDE_SOURCE_PROFILE,
     }),
     GatePhase.PLANNING_REVIEW: frozenset({
         GateDecision.CONTINUE,

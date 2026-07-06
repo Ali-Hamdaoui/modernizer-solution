@@ -21,6 +21,7 @@ from migration_factory.control_tower.application.v2_reviewer_service import (
     ReviewerCritique,
     V2ReviewerService,
 )
+from migration_factory.control_tower.domain.checksums import sha256_canonical_json
 from migration_factory.control_tower.infrastructure.sqlite.migrations import (
     apply_pending_migrations,
 )
@@ -69,6 +70,30 @@ def _create_open_gate(gate_svc, phase="repair_review", stage=1, job="job-abc") -
     ))
     assert result.status == "created"
     return result.gate_id
+
+
+def _create_reviewed_repair_gate(gate_svc, stage=1, job="job-abc") -> tuple[str, dict[str, str]]:
+    checksums = {
+        "failure_evidence_checksum": "sha256:failure-v1",
+        "context_pack_checksum": "sha256:ctx-v1",
+        "primary_output_checksum": "sha256:primary-v1",
+        "reviewer_output_checksum": "sha256:reviewer-v1",
+        "final_reviewed_diff_checksum": "sha256:diff-v1",
+        "policy_validation_checksum": "sha256:policy-v1",
+        "base_repo_state_checksum": "sha256:repo-v1",
+        "final_artifact_checksum": "sha256:final-v1",
+    }
+    source_checksum = sha256_canonical_json(checksums)
+    refs = tuple(f"{key}:{value}" for key, value in checksums.items())
+    result = gate_svc.create_gate(CreateGateRequest(
+        job_id=job,
+        gate_phase="repair_review",
+        stage_index=stage,
+        source_artifact_checksum=source_checksum,
+        source_artifact_refs=refs,
+    ))
+    assert result.status == "created"
+    return result.gate_id, checksums
 
 
 def _seed_proposal_and_critique(
@@ -393,3 +418,90 @@ def test_approve_repair_no_source_writes(tmp_path: Path) -> None:
     assert not hasattr(result, "sandbox_path")
     assert not hasattr(result, "argv")
     assert not hasattr(result, "command")
+
+
+def test_approve_reviewed_repair_requires_all_artifact_checksums(tmp_path: Path) -> None:
+    gate_repo, decision_repo, gate_svc, action_svc, reviewer_svc, repair_svc, conn = (
+        _svc(tmp_path)
+    )
+    gate_id, checksums = _create_reviewed_repair_gate(gate_svc)
+    proposal_id, prop_chk, ctx_chk = _seed_proposal_and_critique(
+        repair_svc,
+        reviewer_svc,
+        context_checksum=checksums["context_pack_checksum"],
+    )
+
+    result = action_svc.approve_repair(
+        gate_id=gate_id,
+        job_id="job-abc",
+        decided_by="user-1",
+        proposal_id=proposal_id,
+        proposal_checksum=prop_chk,
+        context_pack_checksum=ctx_chk,
+    )
+
+    assert result.status == "missing_repair_checksum"
+    assert "reviewer_output_checksum" in result.reason
+    assert gate_repo.get(gate_id).gate_status == "open"
+
+
+def test_approve_reviewed_repair_rejects_stale_base_repo_checksum(tmp_path: Path) -> None:
+    gate_repo, decision_repo, gate_svc, action_svc, reviewer_svc, repair_svc, conn = (
+        _svc(tmp_path)
+    )
+    gate_id, checksums = _create_reviewed_repair_gate(gate_svc)
+    proposal_id, prop_chk, ctx_chk = _seed_proposal_and_critique(
+        repair_svc,
+        reviewer_svc,
+        context_checksum=checksums["context_pack_checksum"],
+    )
+
+    result = action_svc.approve_repair(
+        gate_id=gate_id,
+        job_id="job-abc",
+        decided_by="user-1",
+        proposal_id=proposal_id,
+        proposal_checksum=prop_chk,
+        context_pack_checksum=ctx_chk,
+        reviewer_output_checksum=checksums["reviewer_output_checksum"],
+        final_reviewed_diff_checksum=checksums["final_reviewed_diff_checksum"],
+        policy_validation_checksum=checksums["policy_validation_checksum"],
+        base_repo_state_checksum="sha256:stale",
+        final_reviewed_artifact_checksum=checksums["final_artifact_checksum"],
+    )
+
+    assert result.status == "repair_checksum_mismatch"
+    assert "base_repo_state_checksum" in result.reason
+    assert gate_repo.get(gate_id).gate_status == "open"
+
+
+def test_approve_reviewed_repair_binds_reviewed_chain_checksums(tmp_path: Path) -> None:
+    gate_repo, decision_repo, gate_svc, action_svc, reviewer_svc, repair_svc, conn = (
+        _svc(tmp_path)
+    )
+    gate_id, checksums = _create_reviewed_repair_gate(gate_svc)
+    proposal_id, prop_chk, ctx_chk = _seed_proposal_and_critique(
+        repair_svc,
+        reviewer_svc,
+        context_checksum=checksums["context_pack_checksum"],
+    )
+
+    result = action_svc.approve_repair(
+        gate_id=gate_id,
+        job_id="job-abc",
+        decided_by="user-1",
+        proposal_id=proposal_id,
+        proposal_checksum=prop_chk,
+        context_pack_checksum=ctx_chk,
+        reviewer_output_checksum=checksums["reviewer_output_checksum"],
+        final_reviewed_diff_checksum=checksums["final_reviewed_diff_checksum"],
+        policy_validation_checksum=checksums["policy_validation_checksum"],
+        base_repo_state_checksum=checksums["base_repo_state_checksum"],
+        final_reviewed_artifact_checksum=checksums["final_artifact_checksum"],
+    )
+
+    assert result.status == "executed"
+    gate = gate_repo.get(gate_id)
+    assert gate is not None
+    assert gate.gate_status == "resolved"
+    assert gate.gate_decision == "continue"

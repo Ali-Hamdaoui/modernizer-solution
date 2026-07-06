@@ -146,6 +146,7 @@ def planning_node(state: MigrationState) -> MigrationState:
         selected_route_id=compatibility.selected_route_id,
         selected_hops=compatibility.selected_hops,
     )
+    unit_ids = tuple(unit.id for unit in units)
     risk_result = classify_planning_risks(
         loaded_artifacts,
         compatibility.source_stack,
@@ -153,7 +154,9 @@ def planning_node(state: MigrationState) -> MigrationState:
         selected_route_id=compatibility.selected_route_id,
         route_strategy=compatibility.route_strategy,
         selected_hops=compatibility.selected_hops,
-        planned_unit_ids=tuple(unit.id for unit in units),
+        profile_id=profile_id,
+        planned_unit_ids=unit_ids,
+        migration_units=unit_ids,
     )
     risk_messages = [f"[{risk.severity}] {risk.code}: {risk.message}" for risk in risk_result.risks]
     blocker_messages = [
@@ -235,6 +238,8 @@ def planning_node(state: MigrationState) -> MigrationState:
         source_boot_version=compatibility.source_stack.spring_boot or "",
         target_boot_version=compatibility.target_stack.spring_boot or "",
         target_java_version=compatibility.target_stack.java or "",
+        profile_id=profile_id,
+        migration_unit_ids=unit_ids,
         openrewrite_recipes_expected=_expected_openrewrite_recipes(loaded_profile.profile, state),
     )
     validation_result = validate_planning_outputs(
@@ -347,6 +352,37 @@ def planning_node(state: MigrationState) -> MigrationState:
     planning_errors = list(validation_result.reasons) if validation_result.status != "PASS" else []
     planning_blockers = [*blocker_messages, *planning_errors]
     planning_status = "FAIL" if planning_blockers else "PASS"
+    planning_artifact_refs = {
+        **output_paths,
+        "target_dependency_plan": str(target_dependency_plan_path),
+    }
+    review_updates: dict[str, object] = {}
+    if planning_status == "PASS" and state.get("job_id"):
+        from migration_factory.orchestrator.review_chain import (
+            ReviewChainProductionError,
+            produce_phase_review_chain,
+        )
+
+        try:
+            review_updates = produce_phase_review_chain(
+                state,
+                phase="planning",
+                stage_index=2,
+                artifact_refs=planning_artifact_refs,
+                deterministic_facts={
+                    "profile": profile_id,
+                    "source_stack": compatibility.source_stack,
+                    "target_stack": compatibility.target_stack,
+                    "risk_count": len(risk_messages),
+                    "warning_count": len(deterministic_warnings),
+                    "unit_count": len(units),
+                    "units": unit_payload,
+                },
+                warnings=merged_output.warnings,
+            )
+        except ReviewChainProductionError as exc:
+            planning_blockers.append(str(exc))
+            planning_status = "FAIL"
     return {
         "planning_status": planning_status,
         "current_unit": "planning",
@@ -369,8 +405,10 @@ def planning_node(state: MigrationState) -> MigrationState:
         "planning_assist_warnings": assist_result_warnings,
         "artifact_refs": {
             **dict(state.get("artifact_refs", {}) or {}),
-            "target_dependency_plan": str(target_dependency_plan_path),
+            **planning_artifact_refs,
+            **dict(review_updates.get("artifact_refs", {}) or {}),
         },
+        **({"review_chain": review_updates["review_chain"]} if review_updates.get("review_chain") else {}),
     }
 
 

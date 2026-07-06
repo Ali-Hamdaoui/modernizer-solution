@@ -9,7 +9,6 @@ from migration_factory.orchestrator.state import (
     READ_ONLY_ASSESSMENT_MODE,
     MigrationState,
 )
-from migration_factory.copilot_repair.feature_probe import probe_copilot_availability
 
 
 class PreflightError(ValueError):
@@ -88,7 +87,6 @@ def validate_preflight(state: MigrationState, config: dict) -> None:
         and availability.get("status") != "AVAILABLE"
     ):
         raise PreflightError(f"Copilot repair proposal preflight failed: {availability.get('reason', '')}")
-
 
 def _validate_profile_mode_compatibility(profile_path: Path, state: MigrationState) -> None:
     try:

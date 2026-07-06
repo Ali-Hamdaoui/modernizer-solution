@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -170,7 +171,7 @@ def test_settings_projection_local_mode() -> None:
 
 
 def test_settings_projection_to_dict_no_secret_values() -> None:
-    """The dict projection should contain only env refs and booleans."""
+    """The public dict projection should contain only statuses and booleans."""
     settings = ControlTowerSettings()
     projection = build_settings_projection(settings)
     result = settings_projection_to_dict(projection)
@@ -181,21 +182,24 @@ def test_settings_projection_to_dict_no_secret_values() -> None:
 
     azure = result["azure"]
     assert azure["profile_id"] == "azure-foundry-v2"
-    assert azure["provider"] == "azure_openai"
-    assert azure["endpoint"]["env_ref"] == "AZURE_OPENAI_ENDPOINT"
-    assert "configured" in azure["endpoint"]
-    assert isinstance(azure["endpoint"]["configured"], bool)
-    assert azure["auth_mode"] == "api_key_or_entra"
+    assert "provider" not in azure
+    assert "endpoint" not in azure
+    assert isinstance(azure["connection_configured"], bool)
+    assert azure["status"] == "not_configured"
     assert "api_version_configured" in azure
 
-    # Roles should have env_ref and configured, not actual values
+    # Roles should have only product-safe status fields.
     for role_name in ("proposer", "reviewer", "assistant", "fallback"):
         role = azure["roles"][role_name]
-        assert "env_ref" in role
+        assert "env_ref" not in role
         assert "configured" in role
         assert isinstance(role["configured"], bool)
-        assert "deployment_label" in role
+        assert "deployment_label" not in role
         assert "enabled" in role
+
+    serialized = json.dumps(result)
+    for forbidden in ("provider", "env_ref", "endpoint", "deployment"):
+        assert forbidden not in serialized
 
     # Check local_mode
     local_mode = result["local_mode"]
@@ -311,14 +315,17 @@ def test_ai_settings_endpoint_returns_projection(tmp_path: Path) -> None:
     assert "azure" in body
     assert "local_mode" in body
     assert "profile_id" in body["azure"]
-    assert body["azure"]["endpoint"]["env_ref"] == "AZURE_OPENAI_ENDPOINT"
-    # No secret values in the response
-    assert "key" not in body["azure"]["endpoint"]["env_ref"].lower()
+    assert "endpoint" not in body["azure"]
+    assert body["azure"]["connection_configured"] is False
+    assert body["azure"]["status"] == "not_configured"
     # Roles present
     assert "proposer" in body["azure"]["roles"]
     assert "reviewer" in body["azure"]["roles"]
     assert "assistant" in body["azure"]["roles"]
     assert "fallback" in body["azure"]["roles"]
+    serialized = json.dumps(body)
+    for forbidden in ("provider", "env_ref", "endpoint", "deployment"):
+        assert forbidden not in serialized
 
 
 def test_ai_settings_endpoint_no_secret_values(tmp_path: Path) -> None:
@@ -355,5 +362,5 @@ def test_ai_settings_endpoint_no_secret_values(tmp_path: Path) -> None:
     for pattern in forbidden_patterns:
         assert pattern not in body_str.lower(), f"Found forbidden pattern in settings: {pattern}"
 
-    # The env ref name is OK (it's just a name), but the value must not be there
-    assert "AZURE_OPENAI_ENDPOINT" in body_str  # env ref name is fine
+    assert "AZURE_OPENAI_ENDPOINT" not in body_str
+    assert "AZURE_OPENAI_PROPOSER_DEPLOYMENT" not in body_str

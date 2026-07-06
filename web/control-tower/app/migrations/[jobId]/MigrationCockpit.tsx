@@ -21,19 +21,32 @@ import {
   getV2OpenGate,
   getV2MigrationJobStages,
   prepareV2RepairApplyContext,
-  rejectV2Card,
   requestV2ReviewerCritique,
+  getV2FinalReport,
+  generateV2FinalReport,
+  resolveReportDownloadUrl,
+  rejectV2Card,
+  postV2GateAction,
   requireJobId,
   runControlledR6RepairDemo,
   v2EventStreamUrl,
   v2RootPomDownloadUrl,
+  createIdempotencyKey,
 } from "../../../lib/controlTowerApi";
+import {
+  logApprovalEvent,
+  logApprovalDecisionsBefore,
+  logApprovalDecisionsAfter,
+  logOpenGates,
+  logApproveClickPayload,
+} from "../../../lib/approvalDebug";
 import type {
   V2ApprovalResponse,
   V2ArtifactPreviewResponse,
   V2AssistantMessageResponse,
   GovernedRepairProposalResponse,
   V2FailureSummaryResponse,
+  V2FinalReportResponse,
   V2JobEvent,
   V2MigrationJobResponse,
   V2PipelineResponse,
@@ -53,8 +66,13 @@ import type {
   V2RepairStrategyPacketResponse,
   V2RepairSubfamilyAssessmentResponse,
   V2RepairStrategyTraceResponse,
+  V2RouteStepEntry,
+  GateEvidencePack,
+  MigrationProfileId,
 } from "../../../lib/contracts";
+import { MIGRATION_PROFILE_OPTIONS } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
+import { RepairProposalPanel } from "./RepairProposalPanel";
 
 export function formatGateArtifactRefLabel(ref: string): string {
   const text = ref.trim();
@@ -296,11 +314,28 @@ function r6ApplyButtonDisabled(state: R6RepairUiState): boolean {
     || state.busy === "apply";
 }
 
-interface Stage {
+export interface Stage {
   stage_index: number;
   pipeline_stage: string;
   chain_status: string;
   input_source_kind: string;
+}
+
+function formatRouteStepStatusLabel(status: string): string {
+  switch (status) {
+    case "completed":
+      return "COMPLETED";
+    case "running":
+      return "RUNNING";
+    case "blocked":
+      return "BLOCKED";
+    case "queued":
+      return "QUEUED";
+    case "failed":
+      return "FAILED";
+    default:
+      return "PENDING";
+  }
 }
 
 export interface CockpitData {
@@ -334,6 +369,24 @@ type LiveRefreshResults = [
   PromiseSettledResult<V2FailureSummaryResponse>,
 ];
 
+export function buildStageTimelineEntries(
+  routeSteps: V2RouteStepEntry[] | undefined,
+  stages: Stage[],
+): Array<V2RouteStepEntry | Stage> {
+  if (!routeSteps?.length) {
+    return stages;
+  }
+
+  const stageStatusByIndex = new Map(stages.map((stage) => [stage.stage_index, stage.chain_status]));
+  console.log("[route-steps-before]", routeSteps?.map((s) => ({ route_step_index: s.route_step_index, stage_index: s.stage_index, status: s.status })));
+  const result = routeSteps.map((routeStep) => ({
+    ...routeStep,
+    status: stageStatusByIndex.get(routeStep.stage_index) ?? routeStep.status,
+  }));
+  console.log("[route-steps-after]", result.map((s) => ({ route_step_index: s.route_step_index, stage_index: s.stage_index, status: s.status })));
+  return result;
+}
+
 export function mergeCockpitLiveRefreshResults(
   current: CockpitData,
   results: LiveRefreshResults,
@@ -355,7 +408,17 @@ export function mergeCockpitLiveRefreshResults(
   };
 }
 
-export function GatePanelContent({ state }: { state: GatePanelState }) {
+export function GatePanelContent({
+  state,
+  jobId,
+  job,
+  onGateRefresh,
+}: {
+  state: GatePanelState;
+  jobId?: string;
+  job?: V2MigrationJobResponse;
+  onGateRefresh?: () => void;
+}) {
   if (state.status === "loading") {
     return (
       <section className="panel stack" aria-label="Open gate panel">
@@ -385,9 +448,15 @@ export function GatePanelContent({ state }: { state: GatePanelState }) {
 
   const gate = state.openGate;
   const detail = state.openGateDetail;
-  const migrationIntelligence = detail?.evidence?.migration_intelligence ?? null;
+  const gateEvidence = (detail?.evidence ?? null) as
+    | (Partial<{
+        migration_intelligence: MigrationIntelligenceSummary | null;
+        migration_intelligence_warnings: string[];
+      }>)
+    | null;
+  const migrationIntelligence = gateEvidence?.migration_intelligence ?? null;
   const migrationWarnings = [
-    ...(detail?.evidence?.migration_intelligence_warnings ?? []),
+    ...(gateEvidence?.migration_intelligence_warnings ?? []),
     migrationIntelligence?.runtime_contract?.warning ?? "",
     migrationIntelligence?.reference_delta?.warning ?? "",
     migrationIntelligence?.post_transform_failure_classification?.warning ?? "",
@@ -409,7 +478,7 @@ export function GatePanelContent({ state }: { state: GatePanelState }) {
           </div>
           <div className="table-row">
             <span className="meta">Summary</span>
-            <strong>{detail?.evidence?.failure_summary ?? "Open gate awaiting decision"}</strong>
+            <strong>{"failure_summary" in (detail?.evidence ?? {}) ? (detail?.evidence as { failure_summary: string }).failure_summary : "Open gate awaiting decision"}</strong>
             <span className="meta">Allowed actions: {gate.available_actions.map((action) => action.label).join(", ") || "None"}</span>
           </div>
           <div className="table-row">
@@ -497,8 +566,8 @@ export function GatePanelContent({ state }: { state: GatePanelState }) {
                 <p className="meta">
                   Categories: {formatCountSummary(Object.keys(migrationIntelligence?.post_transform_failure_classification?.categories ?? {}).length, "kind")}
                   {Object.keys(migrationIntelligence?.post_transform_failure_classification?.categories ?? {}).length > 0
-                    ? ` · ${Object.entries(migrationIntelligence?.post_transform_failure_classification?.categories ?? {})
-                        .sort((a, b) => b[1] - a[1])
+                    ? ` · ${(Object.entries(migrationIntelligence?.post_transform_failure_classification?.categories ?? {}) as [string, number][])
+                        .sort((a, b) => Number(b[1]) - Number(a[1]))
                         .slice(0, 3)
                         .map(([key, value]) => `${key}=${value}`)
                         .join(", ")}`
@@ -534,6 +603,19 @@ export function GatePanelContent({ state }: { state: GatePanelState }) {
         </>
       ) : (
         <p className="meta">No gate is currently open for this job.</p>
+      )}
+      {gate?.gate_phase === "analysis_review" && (
+        <>
+          <SourceProfileDetectionPanel gateDetail={detail} />
+          {jobId && onGateRefresh && (
+            <SourceProfileOverrideForm
+              gateDetail={detail}
+              jobId={jobId}
+              job={job}
+              onSuccess={onGateRefresh}
+            />
+          )}
+        </>
       )}
     </section>
   );
@@ -1499,6 +1581,634 @@ function stageClassificationHelp(status: string): string {
   return "";
 }
 
+// ── F3 — Migration Route Panel ─────────────────────────────────────────
+
+export function MigrationRoutePanel({ job }: { job: V2MigrationJobResponse }) {
+  const sourceLabel =
+    MIGRATION_PROFILE_OPTIONS.find((p) => p.id === job.source_profile)?.label ?? job.source_profile ?? "unspecified";
+  const targetLabel =
+    MIGRATION_PROFILE_OPTIONS.find((p) => p.id === job.target_profile)?.label ?? job.target_profile ?? "unspecified";
+
+  return (
+    <section className="panel" data-testid="migration-route-panel">
+      <h2>Migration Route</h2>
+      <div className="table-list">
+        <div className="table-row">
+          <span className="meta">Source profile</span>
+          <strong data-testid="cockpit-source-profile">{sourceLabel}</strong>
+        </div>
+        <div className="table-row">
+          <span className="meta">Target profile</span>
+          <strong data-testid="cockpit-target-profile">{targetLabel}</strong>
+        </div>
+        {job.validation_status && (
+          <div className="table-row">
+            <span className="meta">Validation</span>
+            <strong data-testid="cockpit-validation-status">{job.validation_status}</strong>
+            {job.validation_reason && <span className="meta">{job.validation_reason}</span>}
+          </div>
+        )}
+        {job.included_stages && job.included_stages.length > 0 && (
+          <div className="table-row">
+            <span className="meta">Included stages</span>
+            <strong data-testid="cockpit-included-stages">{job.included_stages.join(", ")}</strong>
+          </div>
+        )}
+        {job.skipped_stages && job.skipped_stages.length > 0 && (
+          <div className="table-row">
+            <span className="meta">Skipped stages</span>
+            <strong data-testid="cockpit-skipped-stages">{job.skipped_stages.join(", ")}</strong>
+          </div>
+        )}
+        {job.excluded_stages && job.excluded_stages.length > 0 && (
+          <div className="table-row">
+            <span className="meta">Excluded stages</span>
+            <strong data-testid="cockpit-excluded-stages">{job.excluded_stages.join(", ")}</strong>
+          </div>
+        )}
+        {job.run_configuration_id && (
+          <div className="table-row">
+            <span className="meta">Run config</span>
+            <strong data-testid="cockpit-run-config-id">{job.run_configuration_id}</strong>
+          </div>
+        )}
+        {job.stage_continuation_policy && (
+          <div className="table-row">
+            <span className="meta">Continuation policy</span>
+            <strong data-testid="cockpit-continuation-policy">{job.stage_continuation_policy}</strong>
+          </div>
+        )}
+      </div>
+      <p className="meta">All route data is backend-returned. No local recomputation.</p>
+    </section>
+  );
+}
+
+// ── F4 — Source Profile Detection Panel ────────────────────────────────
+
+function tryParseDetectionArtifact(
+  evidence: GateEvidencePack | null,
+): Record<string, unknown> | null {
+  if (!evidence?.artifacts?.length) return null;
+  const detectionArtifact = evidence.artifacts.find(
+    (a) => a.kind === "source_profile_detection" || a.kind === "detection",
+  );
+  if (!detectionArtifact?.content) return null;
+  try {
+    return JSON.parse(detectionArtifact.content) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+export function SourceProfileDetectionPanel({
+  gateDetail,
+}: {
+  gateDetail: GateDetailResponse | null;
+}) {
+  const evidence = gateDetail?.evidence;
+  if (!evidence || !("pack_type" in evidence)) {
+    return (
+      <div className="info-box" data-testid="detection-evidence-unavailable">
+        <p>Source-profile detection evidence is unavailable; refresh the gate or rerun analysis.</p>
+      </div>
+    );
+  }
+
+  const pack = evidence as GateEvidencePack;
+  const detected = tryParseDetectionArtifact(pack);
+
+  return (
+    <section className="panel" data-testid="source-profile-detection-panel">
+      <h2>Source Profile Detection</h2>
+      <div className="table-list">
+        <div className="table-row">
+          <span className="meta">Pack type</span>
+          <strong>{pack.pack_type}</strong>
+        </div>
+        <div className="table-row">
+          <span className="meta">Summary</span>
+          <strong>{pack.summary || "No summary available"}</strong>
+        </div>
+        <div className="table-row">
+          <span className="meta">Artifacts</span>
+          <strong>
+            {pack.resolved_artifact_count}/{pack.total_artifact_count} resolved
+          </strong>
+        </div>
+        {pack.missing_refs.length > 0 && (
+          <div className="table-row">
+            <span className="meta">Missing refs</span>
+            <strong className="warning-text">{pack.missing_refs.join(", ")}</strong>
+          </div>
+        )}
+        {pack.checksum_mismatches.length > 0 && (
+          <div className="table-row">
+            <span className="meta">Checksum mismatches</span>
+            <strong className="warning-text">{pack.checksum_mismatches.join(", ")}</strong>
+          </div>
+        )}
+        {pack.failure_message && (
+          <div className="table-row">
+            <span className="meta">Failure</span>
+            <strong className="warning-text">{pack.failure_message}</strong>
+          </div>
+        )}
+        {detected && (
+          <>
+            {detected.detected_source_profile && (
+              <div className="table-row">
+                <span className="meta">Detected source profile</span>
+                <strong data-testid="detected-source-profile">{String(detected.detected_source_profile)}</strong>
+              </div>
+            )}
+            {detected.confidence != null && (
+              <div className="table-row">
+                <span className="meta">Confidence</span>
+                <strong>{String(detected.confidence)}</strong>
+              </div>
+            )}
+            {detected.uncertainty_notes && (
+              <div className="table-row">
+                <span className="meta">Uncertainty</span>
+                <strong>{String(detected.uncertainty_notes)}</strong>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+      <p className="meta">Evidence is backend-owned. Do not use parsed content as execution input.</p>
+    </section>
+  );
+}
+
+// ── F4 — Source Profile Override Form ──────────────────────────────────
+
+export type SourceProfileOverrideBlockedReason =
+  | "missing_target_profile"
+  | "missing_detection_artifact_ref"
+  | "missing_detection_artifact_checksum"
+  | "missing_reason"
+  | "missing_comments"
+  | "gate_phase_not_analysis_review"
+  | "override_action_unavailable"
+  | null;
+
+export function getSourceProfileOverrideBlockedReason(input: {
+  isAnalysisReview: boolean;
+  hasOverrideAction: boolean;
+  hasTargetProfile: boolean;
+  hasDetectionArtifactRef: boolean;
+  hasExpectedChecksum: boolean;
+  reason: string;
+  comments: string;
+}): SourceProfileOverrideBlockedReason {
+  if (!input.isAnalysisReview) {
+    return "gate_phase_not_analysis_review";
+  }
+  if (!input.hasOverrideAction) {
+    return "override_action_unavailable";
+  }
+  if (!input.hasTargetProfile) {
+    return "missing_target_profile";
+  }
+  if (!input.hasDetectionArtifactRef) {
+    return "missing_detection_artifact_ref";
+  }
+  if (!input.hasExpectedChecksum) {
+    return "missing_detection_artifact_checksum";
+  }
+  if (input.reason.trim().length === 0) {
+    return "missing_reason";
+  }
+  if (input.comments.trim().length === 0) {
+    return "missing_comments";
+  }
+  return null;
+}
+
+export const SOURCE_PROFILE_OVERRIDE_BLOCKED_COPY: Record<
+  Exclude<SourceProfileOverrideBlockedReason, null>,
+  string
+> = {
+  missing_target_profile: "Missing target profile from backend job state.",
+  missing_detection_artifact_ref: "Missing detection artifact reference bound to this gate.",
+  missing_detection_artifact_checksum: "Missing detection artifact checksum from gate state.",
+  missing_reason: "Reason is required.",
+  missing_comments: "Comments are required.",
+  gate_phase_not_analysis_review: "Source-profile override is only available at analysis_review gates.",
+  override_action_unavailable: "The override_source_profile action is not available on this gate.",
+};
+
+export const SOURCE_PROFILE_OVERRIDE_GENERIC_COPY =
+  "Source-profile detection evidence is unavailable; refresh the gate or rerun analysis.";
+
+function findDetectionArtifactRef(sourceArtifactRefs: string[]): string {
+  for (const ref of sourceArtifactRefs) {
+    if (typeof ref !== "string") continue;
+    const trimmed = ref.trim();
+    if (!trimmed) continue;
+    const normalized = trimmed.replace(/\\/g, "/");
+    const filename = normalized.split("/").filter(Boolean).pop() ?? "";
+    if (filename.toLowerCase().includes("source_profile_detection")) {
+      return trimmed;
+    }
+  }
+  return "";
+}
+
+function findDetectedSourceProfileFromEvidence(
+  evidence: GateDetailResponse["evidence"],
+): string {
+  if (!evidence || !("pack_type" in evidence)) return "";
+  const pack = evidence as GateEvidencePack;
+  const detectionArtifact = pack.artifacts?.find(
+    (a) =>
+      typeof a?.kind === "string" &&
+      (a.kind === "source_profile_detection" ||
+        a.kind === "detection" ||
+        a.kind.toLowerCase().includes("source_profile_detection")),
+  );
+  if (!detectionArtifact?.content) return "";
+  try {
+    const parsed = JSON.parse(detectionArtifact.content) as Record<string, unknown>;
+    const value = parsed.detected_source_profile;
+    return typeof value === "string" ? value : "";
+  } catch {
+    return "";
+  }
+}
+
+export type SourceProfileOverrideSubmitBody = {
+  gate_id: string;
+  job_id: string;
+  action: "override_source_profile";
+  expected_gate_checksum: string;
+  idempotency_key: string;
+  decided_by: "human";
+  actor_type: "human";
+  reason: string;
+  comments: string;
+  override_source_profile: MigrationProfileId;
+  detection_artifact_ref: string;
+  detected_source_profile: MigrationProfileId | undefined;
+  requested_source_profile: MigrationProfileId;
+  target_profile: MigrationProfileId;
+  expected_detection_artifact_checksum: string;
+};
+
+export type BuildSourceProfileOverrideBodyResult = {
+  body: SourceProfileOverrideSubmitBody | null;
+  blockedReason: SourceProfileOverrideBlockedReason;
+  detectionArtifactRef: string;
+  expectedDetectionChecksum: string;
+  detectedSourceProfile: MigrationProfileId | undefined;
+  targetProfile: MigrationProfileId | null;
+};
+
+export type BuildSourceProfileOverrideBodyInput = {
+  gate: GateRepresentation;
+  jobId: string;
+  job?: V2MigrationJobResponse;
+  evidence: GateDetailResponse["evidence"];
+  requestedProfile: MigrationProfileId;
+  reason: string;
+  comments: string;
+  idempotencyKey: string;
+  detectedSourceProfile?: MigrationProfileId;
+};
+
+export function buildSourceProfileOverrideBody(
+  input: BuildSourceProfileOverrideBodyInput,
+): BuildSourceProfileOverrideBodyResult {
+  const detectionArtifactRef = findDetectionArtifactRef(input.gate.source_artifact_refs);
+  const expectedDetectionChecksum = input.gate.source_artifact_checksum;
+  const detectedFromEvidence = findDetectedSourceProfileFromEvidence(input.evidence);
+  const detectedSourceProfile: MigrationProfileId | undefined =
+    detectedFromEvidence &&
+    MIGRATION_PROFILE_OPTIONS.find((p) => p.id === detectedFromEvidence)
+      ? (detectedFromEvidence as MigrationProfileId)
+      : input.detectedSourceProfile;
+
+  const jobTarget = input.job?.target_profile;
+  const targetProfile: MigrationProfileId | null = (() => {
+    if (
+      jobTarget &&
+      MIGRATION_PROFILE_OPTIONS.find((p) => p.id === jobTarget)?.selectableAsTarget
+    ) {
+      return jobTarget;
+    }
+    if (
+      detectedSourceProfile &&
+      MIGRATION_PROFILE_OPTIONS.find((p) => p.id === detectedSourceProfile)?.selectableAsTarget
+    ) {
+      return detectedSourceProfile;
+    }
+    return null;
+  })();
+
+  const isAnalysisReview = input.gate.gate_phase === "analysis_review";
+  const hasOverrideAction = !!input.gate.available_actions.some(
+    (a) => a.action === "override_source_profile",
+  );
+
+  const blockedReason = getSourceProfileOverrideBlockedReason({
+    isAnalysisReview,
+    hasOverrideAction,
+    hasTargetProfile: targetProfile !== null,
+    hasDetectionArtifactRef: detectionArtifactRef.length > 0,
+    hasExpectedChecksum: expectedDetectionChecksum.length > 0,
+    reason: input.reason,
+    comments: input.comments,
+  });
+
+  if (
+    blockedReason !== null ||
+    targetProfile === null ||
+    input.gate.checksum.length === 0
+  ) {
+    return {
+      body: null,
+      blockedReason,
+      detectionArtifactRef,
+      expectedDetectionChecksum,
+      detectedSourceProfile,
+      targetProfile,
+    };
+  }
+
+  return {
+    body: {
+      gate_id: input.gate.gate_id,
+      job_id: input.jobId,
+      action: "override_source_profile",
+      expected_gate_checksum: input.gate.checksum,
+      idempotency_key: input.idempotencyKey,
+      decided_by: "human",
+      actor_type: "human",
+      reason: input.reason,
+      comments: input.comments,
+      override_source_profile: input.requestedProfile,
+      detection_artifact_ref: detectionArtifactRef,
+      detected_source_profile: detectedSourceProfile,
+      requested_source_profile: input.requestedProfile,
+      target_profile: targetProfile,
+      expected_detection_artifact_checksum: expectedDetectionChecksum,
+    },
+    blockedReason: null,
+    detectionArtifactRef,
+    expectedDetectionChecksum,
+    detectedSourceProfile,
+    targetProfile,
+  };
+}
+
+export function SourceProfileOverrideForm({
+  gateDetail,
+  jobId,
+  job,
+  onSuccess,
+}: {
+  gateDetail: GateDetailResponse | null;
+  jobId: string;
+  job?: V2MigrationJobResponse;
+  onSuccess: () => void;
+}) {
+  const [requestedProfile, setRequestedProfile] = useState<MigrationProfileId>("springboot-2.7-java11");
+  const [reason, setReason] = useState("");
+  const [comments, setComments] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const gate = gateDetail?.gate;
+  const evidence = gateDetail?.evidence;
+  const isAnalysisReview = gate?.gate_phase === "analysis_review";
+  const hasOverrideAction = !!gate?.available_actions.some(
+    (a) => a.action === "override_source_profile",
+  );
+
+  // Backend-bound target profile: prefer job.target_profile, fall back to
+  // detected_source_profile from the detection evidence artifact only when
+  // the job target is unavailable. Never derive from gate_phase.
+  const detectedFromEvidence = findDetectedSourceProfileFromEvidence(evidence ?? null);
+  const targetProfile: MigrationProfileId | null = (() => {
+    const jobTarget = job?.target_profile;
+    if (jobTarget && (MIGRATION_PROFILE_OPTIONS.find((p) => p.id === jobTarget)?.selectableAsTarget ?? false)) {
+      return jobTarget;
+    }
+    if (
+      detectedFromEvidence &&
+      (MIGRATION_PROFILE_OPTIONS.find((p) => p.id === detectedFromEvidence)?.selectableAsTarget ?? false)
+    ) {
+      return detectedFromEvidence as MigrationProfileId;
+    }
+    return null;
+  })();
+
+  // Backend-bound detection artifact ref: must come from gate.source_artifact_refs.
+  // Select the ref whose filename contains "source_profile_detection".
+  const detectionArtifactRef = findDetectionArtifactRef(gate?.source_artifact_refs ?? []);
+
+  // Backend-bound detection checksum: use gate.source_artifact_checksum
+  // (the canonical gate-bound checksum), never pack_id or pack metadata.
+  const expectedDetectionChecksum = gate?.source_artifact_checksum ?? "";
+
+  const requestedProfileValid =
+    MIGRATION_PROFILE_OPTIONS.find((p) => p.id === requestedProfile)?.selectableAsSource ?? false;
+  const detectedSourceProfile: MigrationProfileId | undefined =
+    detectedFromEvidence &&
+    (MIGRATION_PROFILE_OPTIONS.find((p) => p.id === detectedFromEvidence) !== undefined)
+      ? (detectedFromEvidence as MigrationProfileId)
+      : undefined;
+
+  const blockedReason = getSourceProfileOverrideBlockedReason({
+    isAnalysisReview,
+    hasOverrideAction,
+    hasTargetProfile: targetProfile !== null,
+    hasDetectionArtifactRef: detectionArtifactRef.length > 0,
+    hasExpectedChecksum: expectedDetectionChecksum.length > 0,
+    reason,
+    comments,
+  });
+  const canSubmit =
+    blockedReason === null && gate?.checksum !== undefined && gate.checksum.length > 0 && requestedProfileValid;
+
+  if (!isAnalysisReview || !hasOverrideAction) {
+    return null;
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!gate) return;
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      const result = buildSourceProfileOverrideBody({
+        gate,
+        jobId,
+        job,
+        evidence: evidence ?? null,
+        requestedProfile,
+        reason,
+        comments,
+        idempotencyKey: createIdempotencyKey(),
+        detectedSourceProfile,
+      });
+      if (result.body === null) {
+        setSubmitError(
+          result.blockedReason !== null
+            ? SOURCE_PROFILE_OVERRIDE_BLOCKED_COPY[result.blockedReason]
+            : SOURCE_PROFILE_OVERRIDE_GENERIC_COPY,
+        );
+        return;
+      }
+      await postV2GateAction(jobId, gate.gate_id, result.body);
+      onSuccess();
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : "Override submission failed");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <section className="panel" data-testid="source-profile-override-form">
+      <h2>Override Source Profile</h2>
+      <p className="meta">
+        Only a human checksum-bound gate action can override source profile.
+      </p>
+      {!canSubmit && (
+        <div className="info-box" data-testid="override-submit-disabled">
+          <p data-testid="override-blocked-reason">
+            {blockedReason !== null
+              ? SOURCE_PROFILE_OVERRIDE_BLOCKED_COPY[blockedReason]
+              : SOURCE_PROFILE_OVERRIDE_GENERIC_COPY}
+          </p>
+        </div>
+      )}
+      <form onSubmit={(e) => void handleSubmit(e)}>
+        <div className="field-row">
+          <label>Requested Profile *</label>
+          <select
+            value={requestedProfile}
+            onChange={(e) => setRequestedProfile(e.target.value as MigrationProfileId)}
+            data-testid="override-profile-select"
+          >
+            {MIGRATION_PROFILE_OPTIONS.filter((p) => p.selectableAsSource).map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="field-row">
+          <label>Reason *</label>
+          <input
+            type="text"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Why override the detected source profile?"
+            required
+            aria-required="true"
+            data-testid="override-reason-input"
+          />
+        </div>
+        <div className="field-row">
+          <label>Comments *</label>
+          <textarea
+            rows={3}
+            value={comments}
+            onChange={(e) => setComments(e.target.value)}
+            placeholder="Required additional context for the override"
+            required
+            aria-required="true"
+            data-testid="override-comments-input"
+          />
+        </div>
+        {submitError && (
+          <p className="error-box" role="alert" data-testid="override-submit-error">
+            {submitError}
+          </p>
+        )}
+        <button
+          type="submit"
+          disabled={submitting || !canSubmit}
+          data-testid="override-submit-button"
+        >
+          {submitting ? "Submitting..." : "Submit Override"}
+        </button>
+      </form>
+    </section>
+  );
+}
+
+export function ApprovalDecisionsPanel({
+  approvals,
+  approvalReviewOpen,
+  approvalBusy,
+  onApprove,
+  onReject,
+}: {
+  approvals: V2ApprovalResponse[];
+  approvalReviewOpen: boolean;
+  approvalBusy: string | null;
+  onApprove: (card: V2ApprovalResponse) => void;
+  onReject: (card: V2ApprovalResponse) => void;
+}) {
+  // Approval rendering is driven entirely by backend-owned approval decisions.
+  // Every pending gate renders its own active Approve/Reject buttons.
+  // An approved/rejected gate only disables its own buttons; it must never
+  // hide buttons for a different pending gate (later stages included).
+  return (
+    <section className="panel">
+      <h2>Approval Decisions</h2>
+      {approvalReviewOpen && (
+        <p className="meta">
+          A pre-transform review gate is open. Approve/Reject buttons are enabled below for each pending gate; the chatbot can also confirm the exact checksum.
+        </p>
+      )}
+      {approvals.length === 0 ? (
+        <p className="meta">No pending decisions.</p>
+      ) : (
+        approvals.map((a) => (
+          <div key={a.card_id} className="approval-card">
+            <div className="stage-header">
+              <strong>Stage {a.stage_index}</strong>
+              <span className={`status-badge ${a.status}`}>{a.status.toUpperCase()}</span>
+            </div>
+            <p>{a.summary}</p>
+            <p className="checksum">Checksum: {a.request_checksum}</p>
+            {a.reviewer_decision && (
+              <p className="meta">
+                Reviewer: {a.reviewer_decision}
+                {a.reviewer_critique_id ? ` (${a.reviewer_critique_id})` : ""}
+              </p>
+            )}
+            {a.reviewed_checksum && <p className="checksum">Reviewed checksum: {a.reviewed_checksum}</p>}
+            <div className="approval-actions">
+              <button
+                type="button"
+                disabled={a.status !== "pending" || approvalBusy === a.card_id}
+                onClick={() => onApprove(a)}
+              >
+                Approve
+              </button>
+              <button
+                type="button"
+                disabled={a.status !== "pending" || approvalBusy === a.card_id}
+                onClick={() => onReject(a)}
+              >
+                Reject
+              </button>
+            </div>
+          </div>
+        ))
+      )}
+      <p className="meta">LLM cannot approve; exact checksum required.</p>
+    </section>
+  );
+}
+
 export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [data, setData] = useState<CockpitData | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1513,6 +2223,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [liveRefreshWarning, setLiveRefreshWarning] = useState<string | null>(null);
   const [gateState, setGateState] = useState<GatePanelState>({ status: "loading" });
   const [r6RepairState, setR6RepairState] = useState<R6RepairUiState>(EMPTY_R6_REPAIR_UI_STATE);
+  const [report, setReport] = useState<V2FinalReportResponse | null>(null);
+  const [reportBusy, setReportBusy] = useState(false);
   const normalizedJobId = jobId?.trim() ?? "";
   const approvalReviewOpen = gateState.status === "success" && gateState.openGate?.gate_phase === "approval_review";
 
@@ -1551,6 +2263,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           repairProposal: null,
         });
         setError(null);
+        void refreshReport();
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof Error ? e.message : "Failed to load cockpit");
@@ -1560,6 +2273,25 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     loadCockpit();
     return () => { cancelled = true; };
   }, [normalizedJobId]);
+
+  async function refreshReport() {
+    if (!normalizedJobId) return;
+    try {
+      setReport(await getV2FinalReport(normalizedJobId));
+    } catch {
+      // report state stays null if not available
+    }
+  }
+
+  async function handleGenerateReport() {
+    if (!normalizedJobId || !report?.eligible) return;
+    setReportBusy(true);
+    try {
+      setReport(await generateV2FinalReport(normalizedJobId));
+    } finally {
+      setReportBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!normalizedJobId) {
@@ -1638,13 +2370,13 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       "final_report_completed",
       "artifact_written",
       "stage_completed",
+      "migration_completed",
       "stage_failed",
       "next_stage_queued",
       "job_completed",
       "proof_updated",
       "approval_resume_queued",
       "resume_started",
-      "copilot_status_checked",
       "ai_diagnosis_created",
       "pom_summary_created",
       "repair_proposal_revised",
@@ -1679,6 +2411,14 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   function appendEventFromSse(dataText: string) {
     try {
       const event = JSON.parse(dataText) as V2JobEvent;
+      logApprovalEvent(event);
+      console.log("[migration-event]", {
+        type: event.type,
+        stage: event.stage,
+        status: event.status,
+        sequence: event.sequence,
+        payload: event.payload,
+      });
       setData((current) => {
         if (!current || current.events.some((existing) => existing.sequence === event.sequence)) {
           return current;
@@ -1693,10 +2433,15 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           // Backend refresh on important events is authoritative.
         };
       });
-      // On important events, refresh from backend (async, non-blocking)
+      // On important events, refresh from backend (async, non-blocking).
+      // Gate state is refreshed too so the open-gate slot and approvalReviewOpen
+      // stay current as later-stage gates open/resolve (not just on mount).
       if (IMPORTANT_SSE_TYPES.has(event.type)) {
         void refreshLiveState().catch(() => {
           setLiveRefreshWarning("Live refresh temporarily failed. Retrying...");
+        });
+        void refreshGateState().catch(() => {
+          // keep existing gate state on refresh failure
         });
       }
     } catch {
@@ -1771,6 +2516,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     setLiveRefreshWarning(failed ? "Live refresh temporarily failed. Retrying..." : null);
     setData((current) => {
       if (!current) return current;
+      logApprovalDecisionsBefore(current.approvals);
       const merged = mergeCockpitLiveRefreshResults(current, [
         approvalsResult,
         stagesResult,
@@ -1778,16 +2524,54 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         pipelineResult,
         failureSummaryResult,
       ]);
+      logApprovalDecisionsAfter(merged.data.approvals);
       return merged.data;
     });
+  }
+
+  // Best-effort refresh of the gate panel state. Called on important SSE
+  // events so that a newly opened later-stage approval_review gate is
+  // reflected (and a resolved earlier-stage gate no longer occupies the
+  // open-gate slot). Silent on failure: keeps the existing gate state.
+  async function refreshGateState() {
+    if (!normalizedJobId) return;
+    const safeJobId = requireJobId(normalizedJobId);
+    try {
+      const [gateList, openGateResponse] = await Promise.all([
+        getV2JobGates(safeJobId),
+        getV2OpenGate(safeJobId),
+      ]);
+      const openGate = openGateResponse.gate ?? null;
+      const openGateDetail = openGate
+        ? await getV2GateDetail(safeJobId, openGate.gate_id).catch(() => null)
+        : null;
+      setGateState({
+        status: gateList.gates.length === 0 ? "empty" : "success",
+        gates: gateList.gates,
+        openGate,
+        openGateDetail,
+      });
+      logOpenGates({ openGate, gateCount: gateList.gates.length });
+    } catch {
+      // keep existing gate state on refresh failure
+    }
   }
 
   async function approveCard(card: V2ApprovalResponse) {
     if (!normalizedJobId) return;
     setApprovalBusy(card.card_id);
+    const payload = {
+      jobId: normalizedJobId,
+      cardId: card.card_id,
+      stageId: card.stage_index,
+      checksum: card.request_checksum,
+      decision: "approve",
+    };
+    logApproveClickPayload(payload);
     try {
       await approveV2Card(normalizedJobId, card.card_id, card.request_checksum);
       await refreshLiveState();
+      await refreshGateState();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Approval failed");
     } finally {
@@ -1995,6 +2779,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   if (error) return <div className="error-box">{error}</div>;
   if (!data) return <div className="info-box">Loading cockpit...</div>;
 
+  const stageTimelineEntries = buildStageTimelineEntries(data.job.route_steps, data.stages);
+
   return (
     <div className="cockpit-layout">
       {/* Stage Timeline */}
@@ -2002,22 +2788,95 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         <h2>Stage Timeline</h2>
         <p className="meta">Job: {data.job.job_id}</p>
         <div className="stage-list">
-          {data.stages.map((stage) => (
-            <div key={stage.stage_index} className={`stage-card ${stage.chain_status}`}>
-              <div className="stage-header">
-                <strong>{stage.pipeline_stage}</strong>
-                <span className={`status-badge ${stage.chain_status}`}>
-                  {stage.chain_status.toUpperCase()}
-                </span>
+          {stageTimelineEntries.map((entry) => {
+            if ("route_step_index" in entry) {
+              const routeStep = entry as V2RouteStepEntry;
+              return (
+                <div key={routeStep.route_step_index} className={`stage-card ${routeStep.status}`}>
+                  <div className="stage-header">
+                    <strong>
+                      Route step {routeStep.route_step_index}: {routeStep.source_profile} → {routeStep.target_profile}
+                    </strong>
+                    <span className={`status-badge ${routeStep.status}`}>
+                      {formatRouteStepStatusLabel(routeStep.status)}
+                    </span>
+                    {routeStep.route_step_index === data.job.route_steps?.length && routeStep.status === "completed" && (
+                      <span className="status-badge completed">MIGRATION COMPLETED</span>
+                    )}
+                  </div>
+                  <p className="meta">Runtime profile: {routeStep.runtime_profile}</p>
+                  <p className="meta">Catalog: {routeStep.catalog}</p>
+                  <p className="meta">Execution JDK: {routeStep.execution_jdk}</p>
+                  {routeStep.approval_gate_id && <p className="meta">Approval gate: {routeStep.approval_gate_id}</p>}
+                  <p className="meta">
+                    Artifacts: {routeStep.artifact_refs.length > 0 ? routeStep.artifact_refs.join(", ") : "None yet"}
+                  </p>
+                  <p className="meta">
+                    Evidence: {routeStep.evidence_refs.length > 0 ? routeStep.evidence_refs.join(", ") : "None yet"}
+                  </p>
+                </div>
+              );
+            }
+
+            const stage = entry as Stage;
+            const isSkipped = data.job.skipped_stages?.includes(String(stage.stage_index));
+            const isExcluded = data.job.excluded_stages?.includes(String(stage.stage_index));
+            const isIncluded = data.job.included_stages?.includes(String(stage.stage_index));
+            return (
+              <div key={stage.stage_index} className={`stage-card ${stage.chain_status}`}>
+                <div className="stage-header">
+                  <strong>{stage.pipeline_stage}</strong>
+                  <span className={`status-badge ${stage.chain_status}`}>
+                    {formatStageStatusLabel(stage.chain_status)}
+                  </span>
+                  {isSkipped && (
+                    <span className="status-badge skipped" data-testid={`stage-${stage.stage_index}-skipped`}>
+                      SKIPPED BY SOURCE
+                    </span>
+                  )}
+                  {isExcluded && (
+                    <span className="status-badge excluded" data-testid={`stage-${stage.stage_index}-excluded`}>
+                      EXCLUDED BY TARGET
+                    </span>
+                  )}
+                  {isIncluded && (
+                    <span className="meta" data-testid={`stage-${stage.stage_index}-included`}>
+                      included
+                    </span>
+                  )}
+                </div>
+                <p className="meta">Input: {stage.input_source_kind}</p>
+                {stage.stage_index === 4 && (
+                  <p className="meta">
+                    Stage 4 is the Spring Boot 4 migration stage and follows the same approval and evidence flow as the earlier stages.
+                  </p>
+                )}
               </div>
-              <p className="meta">Input: {stage.input_source_kind}</p>
-            </div>
-          ))}
+            );
+          })}
         </div>
-        <p className="meta">Stage inputs are fixed by pipeline. No user selection of Stage 2/3 paths.</p>
+        {data.job.route_steps?.length ? (
+          <p className="meta">
+            Executable route steps are backend-projected from the selected source/target pair. Skipped and excluded stages remain metadata only.
+          </p>
+        ) : (
+          <p className="meta">Stage inputs are fixed by pipeline. No user selection of Stage 2/3 paths.</p>
+        )}
       </section>
 
-      {gateState.status !== "loading" ? <GatePanelContent state={gateState} /> : null}
+      {/* F3 — Migration Route Panel */}
+      <MigrationRoutePanel job={data.job} />
+
+      {gateState.status !== "loading" ? (
+        <GatePanelContent
+          state={gateState}
+          jobId={normalizedJobId}
+          job={data?.job}
+          onGateRefresh={() => {
+            void refreshGateState();
+          }}
+        />
+      ) : null}
 
       {/* Evidence Panel */}
       <section className="panel">
@@ -2066,54 +2925,13 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       </section>
 
       {/* Decisions Panel */}
-      <section className="panel">
-        <h2>Approval Decisions</h2>
-        {approvalReviewOpen && (
-          <p className="meta">
-            Pre-transform review is open in the chatbot. Legacy Approve/Reject controls are disabled here; use the assistant to review evidence, request changes, and confirm the exact checksum.
-          </p>
-        )}
-        {data.approvals.length === 0 ? (
-          <p className="meta">No pending decisions.</p>
-        ) : (
-          data.approvals.map((a) => (
-            <div key={a.card_id} className="approval-card">
-              <div className="stage-header">
-                <strong>Stage {a.stage_index}</strong>
-                <span className={`status-badge ${a.status}`}>{a.status.toUpperCase()}</span>
-              </div>
-              <p>{a.summary}</p>
-              <p className="checksum">Checksum: {a.request_checksum}</p>
-              {a.reviewer_decision && (
-                <p className="meta">
-                  Reviewer: {a.reviewer_decision}
-                  {a.reviewer_critique_id ? ` (${a.reviewer_critique_id})` : ""}
-                </p>
-              )}
-              {a.reviewed_checksum && <p className="checksum">Reviewed checksum: {a.reviewed_checksum}</p>}
-              {approvalReviewOpen ? (
-                <p className="meta">
-                  Review in chatbot. Exact checksum confirmation is required before transform resumes.
-                </p>
-              ) : shouldShowApprovalDecisionControls(a.status, approvalReviewOpen) ? (
-                <div className="approval-actions">
-                  <button type="button" disabled={approvalBusy === a.card_id} onClick={() => void approveCard(a)}>
-                    Approve
-                  </button>
-                  <button type="button" disabled={approvalBusy === a.card_id} onClick={() => void rejectCard(a)}>
-                    Reject
-                  </button>
-                </div>
-              ) : (
-                <p className="meta">
-                  Decision recorded: {a.status.toUpperCase()}. No further approval actions available.
-                </p>
-              )}
-            </div>
-          ))
-        )}
-        <p className="meta">LLM cannot approve; exact checksum required.</p>
-      </section>
+      <ApprovalDecisionsPanel
+        approvals={data.approvals}
+        approvalReviewOpen={approvalReviewOpen}
+        approvalBusy={approvalBusy}
+        onApprove={(card) => void approveCard(card)}
+        onReject={(card) => void rejectCard(card)}
+      />
 
       {/* Failure Summary Panel */}
       {data.failureSummary?.has_failures && (
@@ -2172,7 +2990,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
               {f.final_status && f.type !== "result_contract_failed" && <p className="meta">Final: {f.final_status}</p>}
               {f.final_proof_level && f.type !== "result_contract_failed" && <p className="meta">Proof level: {f.final_proof_level}</p>}
               {f.repair_loop_status && f.type !== "result_contract_failed" && <p className="meta">Repair: {f.repair_loop_status}</p>}
-              {f.copilot_status && f.type !== "result_contract_failed" && <p className="meta">Copilot: {f.copilot_status}</p>}
               {f.test_status && f.type !== "result_contract_failed" && <p className="meta">Test: {f.test_status}</p>}
               {f.stage != null && (
                 <div className="file-alias-actions">
@@ -2374,6 +3191,11 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         </section>
       )}
 
+      {/* PR-C — Repair Proposal Panel */}
+      {normalizedJobId && (
+        <RepairProposalPanel jobId={normalizedJobId} />
+      )}
+
       {/* Assistant Panel */}
       <AssistantPanelContent
         assistantModel={data.assistantModel}
@@ -2411,6 +3233,37 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         <p className="meta">Final proof report generated when all three deterministic gates pass.</p>
       </section>
 
+      {/* Final Report Panel */}
+      <section className="panel">
+        <h2>Final Report</h2>
+        {report && report.blockers.length > 0 && report.blockers.map((blocker) => (
+          <p className="warning-text" key={blocker}>{blocker}</p>
+        ))}
+        {report && !report.eligible && (
+          <p className="meta">Report generation not yet available for this job.</p>
+        )}
+        <button
+          type="button"
+          disabled={reportBusy || !report?.eligible}
+          onClick={() => void handleGenerateReport()}
+        >
+          {report?.status === "generated" ? "Regenerate report" : "Generate report"}
+        </button>
+        {reportBusy && <span className="meta"> Generating...</span>}
+        {report?.artifacts.map((artifact) => (
+          <div key={artifact.artifact_id} className="report-artifact-row">
+            <span className="meta">{artifact.kind}</span>
+            <span className="checksum">{artifact.checksum_sha256.slice(0, 16)}...</span>
+            <a
+              href={resolveReportDownloadUrl(artifact.download_url)}
+              download
+            >
+              Download
+            </a>
+          </div>
+        ))}
+      </section>
+
       {/* F14 — Stage 3 Dependency Review */}
       {data && (
         <section style={{ gridColumn: "1 / -1" }}>
@@ -2446,6 +3299,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .status-badge.failed { background: #ffe3e3; color: #a40000; }
         .status-badge.blocked { background: #f5e8ff; color: #5a248a; }
         .status-badge.pending { background: #eee; color: #666; }
+        .status-badge.skipped { background: #e8f4ff; color: #005599; }
+        .status-badge.excluded { background: #ffe8e8; color: #990000; }
         .meta { font-size: 0.85rem; color: #666; }
         .warning-text { font-size: 0.85rem; color: #8a5a00; margin: 0.25rem 0 0.5rem; }
         .error-box { border: 1px solid #cc0000; background: #fff0f0; padding: 1rem; border-radius: 6px; }
@@ -2496,6 +3351,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .artifact-kind-link:disabled { color: #888; cursor: wait; text-decoration: none; }
         .artifact-preview { border: 1px solid #0066cc; background: #f0f6ff; padding: 1rem; margin: 0.75rem 0; border-radius: 4px; }
         .artifact-preview-content { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow-y: auto; background: #fff; padding: 0.5rem; border: 1px solid #ddd; font-size: 0.8rem; }
+        .report-artifact-row { display: flex; gap: 0.5rem; align-items: center; padding: 0.35rem 0; border-bottom: 1px solid #eee; }
+        .report-artifact-row a { color: #0066cc; text-decoration: underline; font-size: 0.85rem; }
       `}</style>
     </div>
   );
@@ -2556,10 +3413,21 @@ export function RepairApplyCandidateCard({
 function reduceAllStageStatuses(stages: Stage[], allEvents: V2JobEvent[]): Stage[] {
   return stages.map((stage) => {
     const stageEvents = allEvents
-      .filter((e) => e.stage === stage.stage_index)
+      .filter((event) => eventAppliesToStage(event, stage.stage_index))
       .sort((a, b) => a.sequence - b.sequence);
-    return { ...stage, chain_status: reduceStageStatus(stageEvents) };
+    return { ...stage, chain_status: reduceStageStatus(stageEvents, stage.stage_index) };
   });
+}
+
+function eventAppliesToStage(event: V2JobEvent, stageIndex: number): boolean {
+  if (event.type !== "next_stage_queued") {
+    return event.stage === stageIndex;
+  }
+
+  const payload = event.payload ?? {};
+  const fromStage = Number(payload.from_stage ?? 0);
+  const toStage = Number(payload.to_stage ?? event.stage ?? 0);
+  return fromStage === stageIndex || toStage === stageIndex;
 }
 
 /** Map a single (event.type, event.status) to a stage status *label*.
@@ -2601,10 +3469,27 @@ export function transitionStageStatus(current: string, mapped: string): string {
   return current;
 }
 
+export function formatStageStatusLabel(status: string): string {
+  return status.replace(/_/g, " ").toUpperCase();
+}
+
 /** Reduce chronologically-ordered events to a single stage status. */
-export function reduceStageStatus(events: V2JobEvent[]): string {
+export function reduceStageStatus(events: V2JobEvent[], stageIndex?: number): string {
   let current = "pending";
   for (const event of events) {
+    if (event.type === "next_stage_queued" && stageIndex != null) {
+      const payload = event.payload ?? {};
+      const fromStage = Number(payload.from_stage ?? 0);
+      const toStage = Number(payload.to_stage ?? event.stage ?? 0);
+      if (fromStage === stageIndex) {
+        current = transitionStageStatus(current, "completed");
+        continue;
+      }
+      if (toStage === stageIndex) {
+        current = transitionStageStatus(current, "queued");
+        continue;
+      }
+    }
     current = transitionStageStatus(current, stageStatusFromEvent(event));
   }
   return current;
@@ -2620,6 +3505,18 @@ const IMPORTANT_SSE_TYPES = new Set([
   "sandbox_transform_started",
   "sandbox_transform_completed",
   "sandbox_transform_failed",
+  "analysis_started",
+  "analysis_completed",
+  "analysis_failed",
+  "planning_started",
+  "planning_completed",
+  "planning_failed",
+  "assessment_started",
+  "assessment_completed",
+  "assessment_failed",
+  "final_report_started",
+  "final_report_completed",
+  "final_report_failed",
   "stage_failed",
   "stage_completed",
   "model_invocation_completed",
@@ -2628,7 +3525,6 @@ const IMPORTANT_SSE_TYPES = new Set([
   "build_failed",
   "repair_started",
   "repair_fallback_generated",
-  "copilot_repair_invalid_response",
   "ai_diagnosis_created",
   "pom_summary_created",
   "repair_proposal_revised",

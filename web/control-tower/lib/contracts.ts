@@ -223,7 +223,6 @@ export type ModelInvocationEntry = {
   invocation_id: string;
   job_id: string | null;
   profile_id: string | null;
-  provider_kind: string | null;
   model_name: string | null;
   prompt_tokens: number | null;
   completion_tokens: number | null;
@@ -401,6 +400,31 @@ export type V2MigrationJobResponse = {
   pipeline_id: string;
   stages: V2StageEntry[];
   created_at: string;
+  route_steps?: V2RouteStepEntry[];
+  // F3/F4 — profile routing fields (backend-returned)
+  source_profile?: MigrationProfileId;
+  target_profile?: MigrationProfileId;
+  validation_status?: "valid" | "invalid";
+  validation_reason?: string;
+  included_stages?: string[];
+  excluded_stages?: string[];
+  skipped_stages?: string[];
+  stage_continuation_policy?: string;
+  run_configuration_id?: string;
+};
+
+export type V2RouteStepEntry = {
+  route_step_index: number;
+  stage_index: number;
+  source_profile: MigrationProfileId;
+  target_profile: MigrationProfileId;
+  runtime_profile: string;
+  catalog: string;
+  execution_jdk: string;
+  status: "pending" | "queued" | "running" | "blocked" | "completed" | "failed" | string;
+  approval_gate_id: string;
+  artifact_refs: string[];
+  evidence_refs: string[];
 };
 
 export type V2JobEvent = {
@@ -452,7 +476,6 @@ export type V2StageCommandResponse = {
   job_id: string;
   stage_index: number;
   manifest_checksum: string;
-  argv: string[];
   created_at: string;
 };
 
@@ -870,21 +893,18 @@ export type V2StageContinuationResponse = {
   job_id: string;
   from_stage: number;
   to_stage: number;
-  sandbox_path: string;
-  argv: string[];
   status: string;
   reason: string;
+  command_id?: string | null;
 };
 
 export type V2SettingsResponse = {
   azure: {
     profile_id: string;
-    provider: string;
-    endpoint: { env_ref: string; configured: boolean };
+    status: string;
+    connection_configured: boolean;
     roles: Record<string, {
-      env_ref: string;
       configured: boolean;
-      deployment_label: string;
       enabled: boolean;
     }>;
   };
@@ -926,7 +946,6 @@ export type V2PreflightResponse = {
 
 export type V2AzureSmokeResponse = {
   success: boolean;
-  provider: string;
   failure_reason: string;
   redacted_summary: string;
   response_snippet: string;
@@ -951,7 +970,6 @@ export type V2FailureSummaryItem = {
   final_status: string;
   final_proof_level: string;
   repair_loop_status: string;
-  copilot_status: string;
   repair_fallback: string;
   // ── SA4 diagnostic fields ──
   matched_line: string;
@@ -1637,7 +1655,8 @@ export type GateDecision =
   | "reanalyze"
   | "revise"
   | "approve"
-  | "reject";
+  | "reject"
+  | "override_source_profile";
 
 export type GateActorType =
   | "human"
@@ -1688,7 +1707,14 @@ export type GateActionRequest = {
   proposal_checksum?: string;
   context_pack_checksum?: string;
   user_feedback?: string;
-  // No sandbox_path, argv, or env fields
+  // F3/F4 — source-profile override fields (only for analysis_review gates):
+  override_source_profile?: MigrationProfileId;
+  detection_artifact_ref?: string;
+  detected_source_profile?: MigrationProfileId;
+  requested_source_profile?: MigrationProfileId;
+  target_profile?: MigrationProfileId;
+  expected_detection_artifact_checksum?: string;
+  comments?: string;
 };
 
 export type GateActionResult = {
@@ -1721,7 +1747,7 @@ export type RepairGateEvidence = {
 
 export type GateDetailResponse = {
   gate: GateRepresentation;
-  evidence: RepairGateEvidence | null;
+  evidence: RepairGateEvidence | GateEvidencePack | null;
   checksum: string;
 };
 
@@ -1810,4 +1836,363 @@ export type GateActionResponse = {
 
 export type OpenGateForJobResponse = {
   gate: GateRepresentation | null;
+};
+
+// ── F15 Final Report types (Stage 4 / V2 Final Report) ──────────────────
+
+export type V2ReportArtifactSummary = {
+  artifact_id: string;
+  kind: "final_report_json" | "final_report_markdown" | "final_report_pdf";
+  checksum_sha256: string;
+  size_bytes: number;
+  content_type: "application/json" | "text/markdown" | "application/pdf";
+  download_url: string;
+};
+
+export type V2FinalReportResponse = {
+  job_id: string;
+  status: "not_generated" | "generating" | "generated" | "blocked" | "failed";
+  eligible: boolean;
+  blockers: string[];
+  generated_at: string | null;
+  input_checksum: string | null;
+  redacted_summary: string;
+  artifacts: V2ReportArtifactSummary[];
+};
+
+// ── F3 / F4 — Profile routing types ────────────────────────────────────
+
+export type MigrationProfileId =
+  | "springboot-2.1-java11"
+  | "springboot-2.7-java11"
+  | "springboot-3.5-java17"
+  | "springboot-3.5-java21"
+  | "springboot-4.0-java21";
+
+export type MigrationProfileOption = {
+  id: MigrationProfileId;
+  label: string;
+  orderIndex: number;
+  selectableAsSource: boolean;
+  selectableAsTarget: boolean;
+};
+
+export const MIGRATION_PROFILE_OPTIONS: MigrationProfileOption[] = [
+  {
+    id: "springboot-2.1-java11",
+    label: "Spring Boot 2.1 / Java 11",
+    orderIndex: 0,
+    selectableAsSource: true,
+    selectableAsTarget: false,
+  },
+  {
+    id: "springboot-2.7-java11",
+    label: "Spring Boot 2.7 / Java 11",
+    orderIndex: 1,
+    selectableAsSource: true,
+    selectableAsTarget: true,
+  },
+  {
+    id: "springboot-3.5-java17",
+    label: "Spring Boot 3.5 / Java 17",
+    orderIndex: 2,
+    selectableAsSource: true,
+    selectableAsTarget: true,
+  },
+  {
+    id: "springboot-3.5-java21",
+    label: "Spring Boot 3.5 / Java 21",
+    orderIndex: 3,
+    selectableAsSource: true,
+    selectableAsTarget: true,
+  },
+  {
+    id: "springboot-4.0-java21",
+    label: "Spring Boot 4.0 / Java 21",
+    orderIndex: 4,
+    selectableAsSource: false,
+    selectableAsTarget: true,
+  },
+];
+
+// ── PR-C — Reviewed Diff Proposal types (PR-B response contracts) ──────
+
+export type SafeDiffLine = {
+  kind: "context" | "addition" | "deletion";
+  old_line_number: number | null;
+  new_line_number: number | null;
+  text: string;
+  redacted: boolean;
+};
+
+export type SafeDiffHunk = {
+  old_start: number;
+  old_lines: number;
+  new_start: number;
+  new_lines: number;
+  section_header: string | null;
+  lines: SafeDiffLine[];
+};
+
+export type SafeDiffFile = {
+  path: string;
+  change_type: string;
+  additions: number;
+  deletions: number;
+  hunks: SafeDiffHunk[];
+  truncated: boolean;
+};
+
+export type SafeDiffPreview = {
+  proposal_id: string;
+  diff_ref: string | null;
+  diff_checksum: string;
+  files: SafeDiffFile[];
+  total_additions: number;
+  total_deletions: number;
+  truncated: boolean;
+  checksum_mismatch: boolean;
+  redactions: string[];
+};
+
+export type ReviewerVerdictProjection = {
+  reviewer_verdict_id: string | null;
+  decision: string;
+  reasoning: string | null;
+  missing_evidence: string[];
+  unsafe_assumptions: string[];
+  model_invocation_id: string | null;
+  output_checksum: string | null;
+};
+
+export type FilesChangedSummary = {
+  path: string;
+  change_type: string;
+  additions: number;
+  deletions: number;
+};
+
+export type ReviewedDiffProposal = {
+  proposal_id: string;
+  job_id: string | null;
+  command_id: string | null;
+  gate_id: string | null;
+  route_step_index: number | null;
+  stage_index: number | null;
+  status: string;
+  attempt_number: number | null;
+  revision_number: number | null;
+  failure_summary: string;
+  diagnosis_ref: string | null;
+  repair_plan_ref: string | null;
+  diff_ref: string | null;
+  diff_checksum: string;
+  safe_diff_preview: SafeDiffPreview | null;
+  reviewer_verdict: ReviewerVerdictProjection | null;
+  files_changed: FilesChangedSummary[];
+  risk: string | null;
+  required_validation: string[];
+  allowed_actions: string[];
+  redactions: string[];
+};
+
+export type RepairProposalCurrentResponse = {
+  proposal: ReviewedDiffProposal | null;
+  job_id: string;
+};
+
+export type RepairProposalDetailResponse = {
+  proposal: ReviewedDiffProposal | null;
+  job_id: string;
+};
+
+export type RepairProposalDiffResponse = {
+  safe_diff_preview: SafeDiffPreview | null;
+  job_id: string;
+  reason?: string;
+};
+
+export type RepairAttemptSummary = {
+  proposal_id: string;
+  command_id: string | null;
+  job_id: string | null;
+  gate_id: string | null;
+  attempt_number: number | null;
+  revision_number: number | null;
+  status: string;
+  apply_status: string | null;
+  rerun_status: string | null;
+  rollback_status: string | null;
+  reviewer_decision: string | null;
+  diff_checksum: string | null;
+  policy_validation_checksum: string | null;
+  validation_result_ref: string | null;
+  next_gate_id: string | null;
+  next_gate_status: string | null;
+  remaining_attempts: number | null;
+  status_reason: string | null;
+  created_at: string;
+  completed_at: string | null;
+};
+
+export type RepairAttemptsResponse = {
+  attempts: RepairAttemptSummary[];
+  job_id: string;
+};
+
+// ── PR-D — User Revision Request types ───────────────────────────────────
+
+export type RepairProposalRevisionRequest = {
+  user_instruction: string;
+  previous_diff_checksum: string;
+  previous_reviewer_verdict_id: string;
+  expected_gate_checksum?: string;
+  idempotency_key?: string;
+};
+
+export type RepairProposalRevisionResponse = {
+  job_id: string;
+  previous_proposal_id: string;
+  proposal: ReviewedDiffProposal | null;
+  status: "revision_requested" | "user_review_required" | "failed";
+  event_ids: string[];
+  artifact_refs: Record<string, string>;
+};
+
+// ── PR-E — Approve Reviewed Repair Sandbox Apply types ───────────────────
+
+export type RepairProposalApproveRequest = {
+  proposal_id: string;
+  diff_checksum: string;
+  reviewer_verdict_id: string;
+  gate_id: string;
+  expected_gate_checksum?: string;
+  idempotency_key?: string;
+};
+
+export type RepairProposalApproveResponse = {
+  job_id: string;
+  proposal_id: string;
+  status: string;
+  apply_status: string;
+  rerun_status: string;
+  next_gate_id: string;
+  next_gate_status: string;
+  rollback_status: string;
+  remaining_attempts: number;
+  allowed_next_actions: string[];
+};
+
+export const PROFILE_BY_ID: Record<MigrationProfileId, MigrationProfileOption> =
+  MIGRATION_PROFILE_OPTIONS.reduce(
+    (acc, profile) => {
+      acc[profile.id] = profile;
+      return acc;
+    },
+    {} as Record<MigrationProfileId, MigrationProfileOption>,
+  );
+
+// Migration path stage numbers per profile pair (route-step aligned).
+// Stage 0 is the public 2.1 source state; Stage 1..4 are executable route steps.
+const PROFILE_TO_STAGE_INDEX: Record<MigrationProfileId, number> = {
+  "springboot-2.1-java11": 0,
+  "springboot-2.7-java11": 1,
+  "springboot-3.5-java17": 2,
+  "springboot-3.5-java21": 3,
+  "springboot-4.0-java21": 4,
+};
+
+export const TRANSITION_STAGE_INDEXES: number[] = [1, 2, 3, 4];
+
+export type RoutePreview = {
+  included: string[];
+  skipped: string[];
+  excluded: string[];
+};
+
+export function getRouteValidationError(
+  source: MigrationProfileId | null | undefined,
+  target: MigrationProfileId | null | undefined,
+): string | null {
+  if (!source || !target) {
+    return "Source and target profiles are required.";
+  }
+  const sourceProfile = PROFILE_BY_ID[source];
+  const targetProfile = PROFILE_BY_ID[target];
+  if (!sourceProfile || !targetProfile) {
+    return "Unknown migration profile.";
+  }
+  if (source === target) {
+    return "Source and target profiles must differ.";
+  }
+  if (targetProfile.orderIndex <= sourceProfile.orderIndex) {
+    return "Target profile must be a higher stage than the source profile.";
+  }
+  if (!sourceProfile.selectableAsSource) {
+    return "Source profile is not selectable as a source.";
+  }
+  if (!targetProfile.selectableAsTarget) {
+    return "Target profile is not selectable as a target.";
+  }
+  return null;
+}
+
+export function getRoutePreview(
+  source: MigrationProfileId,
+  target: MigrationProfileId,
+): RoutePreview | null {
+  const error = getRouteValidationError(source, target);
+  if (error !== null) return null;
+  const sourceStage = PROFILE_TO_STAGE_INDEX[source];
+  const targetStage = PROFILE_TO_STAGE_INDEX[target];
+  const included: number[] = [];
+  const skipped: number[] = [];
+  const excluded: number[] = [];
+  for (const stage of TRANSITION_STAGE_INDEXES) {
+    if (stage <= sourceStage) {
+      skipped.push(stage);
+    } else if (stage <= targetStage) {
+      included.push(stage);
+    } else {
+      excluded.push(stage);
+    }
+  }
+  return {
+    included: included.map((stage) => String(stage)),
+    skipped: skipped.map((stage) => String(stage)),
+    excluded: excluded.map((stage) => String(stage)),
+  };
+}
+
+export function getRoutePreviewKey(
+  source: MigrationProfileId,
+  target: MigrationProfileId,
+): string {
+  return `${source}->${target}`;
+}
+
+// ── F4 — Source-profile detection evidence types ───────────────────────
+
+export type GateEvidenceArtifact = {
+  kind: string;
+  checksum_verified: boolean;
+  content: string;
+  size_bytes: number;
+  truncated: boolean;
+};
+
+export type GateEvidencePack = {
+  pack_id: string;
+  pack_type: string;
+  gate_id: string;
+  gate_phase: string;
+  summary: string;
+  artifacts: GateEvidenceArtifact[];
+  missing_refs: string[];
+  checksum_mismatches: string[];
+  failure_message: string | null;
+  resolved_artifact_count: number;
+  total_artifact_count: number;
+  redaction_status: string;
+  created_at: string;
 };

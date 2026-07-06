@@ -15,7 +15,14 @@ from migration_factory.repair_loop.rule_registry import evaluate_rule
 from migration_factory.repair_loop.validation_runner import ValidationResult
 
 
-def test_build_failure_triggers_copilot_repair_request_when_enabled(tmp_path: Path) -> None:
+def _assert_legacy_repair_loop_quarantined(updates: dict) -> None:
+    assert updates["repair_loop_status"] == "BLOCKED"
+    assert updates["repair_loop_enabled"] is False
+    assert updates["repair_loop_quarantined"] is True
+    assert updates["repair_blocker"] == "copilot_removed_from_v2_f5"
+
+
+def test_build_failure_does_not_trigger_copilot_repair_when_enabled(tmp_path: Path) -> None:
     state = _state(tmp_path)
     calls: list[dict] = []
 
@@ -32,9 +39,9 @@ def test_build_failure_triggers_copilot_repair_request_when_enabled(tmp_path: Pa
 
     updates = run_post_failure_repair_loop(state, copilot_invoker=fake_invoker)
 
-    assert calls
-    assert (Path(state["run_dir"]) / "failures" / "copilot_repair_request.json").is_file()
-    assert updates["repair_loop_status"] == "PROPOSAL_ONLY"
+    assert calls == []
+    assert not (Path(state["run_dir"]) / "failures" / "copilot_repair_request.json").exists()
+    _assert_legacy_repair_loop_quarantined(updates)
 
 
 def test_disabled_repair_loop_preserves_old_behavior(tmp_path: Path) -> None:
@@ -53,19 +60,8 @@ def test_copilot_unavailable_writes_ledger_and_stops(tmp_path: Path) -> None:
     state["copilot_feature_probe"] = {"status": "UNAVAILABLE", "reason": "missing flags"}
 
     updates = run_post_failure_repair_loop(state)
-    ledger = load_ledger(state["run_dir"])
-
-    assert updates["repair_loop_status"] == "FALLBACK_REPAIR_PLAN"
-    assert updates["repair_fallback_generated"] is True
-    assert ledger["final_status"] == "FALLBACK_REPAIR_PLAN"
-    assert ledger["fallback_generated"] is True
-    assert ledger["fallback_reason"] == "COPILOT_UNAVAILABLE"
-    assert ledger["attempts"][0]["status"] == "FALLBACK_WRITTEN"
-    assert updates["failure_classification_status"] == "COMPLETED"
-    assert updates["copilot_invocation_status"] == "INVALID_RESPONSE"
-    assert Path(updates["artifact_refs"]["copilot_repair_response"]).is_file()
-    assert Path(updates["artifact_refs"]["deterministic_repair_response"]).is_file()
-    assert Path(updates["artifact_refs"]["deterministic_repair_plan"]).is_file()
+    _assert_legacy_repair_loop_quarantined(updates)
+    assert not (Path(state["run_dir"]) / "repairs" / "repair_ledger.json").exists()
 
 
 def test_invalid_copilot_response_updates_orchestration_state(tmp_path: Path) -> None:
@@ -84,17 +80,7 @@ def test_invalid_copilot_response_updates_orchestration_state(tmp_path: Path) ->
         }
 
     updates = run_post_failure_repair_loop(state, copilot_invoker=fake_invoker)
-    ledger = load_ledger(state["run_dir"])
-
-    assert updates["repair_loop_status"] == "FALLBACK_REPAIR_PLAN"
-    assert updates["copilot_invocation_status"] == "INVALID_RESPONSE"
-    assert updates["failure_classification_status"] == "COMPLETED"
-    assert updates["repair_attempts_count"] == 1
-    assert updates["repair_fallback_generated"] is True
-    assert updates["h2_startup_status"] == "H2_STARTUP_FAILED"
-    assert ledger["final_status"] == "FALLBACK_REPAIR_PLAN"
-    assert ledger["fallback_reason"] == "COPILOT_INVALID_RESPONSE"
-    assert ledger["attempts"][0]["status"] == "FALLBACK_WRITTEN"
+    _assert_legacy_repair_loop_quarantined(updates)
 
 
 def test_read_tool_unavailable_updates_orchestration_state(tmp_path: Path) -> None:
@@ -122,16 +108,7 @@ def test_read_tool_unavailable_updates_orchestration_state(tmp_path: Path) -> No
         }
 
     updates = run_post_failure_repair_loop(state, copilot_invoker=fake_invoker)
-    ledger = load_ledger(state["run_dir"])
-
-    assert updates["repair_loop_status"] == "FALLBACK_REPAIR_PLAN"
-    assert updates["copilot_invocation_status"] == "INVALID_RESPONSE"
-    assert updates["failure_classification_status"] == "COMPLETED"
-    assert updates["repair_attempts_count"] == 1
-    assert updates["repair_fallback_generated"] is True
-    assert updates["h2_startup_status"] == "H2_STARTUP_FAILED"
-    assert ledger["final_status"] == "FALLBACK_REPAIR_PLAN"
-    assert ledger["fallback_reason"] == "COPILOT_READ_TOOL_UNAVAILABLE"
+    _assert_legacy_repair_loop_quarantined(updates)
 
 
 def test_required_h2_failure_loads_preflight_and_creates_repair_artifacts(tmp_path: Path) -> None:
@@ -165,24 +142,9 @@ def test_required_h2_failure_loads_preflight_and_creates_repair_artifacts(tmp_pa
         h2_startup_report=_h2_runtime_config_failure_report(),
         copilot_invoker=fake_invoker,
     )
-    ledger = load_ledger(state["run_dir"])
-    classification = json.loads((Path(state["run_dir"]) / "failures" / "failure_classification.json").read_text(encoding="utf-8"))
-
-    assert calls
-    assert calls[0]["availability"]["status"] == "AVAILABLE"
-    assert updates["repair_loop_status"] == "PROPOSAL_ONLY"
-    assert updates["repair_loop_status"] == ledger["final_status"]
-    assert updates["failure_classification_status"] == "COMPLETED"
-    assert updates["copilot_invocation_status"] == "COMPLETED"
-    assert classification["failure_type"] == "H2_STARTUP_FAILURE"
-    assert classification["root_cause"] == "RUNTIME_CONFIG_MISSING_PROPERTY"
-    assert "cachingConfig" in classification["likely_root_cause"]
-    assert "cachingConfig" in classification["evidence"]
-    assert "Properties.get(Object) returned null" in classification["evidence"]
-    assert "SECURITY_ENV_WARNING" in classification["related_warnings"]
-    assert (Path(state["run_dir"]) / "failures" / "copilot_repair_request.json").is_file()
-    assert (Path(state["run_dir"]) / "copilot" / "evidence_session_1" / "copilot_invocation_debug.json").is_file()
-    assert ledger["attempts"][0]["failure_type"] == "H2_STARTUP_FAILURE"
+    assert calls == []
+    _assert_legacy_repair_loop_quarantined(updates)
+    assert not (Path(state["run_dir"]) / "failures" / "copilot_repair_request.json").exists()
 
 
 def test_required_h2_failure_unavailable_preflight_writes_reason_and_classification(tmp_path: Path) -> None:
@@ -199,16 +161,8 @@ def test_required_h2_failure_unavailable_preflight_writes_reason_and_classificat
     )
 
     updates = run_post_failure_repair_loop(state, h2_startup_report=_h2_runtime_config_failure_report())
-    ledger = load_ledger(state["run_dir"])
-
-    assert updates["repair_loop_status"] == "FALLBACK_REPAIR_PLAN"
-    assert updates["failure_classification_status"] == "COMPLETED"
-    assert updates["copilot_invocation_status"] == "INVALID_RESPONSE"
-    assert ledger["final_status"] == "FALLBACK_REPAIR_PLAN"
-    assert ledger["fallback_generated"] is True
-    assert "required Copilot CLI safety flags missing" in ledger["warnings"]
-    assert "--deny-tool missing" in ledger["errors"]
-    assert (Path(state["run_dir"]) / "failures" / "failure_classification.json").is_file()
+    _assert_legacy_repair_loop_quarantined(updates)
+    assert not (Path(state["run_dir"]) / "failures" / "failure_classification.json").exists()
 
 
 def test_missing_preflight_reruns_safe_availability_probe(tmp_path: Path, monkeypatch) -> None:
@@ -221,14 +175,10 @@ def test_missing_preflight_reruns_safe_availability_probe(tmp_path: Path, monkey
         probes.append(kwargs)
         return {"status": "UNAVAILABLE", "reason": "copilot cli executable was not found", "errors": ["not found"]}
 
-    monkeypatch.setattr(repair_orchestrator, "probe_copilot_availability", fake_probe)
-
     updates = run_post_failure_repair_loop(state)
 
-    assert probes
-    assert updates["repair_loop_status"] == "FALLBACK_REPAIR_PLAN"
-    assert updates["repair_fallback_generated"] is True
-    assert updates["failure_classification_status"] == "COMPLETED"
+    assert probes == []
+    _assert_legacy_repair_loop_quarantined(updates)
 
 
 def test_response_validation_rejects_missing_or_false_checklist() -> None:
@@ -518,11 +468,7 @@ def test_auto_patch_validation_pass_keeps_patch_and_marks_validated(tmp_path: Pa
         copilot_invoker=_fake_invoker_with_patch,
         validation_runner=lambda **kwargs: _validation(True),
     )
-    ledger = load_ledger(state["run_dir"])
-
-    assert updates["repair_loop_status"] == "REPAIR_VALIDATED"
-    assert updates["repair_safe_patch_applied"] is True
-    assert ledger["attempts"][0]["validation"]["h2_status"] == "H2_STARTUP_PASSED"
+    _assert_legacy_repair_loop_quarantined(updates)
 
 
 def test_validation_failure_rolls_back_and_repeated_patch_stops_retry(tmp_path: Path, monkeypatch) -> None:
@@ -544,12 +490,8 @@ def test_validation_failure_rolls_back_and_repeated_patch_stops_retry(tmp_path: 
         copilot_invoker=_fake_invoker_with_patch,
         validation_runner=lambda **kwargs: _validation(False),
     )
-    ledger = load_ledger(state["run_dir"])
-
-    assert rollbacks
-    assert updates["repair_loop_status"] == "REPAIR_FAILED"
-    assert ledger["attempts"][0]["rollback"]["status"] == "ROLLED_BACK"
-    assert any("repeated patch" in warning for warning in ledger["warnings"])
+    assert rollbacks == []
+    _assert_legacy_repair_loop_quarantined(updates)
 
 
 def test_final_report_contains_repair_loop_metadata(tmp_path: Path) -> None:

@@ -80,6 +80,8 @@ def test_create_migration_job_writes_everything_atomically(tmp_path: Path) -> No
             "runner_profile_version": command.runner_profile_version,
             "pipeline_id": command.pipeline_id,
             "pipeline_version": command.pipeline_version,
+            "source_profile": None,
+            "target_profile": None,
             "target_proof_level": command.target_proof_level.value,
             "enabled_gates": list(command.enabled_gates),
             "policy": {
@@ -211,6 +213,24 @@ def test_create_migration_job_can_persist_manual_stage_continuation_policy(
         }
     )
     assert '"stage_continuation_policy":"manual"' in row["payload_json"]
+
+
+def test_run_configuration_rejects_invalid_profile_pair_for_job_creation() -> None:
+    with pytest.raises(ValueError, match="target profile must be higher"):
+        RunConfiguration(
+            schema_version="1.0.0",
+            run_configuration_id="run-config-invalid",
+            job_id="job-invalid",
+            runner_profile_id="runner-default",
+            runner_profile_version="2026.06",
+            pipeline_id="pipeline-default",
+            pipeline_version="2026.06",
+            target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED,
+            enabled_gates=(),
+            policy=RunPolicy(),
+            source_profile="springboot-3.5-java21",
+            target_profile="springboot-3.5-java17",
+        )
 
 
 def test_pipeline_runner_compatibility_failure_rolls_back_everything(tmp_path: Path) -> None:

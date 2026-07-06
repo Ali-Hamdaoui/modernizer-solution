@@ -227,14 +227,7 @@ def _route_after_validation(
 
 
 def _should_route_to_copilot_assist(state: MigrationState, *, validation_passed: bool) -> bool:
-    mode = str(state.get("copilot_assist_mode") or "off").lower()
-    if mode == "off":
-        return False
-    if mode == "always":
-        return True
-    if not validation_passed:
-        return mode == "failures"
-    return mode == "warnings" and bool(state.get("copilot_validation_had_warnings"))
+    return False
 
 
 def _route_after_copilot_phase_assist(state: MigrationState) -> str:
@@ -268,6 +261,4 @@ def _deterministic_final_report_node(state: MigrationState) -> MigrationState:
 
 
 def _route_after_final_report(state: MigrationState) -> str:
-    if state.get("copilot_report_enabled") is True:
-        return "copilot_final_report"
     return END

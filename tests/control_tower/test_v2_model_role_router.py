@@ -68,6 +68,62 @@ def test_router_uses_fallback_deployment_when_primary_missing(monkeypatch) -> No
     assert result.content == "fallback response"
 
 
+def test_router_does_not_select_static_fallback_when_unconfigured(monkeypatch) -> None:
+    monkeypatch.delenv("AZURE_OPENAI_PROPOSER_DEPLOYMENT", raising=False)
+    monkeypatch.delenv("AZURE_OPENAI_FALLBACK_DEPLOYMENT", raising=False)
+
+    router = V2ModelRoleRouter(ControlTowerSettings(azure_foundry_fallback_enabled=True))
+    calls: list[str] = []
+
+    result = router.route(
+        V2RoleModelRequest(role=V2ModelRole.PROPOSER, prompt="draft", fallback="fallback"),
+        invoke=lambda deployment: calls.append(deployment),
+    )
+
+    assert calls == []
+    assert result.success is False
+    assert result.provider == "deterministic"
+    assert result.failure_reason == "missing_proposer_deployment"
+    assert result.fallback_used is False
+
+
+def test_router_uses_user_selected_reviewer_deployment(monkeypatch) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_REVIEWER_DEPLOYMENT", "reviewer-selected")
+    monkeypatch.setenv("AZURE_OPENAI_PROPOSER_DEPLOYMENT", "proposer-selected")
+    monkeypatch.setenv("AZURE_OPENAI_FALLBACK_DEPLOYMENT", "fallback-selected")
+
+    router = V2ModelRoleRouter(ControlTowerSettings(azure_foundry_fallback_enabled=True))
+    calls: list[str] = []
+
+    def invoke(deployment: str) -> V2AssistantModelResult:
+        calls.append(deployment)
+        return V2AssistantModelResult(
+            content='{"decision":"accept","reasoning":"ok","missing_evidence":[],"unsafe_assumptions":[]}',
+            source="azure_openai",
+            model_status="live_ok",
+            provider="azure_openai",
+            role="reviewer",
+            success=True,
+            redacted_summary="ok",
+            failure_reason="",
+        )
+
+    result = router.route(
+        V2RoleModelRequest(
+            role=V2ModelRole.REVIEWER,
+            prompt="review",
+            fallback="fallback",
+            output_schema_name="ReviewerCritique",
+            require_schema=True,
+        ),
+        invoke=invoke,
+    )
+
+    assert calls == ["reviewer-selected"]
+    assert result.success is True
+    assert result.fallback_used is False
+
+
 def test_router_fail_closes_on_schema_mismatch(monkeypatch) -> None:
     monkeypatch.setenv("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "assistant-deployment")
 

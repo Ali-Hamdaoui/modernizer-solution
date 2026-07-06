@@ -13,6 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 import migration_factory.control_tower.application.v2_repair_flow as v2_repair_flow
 
+from migration_factory.control_tower.application.v2_repair_flow import V2RepairFlowService
 from migration_factory.control_tower.application.v2_setup_service import (
     CreateSetupRequest,
     V2SetupService,
@@ -469,6 +470,25 @@ def _seed_real_local_project_repair_apply_context(
                 ),
             )
     return run_dir, legacy_root, sandbox_root, source_fixture
+
+
+def _seed_repair_proposal(
+    conn: sqlite3.Connection,
+    *,
+    command_id: str,
+    failure_summary: str = "Build failed",
+    hypothesis: str = "Missing dependency",
+    patch_summary: str = "Add dependency",
+    affected_paths: tuple[str, ...] = ("pom.xml",),
+):
+    service = V2RepairFlowService(repair_repo=SqliteV2RepairRepository(conn))
+    return service.create_proposal(
+        command_id=command_id,
+        failure_summary=failure_summary,
+        hypothesis=hypothesis,
+        patch_summary=patch_summary,
+        affected_paths=affected_paths,
+    )
 
 
 def _fake_apply_result(run_dir: Path):
@@ -2024,21 +2044,16 @@ class TestRepairAPI:
 
     def test_approve_proposal(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         client, conn = _api_client(tmp_path)
-        # Create proposal
-        create_resp = client.post(
-            "/v1/v2/commands/cmd-2/repair/flow-proposal",
-            json={
-                "command_id": "cmd-2",
-                "failure_summary": "Error",
-                "hypothesis": "Bug",
-                "patch_summary": "Fix",
-                "affected_paths": ["src/Fix.java"],
-            },
-            headers=_mutation_headers(),
+        proposal = _seed_repair_proposal(
+            conn,
+            command_id="cmd-2",
+            failure_summary="Error",
+            hypothesis="Bug",
+            patch_summary="Fix",
+            affected_paths=("src/Fix.java",),
         )
-        assert create_resp.status_code == 200
-        proposal_id = create_resp.json()["proposal_id"]
-        proposal_checksum = create_resp.json()["proposal_checksum"]
+        proposal_id = proposal.proposal_id
+        proposal_checksum = proposal.proposal_checksum
         run_dir = _seed_repair_apply_context(
             conn,
             tmp_path,
@@ -2047,8 +2062,7 @@ class TestRepairAPI:
             command_id="cmd-2",
         )
 
-        # Approve with checksums (F07: all required)
-        # Create a reviewer critique directly via the repo so the gate passes
+        # Even with a legacy reviewer critique, this route cannot authorize F5 apply.
         from migration_factory.control_tower.application.v2_reviewer_service import (
             V2ReviewerService,
         )
@@ -2601,7 +2615,8 @@ class TestRepairAPI:
             },
             headers=_mutation_headers(),
         )
-        assert response.status_code == 409
+        assert response.status_code == 410
+        assert "LEGACY_REPAIR_APPROVAL_DISABLED" in response.text
         assert "REPAIR_APPROVE_APPLY_DISABLED" in response.text
 
     def test_prepare_apply_context_fails_without_durable_command_binding(
@@ -2667,20 +2682,15 @@ class TestRepairAPI:
 
     def test_proposal_persistence(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)
-        # Create proposal
-        create_resp = client.post(
-            "/v1/v2/commands/cmd-persist/repair/flow-proposal",
-            json={
-                "command_id": "cmd-persist",
-                "failure_summary": "Persist test",
-                "hypothesis": "Check persistence",
-                "patch_summary": "Verify",
-                "affected_paths": ["test.txt"],
-            },
-            headers=_mutation_headers(),
+        proposal = _seed_repair_proposal(
+            conn,
+            command_id="cmd-persist",
+            failure_summary="Persist test",
+            hypothesis="Check persistence",
+            patch_summary="Verify",
+            affected_paths=("test.txt",),
         )
-        assert create_resp.status_code == 200
-        proposal_id = create_resp.json()["proposal_id"]
+        proposal_id = proposal.proposal_id
 
         # Verify in DB
         db_path = tmp_path / "assistant_repair_test.sqlite3"
@@ -2760,7 +2770,7 @@ class TestSchemaValidationRejection:
         assert response.status_code in (400, 422), f"Expected 400/422, got {response.status_code}"
 
     def test_repair_proposal_rejects_extra_field(self, tmp_path: Path) -> None:
-        """RepairProposal schema has additionalProperties: false."""
+        """Legacy repair proposal route is disabled before any model/schema path."""
         client, conn = _api_client(tmp_path)
         response = client.post(
             "/v1/v2/commands/cmd-extra/repair/flow-proposal",
@@ -2774,10 +2784,10 @@ class TestSchemaValidationRejection:
             },
             headers=_mutation_headers(),
         )
-        assert response.status_code == 422, f"Expected 422 for extra field, got {response.status_code}"
+        assert response.status_code in (410, 422)
 
     def test_repair_proposal_rejects_missing_required(self, tmp_path: Path) -> None:
-        """RepairProposal requires failure_hypothesis, patch_summary, affected_paths, validation_plan."""
+        """Legacy repair proposal route is disabled for F5."""
         client, conn = _api_client(tmp_path)
         response = client.post(
             "/v1/v2/commands/cmd-missing/repair/flow-proposal",
@@ -2788,7 +2798,7 @@ class TestSchemaValidationRejection:
             },
             headers=_mutation_headers(),
         )
-        assert response.status_code in (400, 422), f"Expected 400/422, got {response.status_code}"
+        assert response.status_code in (410, 422), f"Expected closed failure, got {response.status_code}"
 
     def test_valid_payloads_still_accepted(self, tmp_path: Path) -> None:
         """Regression: valid payloads must still be accepted after schema wiring."""
@@ -2817,7 +2827,7 @@ class TestSchemaValidationRejection:
             },
             headers=_mutation_headers(),
         )
-        assert repair_resp.status_code == 200, f"Valid repair proposal rejected: {repair_resp.text}"
+        assert repair_resp.status_code == 410, f"Legacy repair proposal route should be disabled: {repair_resp.text}"
 
     def test_assistant_message_rejects_invalid_answer_schema(self, tmp_path: Path) -> None:
         """Assistant messages with invalid JSON schema must be rejected."""

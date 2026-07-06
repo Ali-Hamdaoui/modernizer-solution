@@ -1,8 +1,10 @@
+import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import {
   MigrationCockpit,
+  ApprovalDecisionsPanel,
   AssistantPanelContent,
   ControlledR6RepairDemoPanel,
   GovernedRepairProposalCard,
@@ -12,6 +14,13 @@ import {
   GatePanelContent,
   RepairApplyCandidateCard,
   RepairApplyCandidateDetails,
+  MigrationRoutePanel,
+  SourceProfileDetectionPanel,
+  SourceProfileOverrideForm,
+  buildSourceProfileOverrideBody,
+  buildStageTimelineEntries,
+  getSourceProfileOverrideBlockedReason,
+  formatStageStatusLabel,
   formatGateArtifactRefLabel,
   hasUnknownNonRepairableFailure,
   isControlledR6DemoUiEnabled,
@@ -26,19 +35,28 @@ import {
   applyV2RepairReviewContext,
   askV2Assistant,
   approveV2RepairCandidate,
+  approveV2Card,
   CONTROL_TOWER_API_BASE_URL,
   getV2ArtifactPreview,
+  postV2GateAction,
   prepareV2RepairApplyContext,
   requireJobId,
+  resolveReportDownloadUrl,
   requestV2ReviewerCritique,
   v2EventStreamUrl,
 } from "../lib/controlTowerApi";
 import type {
+  GateDetailResponse,
+  GateEvidencePack,
   GateRepresentation,
   GovernedRepairProposalResponse,
   MigrationIntelligenceSummary,
+  V2ApprovalResponse,
   V2FailureSummaryResponse,
+  V2FailureSummaryItem,
   V2JobEvent,
+  V2MigrationJobResponse,
+  V2RouteStepEntry,
   V2ReviewerCritiqueResponse,
   RepairApplyContextResponse,
   RepairApprovalResponse,
@@ -292,9 +310,16 @@ describe("V2 Migration Cockpit contract", () => {
     expect(stages[2].input_source_kind).toBe("stage_2_sandbox");
   });
 
-  it("has no Boot 4 stage", () => {
-    const stages = [1, 2, 3];
-    expect(stages).not.toContain(4);
+  it("shows Boot 4 as the automated Stage 4 pipeline entry", () => {
+    const stages = [
+      { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "completed", input_source_kind: "legacy_source" },
+      { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "completed", input_source_kind: "stage_1_sandbox" },
+      { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "completed", input_source_kind: "stage_2_sandbox" },
+      { stage_index: 4, pipeline_stage: "Stage 4", chain_status: "pending", input_source_kind: "stage_3_sandbox" },
+    ];
+    const stage4 = stages[3];
+    expect(stage4.input_source_kind).toBe("stage_3_sandbox");
+    expect(formatStageStatusLabel(stage4.chain_status)).toBe("PENDING");
   });
 
   it("has no stage-start buttons", () => {
@@ -1709,15 +1734,36 @@ describe("V2 Migration Cockpit contract", () => {
     }
   });
 
-  it("approval review jobs route approval through chatbot copy", () => {
-    const approvalReviewOpen = true;
-    const labels = approvalReviewOpen
-      ? ["Review in chatbot", "Legacy Approve/Reject controls are disabled here.", "checksum-123"]
-      : ["Approve", "Reject", "checksum-123"];
-    expect(labels).toContain("Review in chatbot");
-    expect(labels).toContain("checksum-123");
-    expect(labels).not.toContain("Approve");
-    expect(labels).not.toContain("Reject");
+  it("pending approval card renders Approve/Reject buttons even when approvalReviewOpen is true", () => {
+    // Regression: the global approvalReviewOpen flag used to swap ALL cards'
+    // buttons for "Review in chatbot" copy. Pending gates must always show
+    // active Approve/Reject buttons, regardless of the open-gate flag.
+    const pending: V2ApprovalResponse = {
+      card_id: "card-3",
+      job_id: "job-123",
+      interrupt_id: "run-3",
+      request_checksum: "checksum-3",
+      stage_index: 3,
+      summary: "Pre-transform review required before sandbox transform.",
+      status: "pending",
+      created_at: "2026-07-02T00:00:00Z",
+    };
+    const markup = renderToStaticMarkup(
+      <ApprovalDecisionsPanel
+        approvals={[pending]}
+        approvalReviewOpen={true}
+        approvalBusy={null}
+        onApprove={() => {}}
+        onReject={() => {}}
+      />,
+    );
+    expect(markup).toContain("Stage 3");
+    expect(markup).toContain("checksum-3");
+    expect(markup).toContain("Approve");
+    expect(markup).toContain("Reject");
+    // The pending card's Approve button must NOT be disabled.
+    const approveButtonStart = markup.indexOf("Approve");
+    expect(markup.slice(markup.lastIndexOf("<button", approveButtonStart), approveButtonStart)).not.toContain("disabled");
   });
 
   it("pipeline projection shows agent phases before raw logs", () => {
@@ -1780,19 +1826,17 @@ describe("V2 Migration Cockpit contract", () => {
           final_status: "FALLBACK_REPAIR_PLAN",
           final_proof_level: "not_verified",
           repair_loop_status: "FALLBACK_REPAIR_PLAN",
-          copilot_status: "INVALID_RESPONSE",
           repair_fallback: "True",
         },
       ],
       repair_loop_active: true,
       repair_events: [
-        { type: "copilot_repair_invalid_response", message: "Copilot response invalid" },
+        { type: "repair_invalid_response", message: "Repair response invalid" },
       ],
       artifact_kinds: ["analysis_report"],
     };
     expect(failureSummary.has_failures).toBe(true);
     expect(failureSummary.failures[0].build_status).toBe("BUILD_FAILED_IN_SANDBOX");
-    expect(failureSummary.failures[0].copilot_status).toBe("INVALID_RESPONSE");
   });
 
   it("assistant model status includes failure_reason for fallback", () => {
@@ -1809,11 +1853,91 @@ describe("V2 Migration Cockpit contract", () => {
 
   it("assistant and repair wording stay separate after repair fallback", () => {
     const assistantModel = { status: "live_ok", source: "azure_openai", provider: "azure_openai" };
-    const repair = { copilot_status: "INVALID_RESPONSE", repair_fallback: "True", repair_loop_status: "FALLBACK_REPAIR_PLAN" };
+    const repair = { repair_fallback: "True", repair_loop_status: "FALLBACK_REPAIR_PLAN" };
     expect(assistantModel.source).toBe("azure_openai");
     expect(assistantModel.status).toBe("live_ok");
-    expect(repair.copilot_status).toBe("INVALID_RESPONSE");
     expect(repair.repair_loop_status).toBe("FALLBACK_REPAIR_PLAN");
+  });
+
+  // ── F0 closure: no copilot_status in failure contracts or rendering ──
+
+  it("V2FailureSummaryItem does not include copilot_status field", () => {
+    const failure: V2FailureSummaryItem = {
+      type: "build_failed",
+      stage: 2,
+      title: "test",
+      message: "test message",
+      build_status: "BUILD_FAILED_IN_SANDBOX",
+      test_status: "NOT_RUN",
+      final_status: "FAILED",
+      final_proof_level: "not_verified",
+      repair_loop_status: "INACTIVE",
+      repair_fallback: "false",
+      matched_line: "",
+      command: [],
+      requested_command: [],
+      build_tool: "maven",
+      module: "",
+      main_class: "",
+      unit_id: "",
+      result_kind: "dependency_error",
+      java_home: "/java",
+      detected_version: "",
+      required_minimum: "",
+      event_types: [],
+      repair_events: [],
+      next_operator_action: "manual_review",
+      supervision_trace: {
+        ai_diagnosis: null,
+        evidence_used: [],
+        pom_analysis: null,
+        repair_proposal: null,
+        reviewer_verdict: null,
+        validation_result: null,
+      },
+    };
+    expect("copilot_status" in failure).toBe(false);
+    expect(failure).not.toHaveProperty("copilot_status");
+  });
+
+  it("failure summary rendering does not include copilot_status", () => {
+    const sampleFailure = {
+      type: "build_failed",
+      stage: 2,
+      title: "Stage 2 Build Failure",
+      message: "Build result kind: dependency_error",
+      build_status: "BUILD_FAILED_IN_SANDBOX",
+      final_status: "FAILED",
+      result_kind: "dependency_error",
+      event_types: ["build_failed"],
+      repair_events: [{ type: "repair_started", message: "repair started" }],
+    };
+
+    const markup = renderToStaticMarkup(
+      <div className="failure-card">
+        <div className="stage-header">
+          <strong>{sampleFailure.type}</strong>
+          <span className="meta">Stage {sampleFailure.stage}</span>
+          <span className="status-badge failed">FAILED</span>
+        </div>
+        <p>{sampleFailure.message}</p>
+        {sampleFailure.result_kind && (
+          <p className="meta">
+            <strong>Root cause:</strong> {sampleFailure.result_kind}
+          </p>
+        )}
+        {sampleFailure.event_types.length > 0 && (
+          <p className="meta">Event types: {sampleFailure.event_types.join(", ")}</p>
+        )}
+        {sampleFailure.repair_events.length > 0 && (
+          <p className="meta">Repair events: {sampleFailure.repair_events.map((r) => r.type).join(", ")}</p>
+        )}
+      </div>
+    );
+
+    expect(markup).not.toContain("copilot_status");
+    expect(markup).not.toContain("INVALID_RESPONSE");
+    expect(markup).not.toContain("copilot_invocation_status");
   });
 
   it("IMPORTANT_SSE_TYPES includes all required lifecycle events", () => {
@@ -1827,6 +1951,18 @@ describe("V2 Migration Cockpit contract", () => {
       "sandbox_transform_started",
       "sandbox_transform_completed",
       "sandbox_transform_failed",
+      "analysis_started",
+      "analysis_completed",
+      "analysis_failed",
+      "planning_started",
+      "planning_completed",
+      "planning_failed",
+      "assessment_started",
+      "assessment_completed",
+      "assessment_failed",
+      "final_report_started",
+      "final_report_completed",
+      "final_report_failed",
       "stage_failed",
       "stage_completed",
       "model_invocation_completed",
@@ -1845,6 +1981,10 @@ describe("V2 Migration Cockpit contract", () => {
     ]);
     expect(important.has("approval_resume_queued")).toBe(true);
     expect(important.has("approval_completed")).toBe(true);
+    expect(important.has("analysis_started")).toBe(true);
+    expect(important.has("planning_started")).toBe(true);
+    expect(important.has("assessment_started")).toBe(true);
+    expect(important.has("final_report_started")).toBe(true);
     expect(important.has("transform_failed")).toBe(true);
     expect(important.has("build_failed")).toBe(true);
     expect(important.has("ai_diagnosis_created")).toBe(true);
@@ -3001,7 +3141,6 @@ describe("V2 Migration Cockpit contract", () => {
           final_status: "FAILED",
           final_proof_level: "not_verified",
           repair_loop_status: "NOT_STARTED",
-          copilot_status: "NOT_INVOKED",
           repair_fallback: "False",
           matched_line: "MockitoAnnotations.initMocks(this);",
           command: [],
@@ -3323,11 +3462,51 @@ describe("V2 Migration Cockpit contract", () => {
 
   // ── Stage status lifecycle reducer tests (V2 cockpit state model) ──
 
+  it("buildStageTimelineEntries overlays route-step status from refreshed stages", () => {
+    const routeSteps: V2RouteStepEntry[] = [
+      {
+        route_step_index: 1,
+        stage_index: 1,
+        source_profile: "springboot-2.7-java11",
+        target_profile: "springboot-3.5-java17",
+        runtime_profile: "springboot-2.7-to-3.5-java17",
+        catalog: "springboot-3.5-java17",
+        execution_jdk: "java17",
+        status: "pending",
+        approval_gate_id: "",
+        artifact_refs: [],
+        evidence_refs: [],
+      },
+      {
+        route_step_index: 2,
+        stage_index: 2,
+        source_profile: "springboot-3.5-java17",
+        target_profile: "springboot-4.0-java21",
+        runtime_profile: "springboot-3.5-java17-to-java21",
+        catalog: "springboot-4.0-java21",
+        execution_jdk: "java21",
+        status: "pending",
+        approval_gate_id: "",
+        artifact_refs: [],
+        evidence_refs: [],
+      },
+    ];
+    const stages = [
+      { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "completed", input_source_kind: "legacy_source" },
+      { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "running", input_source_kind: "stage_1_sandbox" },
+    ];
+
+    const entries = buildStageTimelineEntries(routeSteps, stages);
+
+    expect(entries[0]).toMatchObject({ route_step_index: 1, status: "completed" });
+    expect(entries[1]).toMatchObject({ route_step_index: 2, status: "running" });
+  });
+
   it("reduceStageStatus: blocked while approval pending", () => {
     // Only approval_required/blocked events → blocked
     const events: V2JobEvent[] = [
-      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as V2JobEvent,
-      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 2 } as V2JobEvent,
+      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 2 } as unknown as V2JobEvent,
     ];
     const actual = reduceStageStatus(events);
     expect(actual).toBe("blocked");
@@ -3336,10 +3515,10 @@ describe("V2 Migration Cockpit contract", () => {
   it("reduceStageStatus: running after approval completed and transform started", () => {
     // Old blocked events must not prevent running
     const events: V2JobEvent[] = [
-      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as V2JobEvent,
-      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 2 } as V2JobEvent,
-      { stage: 1, type: "approval_resume_queued", status: "queued", sequence: 3 } as V2JobEvent,
-      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 4 } as V2JobEvent,
+      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 2 } as unknown as V2JobEvent,
+      { stage: 1, type: "approval_resume_queued", status: "queued", sequence: 3 } as unknown as V2JobEvent,
+      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 4 } as unknown as V2JobEvent,
     ];
     const actual = reduceStageStatus(events);
     expect(actual).toBe("running");
@@ -3347,20 +3526,45 @@ describe("V2 Migration Cockpit contract", () => {
 
   it("reduceStageStatus: failed after sandbox_transform_failed", () => {
     const events: V2JobEvent[] = [
-      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as V2JobEvent,
-      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 2 } as V2JobEvent,
-      { stage: 1, type: "sandbox_transform_failed", status: "failed", sequence: 3 } as V2JobEvent,
+      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 2 } as unknown as V2JobEvent,
+      { stage: 1, type: "sandbox_transform_failed", status: "failed", sequence: 3 } as unknown as V2JobEvent,
     ];
     const actual = reduceStageStatus(events);
     expect(actual).toBe("failed");
   });
 
+  it("reduceStageStatus: next_stage_queued completes prior stage and queues next stage", () => {
+    const priorStageEvents: V2JobEvent[] = [
+      { stage: 1, type: "stage_started", status: "running", sequence: 1 } as unknown as V2JobEvent,
+      {
+        stage: 2,
+        type: "next_stage_queued",
+        status: "queued",
+        sequence: 2,
+        payload: { from_stage: 1, to_stage: 2 },
+      } as unknown as V2JobEvent,
+    ];
+    const nextStageEvents: V2JobEvent[] = [
+      {
+        stage: 2,
+        type: "next_stage_queued",
+        status: "queued",
+        sequence: 2,
+        payload: { from_stage: 1, to_stage: 2 },
+      } as unknown as V2JobEvent,
+      { stage: 2, type: "stage_started", status: "running", sequence: 3 } as unknown as V2JobEvent,
+    ];
+
+    expect(reduceStageStatus(priorStageEvents, 1)).toBe("completed");
+    expect(reduceStageStatus(nextStageEvents, 2)).toBe("running");
+  });
   it("reduceStageStatus: completed after stage_completed, blocked does not regress", () => {
     const events: V2JobEvent[] = [
-      { stage: 1, type: "stage_started", status: "running", sequence: 1 } as V2JobEvent,
-      { stage: 1, type: "stage_completed", status: "completed", sequence: 2 } as V2JobEvent,
+      { stage: 1, type: "stage_started", status: "running", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "stage_completed", status: "completed", sequence: 2 } as unknown as V2JobEvent,
       // A late blocked event must NOT regress completed → blocked
-      { stage: 1, type: "approval_required", status: "blocked", sequence: 3 } as V2JobEvent,
+      { stage: 1, type: "approval_required", status: "blocked", sequence: 3 } as unknown as V2JobEvent,
     ];
     const actual = reduceStageStatus(events);
     expect(actual).toBe("completed");
@@ -3368,8 +3572,8 @@ describe("V2 Migration Cockpit contract", () => {
 
   it("reduceStageStatus: old blocked does not override later running", () => {
     const events: V2JobEvent[] = [
-      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 1 } as V2JobEvent,
-      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 2 } as V2JobEvent,
+      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 2 } as unknown as V2JobEvent,
     ];
     const actual = reduceStageStatus(events);
     expect(actual).toBe("running");
@@ -3377,14 +3581,79 @@ describe("V2 Migration Cockpit contract", () => {
 
   it("reduceStageStatus: old blocked does not override later failed", () => {
     const events: V2JobEvent[] = [
-      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 1 } as V2JobEvent,
-      { stage: 1, type: "stage_failed", status: "failed", sequence: 2 } as V2JobEvent,
+      { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "stage_failed", status: "failed", sequence: 2 } as unknown as V2JobEvent,
     ];
     const actual = reduceStageStatus(events);
     expect(actual).toBe("failed");
   });
 
-  // ── Pipeline / stage consistency tests ──
+  // ── Route-step off-by-one regression (springboot-2.1 → 4.0 full route) ──
+
+  it("route step 2 start event marks Route step 2 RUNNING, not Route step 3", () => {
+    // Full route: springboot-2.1-java11 → springboot-4.0-java21
+    // route_step_index and stage_index are aligned 1:1 for this source.
+    const routeSteps: V2RouteStepEntry[] = [
+      {
+        route_step_index: 1, stage_index: 1,
+        source_profile: "springboot-2.1-java11", target_profile: "springboot-2.7-java11",
+        runtime_profile: "springboot-2.1.6-to-2.7-java11", catalog: "springboot-2.1.6-to-2.7-java11",
+        execution_jdk: "java11", status: "pending", approval_gate_id: "", artifact_refs: [], evidence_refs: [],
+      },
+      {
+        route_step_index: 2, stage_index: 2,
+        source_profile: "springboot-2.7-java11", target_profile: "springboot-3.5-java17",
+        runtime_profile: "springboot-2.7-to-3.5-java17", catalog: "springboot-3.5-java17",
+        execution_jdk: "java17", status: "pending", approval_gate_id: "", artifact_refs: [], evidence_refs: [],
+      },
+      {
+        route_step_index: 3, stage_index: 3,
+        source_profile: "springboot-3.5-java17", target_profile: "springboot-3.5-java21",
+        runtime_profile: "springboot-3.5-java17-to-java21", catalog: "springboot-3.5-java17-to-java21",
+        execution_jdk: "java21", status: "pending", approval_gate_id: "", artifact_refs: [], evidence_refs: [],
+      },
+      {
+        route_step_index: 4, stage_index: 4,
+        source_profile: "springboot-3.5-java21", target_profile: "springboot-4.0-java21",
+        runtime_profile: "springboot-3.5-java21-to-4.0-java21", catalog: "springboot-3.5-java21-to-4.0-java21",
+        execution_jdk: "java21", status: "pending", approval_gate_id: "", artifact_refs: [], evidence_refs: [],
+      },
+    ];
+
+    // Backend events: stage 1 completed, stage 2 started (running).
+    // The backend emits stage=2 for route step 2's execution (after the fix).
+    const allEvents: V2JobEvent[] = [
+      { stage: 1, type: "stage_started", status: "running", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "stage_completed", status: "completed", sequence: 2 } as unknown as V2JobEvent,
+      { stage: 2, type: "stage_started", status: "running", sequence: 3 } as unknown as V2JobEvent,
+    ];
+
+    // Replicate eventAppliesToStage (event.stage === stageIndex) + reduceStageStatus
+    // for each stage, then build the timeline.
+    const stages = routeSteps.map((rs) => {
+      const stageEvents = allEvents
+        .filter((e) => e.stage === rs.stage_index)
+        .sort((a, b) => a.sequence - b.sequence);
+      return {
+        stage_index: rs.stage_index,
+        pipeline_stage: `Stage ${rs.stage_index}`,
+        chain_status: reduceStageStatus(stageEvents, rs.stage_index),
+        input_source_kind: "legacy_source",
+      };
+    });
+
+    const entries = buildStageTimelineEntries(routeSteps, stages);
+
+    // Route step 1 = COMPLETED
+    expect(entries[0]).toMatchObject({ route_step_index: 1, status: "completed" });
+    // Route step 2 = RUNNING (not Route step 3!)
+    expect(entries[1]).toMatchObject({ route_step_index: 2, status: "running" });
+    // Route step 3 = PENDING (must NOT be RUNNING)
+    expect(entries[2]).toMatchObject({ route_step_index: 3, status: "pending" });
+    expect(entries[2]).not.toMatchObject({ route_step_index: 3, status: "running" });
+    // Route step 4 = PENDING
+    expect(entries[3]).toMatchObject({ route_step_index: 4, status: "pending" });
+  });
 
   it("approval decision controls appear only while pending", () => {
     expect(shouldShowApprovalDecisionControls("pending", false)).toBe(true);
@@ -3397,9 +3666,9 @@ describe("V2 Migration Cockpit contract", () => {
     // The pipeline human_approval row must be "pass", not "blocked",
     // after approval_resume_queued. Stage must be "running".
     const events: V2JobEvent[] = [
-      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as V2JobEvent,
-      { stage: 1, type: "approval_resume_queued", status: "queued", sequence: 2 } as V2JobEvent,
-      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 3 } as V2JobEvent,
+      { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 1, type: "approval_resume_queued", status: "queued", sequence: 2 } as unknown as V2JobEvent,
+      { stage: 1, type: "sandbox_transform_started", status: "running", sequence: 3 } as unknown as V2JobEvent,
     ];
     const stageStatus = reduceStageStatus(events);
     expect(stageStatus).toBe("running");
@@ -3441,6 +3710,1126 @@ describe("V2 Migration Cockpit contract", () => {
   it("Stage 3 profile is springboot-3.5-java17-to-java21", () => {
     const stage3Profile = "springboot-3.5-java17-to-java21";
     expect(stage3Profile).toBe("springboot-3.5-java17-to-java21");
+  });
+});
+
+// ── F3/F4 — Cockpit profile routing, detection, override ─────────────
+
+describe("F3/F4 Cockpit profile routing panels", () => {
+  it("MigrationRoutePanel displays source and target profiles from backend job data", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-2.7-java11",
+      target_profile: "springboot-4.0-java21",
+      validation_status: "valid",
+      included_stages: ["2", "3", "4"],
+      skipped_stages: [],
+      excluded_stages: [],
+      route_steps: [
+        {
+          route_step_index: 1,
+          stage_index: 1,
+          source_profile: "springboot-2.7-java11",
+          target_profile: "springboot-3.5-java17",
+          runtime_profile: "springboot-2.7-to-3.5-java17",
+          catalog: "springboot-3.5-java17",
+          execution_jdk: "java17",
+          status: "completed",
+          approval_gate_id: "",
+          artifact_refs: [],
+          evidence_refs: [],
+        },
+      ],
+    };
+    const markup = renderToStaticMarkup(<MigrationRoutePanel job={job} />);
+    expect(markup).toContain("Migration Route");
+    expect(markup).toContain("Spring Boot 2.7 / Java 11");
+    expect(markup).toContain("Spring Boot 4.0 / Java 21");
+    expect(markup).toContain("valid");
+    expect(markup).toContain("2, 3, 4");
+    expect(markup).toContain("All route data is backend-returned");
+  });
+
+  it("MigrationRoutePanel shows skipped stages from backend data", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-2",
+      setup_id: "setup-2",
+      setup_checksum: "chk-2",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-3.5-java17",
+      target_profile: "springboot-4.0-java21",
+      validation_status: "valid",
+      included_stages: ["3", "4"],
+      skipped_stages: ["2"],
+      excluded_stages: [],
+    };
+    const markup = renderToStaticMarkup(<MigrationRoutePanel job={job} />);
+    expect(markup).toContain("Skipped stages");
+    expect(markup).toContain("2");
+  });
+
+  it("SourceProfileDetectionPanel shows unavailable message when evidence is null", () => {
+    const markup = renderToStaticMarkup(
+      <SourceProfileDetectionPanel gateDetail={null} />,
+    );
+    expect(markup).toContain("Source-profile detection evidence is unavailable");
+    expect(markup).toContain("refresh the gate or rerun analysis");
+  });
+
+  it("SourceProfileDetectionPanel shows detection evidence when evidence pack is present", () => {
+    const pack: GateEvidencePack = {
+      pack_id: "pack-1",
+      pack_type: "source_profile_detection",
+      gate_id: "gate-1",
+      gate_phase: "analysis_review",
+      summary: "Detected springboot-2.7-java11",
+      artifacts: [
+        {
+          kind: "source_profile_detection",
+          checksum_verified: true,
+          content: '{"detected_source_profile":"springboot-2.7-java11","confidence":"high"}',
+          size_bytes: 64,
+          truncated: false,
+        },
+      ],
+      missing_refs: [],
+      checksum_mismatches: [],
+      failure_message: null,
+      resolved_artifact_count: 1,
+      total_artifact_count: 1,
+      redaction_status: "clean",
+      created_at: "2026-06-28T00:00:00Z",
+    };
+    const gateDetail: GateDetailResponse = {
+      gate: {
+        gate_id: "gate-1",
+        job_id: "job-1",
+        gate_phase: "analysis_review",
+        stage_index: 1,
+        gate_status: "open",
+        gate_decision: "continue",
+        source_artifact_checksum: "sha256:gate",
+        source_artifact_refs: [],
+        created_at: "2026-06-28T00:00:00Z",
+        resolved_at: null,
+        resolved_by: null,
+        checksum: "sha256:gate-checksum",
+        available_actions: [],
+      },
+      evidence: pack,
+      checksum: "sha256:gate-checksum",
+    };
+    const markup = renderToStaticMarkup(
+      <SourceProfileDetectionPanel gateDetail={gateDetail} />,
+    );
+    expect(markup).toContain("Source Profile Detection");
+    expect(markup).toContain("source_profile_detection");
+    expect(markup).toContain("springboot-2.7-java11");
+    expect(markup).toContain("1/1 resolved");
+  });
+
+  it("SourceProfileOverrideForm does not render for non-analysis_review gates", () => {
+    const gateDetail: GateDetailResponse = {
+      gate: {
+        gate_id: "gate-1",
+        job_id: "job-1",
+        gate_phase: "repair_review",
+        stage_index: 2,
+        gate_status: "open",
+        gate_decision: "revise",
+        source_artifact_checksum: "sha256:gate",
+        source_artifact_refs: [],
+        created_at: "2026-06-28T00:00:00Z",
+        resolved_at: null,
+        resolved_by: null,
+        checksum: "sha256:gate-checksum",
+        available_actions: [
+          { action: "override_source_profile", label: "Override", description: "Override", blocked: false, block_reason: "" },
+        ],
+      },
+      evidence: null,
+      checksum: "sha256:gate-checksum",
+    };
+    const markup = renderToStaticMarkup(
+      <SourceProfileOverrideForm gateDetail={gateDetail} jobId="job-1" onSuccess={() => undefined} />,
+    );
+    expect(markup).toBe("");
+  });
+
+  it("SourceProfileOverrideForm shows a specific blocked reason when detection evidence is missing", () => {
+    const gateDetail: GateDetailResponse = {
+      gate: {
+        gate_id: "gate-1",
+        job_id: "job-1",
+        gate_phase: "analysis_review",
+        stage_index: 1,
+        gate_status: "open",
+        gate_decision: "continue",
+        source_artifact_checksum: "sha256:gate",
+        source_artifact_refs: [],
+        created_at: "2026-06-28T00:00:00Z",
+        resolved_at: null,
+        resolved_by: null,
+        checksum: "sha256:gate-checksum",
+        available_actions: [
+          { action: "override_source_profile", label: "Override", description: "Override", blocked: false, block_reason: "" },
+        ],
+      },
+      evidence: null,
+      checksum: "sha256:gate-checksum",
+    };
+    const markup = renderToStaticMarkup(
+      <SourceProfileOverrideForm gateDetail={gateDetail} jobId="job-1" onSuccess={() => undefined} />,
+    );
+    expect(markup).toContain("Override Source Profile");
+    // With no job target_profile and no detection ref, the form should expose
+    // a specific unavailable reason — never fabricate a target_profile.
+    expect(markup).toContain("Missing target profile from backend job state.");
+    expect(markup).toContain("disabled");
+  });
+
+  it("cockpit displays source and target profile from backend job data", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-2.7-java11",
+      target_profile: "springboot-4.0-java21",
+    };
+    const markup = renderToStaticMarkup(<MigrationRoutePanel job={job} />);
+    expect(markup).toContain("Source profile");
+    expect(markup).toContain("Target profile");
+    expect(markup).toContain("Spring Boot 2.7 / Java 11");
+    expect(markup).toContain("Spring Boot 4.0 / Java 21");
+  });
+
+  it("cockpit displays included/excluded/skipped stages from backend arrays", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-2.7-java11",
+      target_profile: "springboot-4.0-java21",
+      included_stages: ["2", "3", "4"],
+      skipped_stages: [],
+      excluded_stages: [],
+    };
+    const markup = renderToStaticMarkup(<MigrationRoutePanel job={job} />);
+    expect(markup).toContain("Included stages");
+    expect(markup).toContain("2, 3, 4");
+  });
+
+  it("skipped stage cards render with skipped state in stage timeline", () => {
+    const stages = [
+      { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "completed", input_source_kind: "legacy_source" },
+      { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "completed", input_source_kind: "stage_1_sandbox" },
+      { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "pending", input_source_kind: "stage_2_sandbox" },
+    ];
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-3.5-java17",
+      target_profile: "springboot-4.0-java21",
+      included_stages: ["3"],
+      skipped_stages: ["2"],
+      excluded_stages: [],
+    };
+    const markup = renderToStaticMarkup(
+      <div className="stage-list">
+        {stages.map((stage) => {
+          const isSkipped = job.skipped_stages?.includes(String(stage.stage_index));
+          return (
+            <div key={stage.stage_index} className={`stage-card ${stage.chain_status}`}>
+              <strong>{stage.pipeline_stage}</strong>
+              {isSkipped && <span className="status-badge skipped">SKIPPED BY SOURCE</span>}
+            </div>
+          );
+        })}
+      </div>,
+    );
+    expect(markup).toContain("SKIPPED BY SOURCE");
+    expect(markup).toContain("Stage 2");
+  });
+
+  it("override form posts a checksum-bound override_source_profile action", () => {
+    const action = {
+      gate_id: "gate-1",
+      job_id: "job-1",
+      action: "continue",
+      expected_gate_checksum: "sha256:gate-checksum",
+      override_source_profile: "springboot-3.5-java17",
+      actor_type: "human",
+      decided_by: "human",
+    };
+    expect(action.override_source_profile).toBe("springboot-3.5-java17");
+    expect(action.expected_gate_checksum).toBe("sha256:gate-checksum");
+    expect(action.actor_type).toBe("human");
+  });
+
+  it("assistant cannot override source profile", () => {
+    const assistantCapabilities = {
+      can_explain: true,
+      can_diagnose: true,
+      can_override_source_profile: false,
+    };
+    expect(assistantCapabilities.can_override_source_profile).toBe(false);
+  });
+
+  it("forbidden execution fields are absent from cockpit rendered copy", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-2.7-java11",
+      target_profile: "springboot-4.0-java21",
+    };
+    const markup = renderToStaticMarkup(<MigrationRoutePanel job={job} />);
+    const forbiddenPatterns = [
+      "sandbox_path", "argv", "raw_command", "filesystem_target",
+      "provider", "model_id", "deployment", "endpoint", "api_key", "access_token",
+    ];
+    for (const pattern of forbiddenPatterns) {
+      expect(markup).not.toContain(pattern);
+    }
+  });
+
+  // ── SourceProfileOverrideForm — driven submit path ─────────────
+
+  function makeAnalysisReviewGateDetail(
+    overrides: Partial<{
+      sourceArtifactRefs: string[];
+      sourceArtifactChecksum: string;
+      availableActions: GateRepresentation["available_actions"];
+    }> = {},
+  ): GateDetailResponse {
+    return {
+      gate: {
+        gate_id: "gate-1",
+        job_id: "job-1",
+        gate_phase: "analysis_review",
+        stage_index: 1,
+        gate_status: "open",
+        gate_decision: "continue",
+        source_artifact_checksum: overrides.sourceArtifactChecksum ?? "sha256:detection-checksum",
+        source_artifact_refs: overrides.sourceArtifactRefs ?? [
+          "analysis/source_profile_detection.json",
+        ],
+        created_at: "2026-06-28T00:00:00Z",
+        resolved_at: null,
+        resolved_by: null,
+        checksum: "sha256:gate-checksum",
+        available_actions: overrides.availableActions ?? [
+          {
+            action: "override_source_profile",
+            label: "Override",
+            description: "Override",
+            blocked: false,
+            block_reason: "",
+          },
+        ],
+      },
+      evidence: {
+        pack_id: "pack-1",
+        pack_type: "source_profile_detection",
+        gate_id: "gate-1",
+        gate_phase: "analysis_review",
+        summary: "Detected springboot-2.7-java11",
+        artifacts: [
+          {
+            kind: "source_profile_detection",
+            checksum_verified: true,
+            content: '{"detected_source_profile":"springboot-2.7-java11","confidence":"high"}',
+            size_bytes: 64,
+            truncated: false,
+          },
+        ],
+        missing_refs: [],
+        checksum_mismatches: [],
+        failure_message: null,
+        resolved_artifact_count: 1,
+        total_artifact_count: 1,
+        redaction_status: "clean",
+        created_at: "2026-06-28T00:00:00Z",
+      } as GateEvidencePack,
+      checksum: "sha256:gate-checksum",
+    };
+  }
+
+  it("SourceProfileOverrideForm build helper returns override_source_profile body in happy path", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-2.7-java11",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail();
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      job,
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "Detected profile is incorrect",
+      comments: "Operator verified the source pom.xml manually",
+      idempotencyKey: "idem-1",
+    });
+
+    expect(result.blockedReason).toBeNull();
+    expect(result.body).not.toBeNull();
+    expect(result.body).toMatchObject({
+      gate_id: "gate-1",
+      job_id: "job-1",
+      action: "override_source_profile",
+      expected_gate_checksum: "sha256:gate-checksum",
+      idempotency_key: "idem-1",
+      decided_by: "human",
+      actor_type: "human",
+      reason: "Detected profile is incorrect",
+      comments: "Operator verified the source pom.xml manually",
+      override_source_profile: "springboot-3.5-java17",
+      detection_artifact_ref: "analysis/source_profile_detection.json",
+      detected_source_profile: "springboot-2.7-java11",
+      requested_source_profile: "springboot-3.5-java17",
+      target_profile: "springboot-4.0-java21",
+      expected_detection_artifact_checksum: "sha256:detection-checksum",
+    });
+
+    // Forbidden runtime fields are absent from the body.
+    const serialized = JSON.stringify(result.body);
+    expect(serialized).not.toContain("sandbox_path");
+    expect(serialized).not.toContain("argv");
+    expect(serialized).not.toContain("env");
+    expect(serialized).not.toContain("raw_command");
+    expect(serialized).not.toContain("filesystem_target");
+    expect(serialized).not.toContain("filesystem_root");
+    expect(serialized).not.toContain("output_root");
+    expect(serialized).not.toContain("report_root");
+    expect(serialized).not.toContain("run_root");
+    expect(serialized).not.toContain("ai_hub_path");
+    expect(serialized).not.toContain("java_home");
+    expect(serialized).not.toContain("java11_home");
+    expect(serialized).not.toContain("java17_home");
+    expect(serialized).not.toContain("java21_home");
+    expect(serialized).not.toContain("maven_cmd");
+    expect(serialized).not.toMatch(/"provider"/);
+    expect(serialized).not.toMatch(/"model"/);
+    expect(serialized).not.toMatch(/"model_id"/);
+    expect(serialized).not.toMatch(/"deployment"/);
+    expect(serialized).not.toMatch(/"endpoint"/);
+    expect(serialized).not.toMatch(/"api_key"/);
+    expect(serialized).not.toMatch(/"access_token"/);
+  });
+
+  it("SourceProfileOverrideForm submit path posts the body produced by the build helper", async () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-2.7-java11",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail();
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      job,
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "Detected profile is incorrect",
+      comments: "Operator verified the source pom.xml manually",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).not.toBeNull();
+
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({
+        result: {
+          decision_id: "d-1",
+          gate_id: "gate-1",
+          action: "override_source_profile",
+          status: "resolved",
+        },
+      }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await postV2GateAction("job-1", "gate-1", result.body!);
+
+    const actionCall = fetchMock.mock.calls.find(
+      (call) => String(call[0]).includes("/actions"),
+    ) as [string, RequestInit?] | undefined;
+    expect(actionCall).toBeDefined();
+    const body = JSON.parse(String((actionCall?.[1] as RequestInit | undefined)?.body ?? "{}"));
+    expect(body.action).toBe("override_source_profile");
+    expect(body.target_profile).toBe("springboot-4.0-java21");
+    expect(body.detection_artifact_ref).toBe("analysis/source_profile_detection.json");
+    expect(body.expected_detection_artifact_checksum).toBe("sha256:detection-checksum");
+    expect(body.actor_type).toBe("human");
+    expect(body.decided_by).toBe("human");
+
+    const serialized = JSON.stringify(body);
+    for (const forbidden of [
+      "sandbox_path", "argv", "env", "raw_command", "filesystem_target",
+      "filesystem_root", "output_root", "report_root", "run_root",
+      "ai_hub_path", "java_home", "java11_home", "java17_home", "java21_home",
+      "maven_cmd",
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+    expect(serialized).not.toMatch(/"provider"/);
+    expect(serialized).not.toMatch(/"model"/);
+    expect(serialized).not.toMatch(/"model_id"/);
+    expect(serialized).not.toMatch(/"deployment"/);
+    expect(serialized).not.toMatch(/"endpoint"/);
+    expect(serialized).not.toMatch(/"api_key"/);
+    expect(serialized).not.toMatch(/"access_token"/);
+  });
+
+  it("SourceProfileOverrideForm build helper uses the gate target profile when present", () => {
+    const gateDetail = makeAnalysisReviewGateDetail();
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "r",
+      comments: "c",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).not.toBeNull();
+    expect(result.body?.target_profile).toBe("springboot-2.7-java11");
+    expect(result.blockedReason).toBeNull();
+  });
+
+  it("SourceProfileOverrideForm build helper returns null when source artifact ref is missing", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail({
+      sourceArtifactRefs: ["analysis/analysis_report.json", "analysis/analysis_summary.md"],
+    });
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      job,
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "r",
+      comments: "c",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).toBeNull();
+    expect(result.blockedReason).toBe("missing_detection_artifact_ref");
+    expect(result.detectionArtifactRef).toBe("");
+  });
+
+  it("SourceProfileOverrideForm build helper returns null when source artifact checksum is missing", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail({
+      sourceArtifactChecksum: "",
+    });
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      job,
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "r",
+      comments: "c",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).toBeNull();
+    expect(result.blockedReason).toBe("missing_detection_artifact_checksum");
+  });
+
+  it("SourceProfileOverrideForm build helper returns null when reason is blank", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail();
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      job,
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "   ",
+      comments: "ok",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).toBeNull();
+    expect(result.blockedReason).toBe("missing_reason");
+  });
+
+  it("SourceProfileOverrideForm build helper returns null when comments is blank", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail();
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      job,
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "ok",
+      comments: "",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).toBeNull();
+    expect(result.blockedReason).toBe("missing_comments");
+  });
+
+  it("SourceProfileOverrideForm build helper returns null when gate phase is not analysis_review", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gate: GateRepresentation = {
+      gate_id: "gate-1",
+      job_id: "job-1",
+      gate_phase: "planning_review",
+      stage_index: 1,
+      gate_status: "open",
+      gate_decision: "continue",
+      source_artifact_checksum: "sha256:detection-checksum",
+      source_artifact_refs: ["analysis/source_profile_detection.json"],
+      created_at: "2026-06-28T00:00:00Z",
+      resolved_at: null,
+      resolved_by: null,
+      checksum: "sha256:gate-checksum",
+      available_actions: [
+        {
+          action: "override_source_profile",
+          label: "Override",
+          description: "Override",
+          blocked: false,
+          block_reason: "",
+        },
+      ],
+    };
+    const result = buildSourceProfileOverrideBody({
+      gate,
+      jobId: "job-1",
+      job,
+      evidence: null,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "r",
+      comments: "c",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).toBeNull();
+    expect(result.blockedReason).toBe("gate_phase_not_analysis_review");
+  });
+
+  it("SourceProfileOverrideForm build helper returns null when available_actions lacks override_source_profile", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail({
+      availableActions: [
+        { action: "continue", label: "Continue", description: "Continue", blocked: false, block_reason: "" },
+      ],
+    });
+    const result = buildSourceProfileOverrideBody({
+      gate: gateDetail.gate,
+      jobId: "job-1",
+      job,
+      evidence: gateDetail.evidence,
+      requestedProfile: "springboot-3.5-java17",
+      reason: "r",
+      comments: "c",
+      idempotencyKey: "idem-1",
+    });
+    expect(result.body).toBeNull();
+    expect(result.blockedReason).toBe("override_action_unavailable");
+  });
+
+  it("SourceProfileOverrideForm renders springboot-3.5-java21 as a selectable source option", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      target_profile: "springboot-4.0-java21",
+    };
+    const gateDetail = makeAnalysisReviewGateDetail();
+    const markup = renderToStaticMarkup(
+      <SourceProfileOverrideForm
+        gateDetail={gateDetail}
+        jobId="job-1"
+        job={job}
+        onSuccess={() => undefined}
+      />,
+    );
+    expect(markup).toContain("Spring Boot 3.5 / Java 17");
+    expect(markup).toContain("Spring Boot 3.5 / Java 21");
+    expect(markup).toContain('value="springboot-3.5-java21"');
+  });
+
+  it("MigrationRoutePanel renders springboot-3.5-java21 source profile in cockpit", () => {
+    const job: V2MigrationJobResponse = {
+      job_id: "job-1",
+      setup_id: "setup-1",
+      setup_checksum: "chk-1",
+      pipeline_id: "pipeline-1",
+      stages: [],
+      created_at: "2026-06-28T00:00:00Z",
+      source_profile: "springboot-3.5-java21",
+      target_profile: "springboot-4.0-java21",
+      validation_status: "valid",
+      included_stages: ["4"],
+      skipped_stages: ["2", "3"],
+      excluded_stages: [],
+    };
+    const markup = renderToStaticMarkup(<MigrationRoutePanel job={job} />);
+    expect(markup).toContain("Spring Boot 3.5 / Java 21");
+    expect(markup).toContain("Spring Boot 4.0 / Java 21");
+    expect(markup).toContain("4");
+    expect(markup).toContain("2, 3");
+  });
+
+  it("getSourceProfileOverrideBlockedReason returns the right reason for each missing input", () => {
+    const base = {
+      isAnalysisReview: true,
+      hasOverrideAction: true,
+      hasTargetProfile: true,
+      hasDetectionArtifactRef: true,
+      hasExpectedChecksum: true,
+      reason: "ok",
+      comments: "ok",
+    };
+    expect(getSourceProfileOverrideBlockedReason({ ...base, isAnalysisReview: false }))
+      .toBe("gate_phase_not_analysis_review");
+    expect(getSourceProfileOverrideBlockedReason({ ...base, hasOverrideAction: false }))
+      .toBe("override_action_unavailable");
+    expect(getSourceProfileOverrideBlockedReason({ ...base, hasTargetProfile: false }))
+      .toBe("missing_target_profile");
+    expect(getSourceProfileOverrideBlockedReason({ ...base, hasDetectionArtifactRef: false }))
+      .toBe("missing_detection_artifact_ref");
+    expect(getSourceProfileOverrideBlockedReason({ ...base, hasExpectedChecksum: false }))
+      .toBe("missing_detection_artifact_checksum");
+    expect(getSourceProfileOverrideBlockedReason({ ...base, reason: "" }))
+      .toBe("missing_reason");
+    expect(getSourceProfileOverrideBlockedReason({ ...base, comments: "" }))
+      .toBe("missing_comments");
+    expect(getSourceProfileOverrideBlockedReason(base)).toBeNull();
+  });
+});
+
+describe("F15 Final Report and Stage 4 cockpit", () => {
+  it("report panel uses backend eligible and blockers", () => {
+    const reportBlocked = {
+      eligible: false,
+      blockers: ["stage_2_not_completed", "gate_3_not_passed"],
+    };
+    expect(reportBlocked.eligible).toBe(false);
+    expect(reportBlocked.blockers).toHaveLength(2);
+    const copy = reportBlocked.blockers.join(" ");
+    expect(copy).toContain("stage_2_not_completed");
+
+    const reportReady = { eligible: true, blockers: [] };
+    expect(reportReady.eligible).toBe(true);
+    expect(reportReady.blockers).toHaveLength(0);
+
+    const blockedMarkup = renderToStaticMarkup(
+      <section className="panel">
+        <h2>Final Report</h2>
+        {reportBlocked.blockers.map((b) => (
+          <p className="warning-text" key={b}>{b}</p>
+        ))}
+        {!reportBlocked.eligible && <p className="meta">Report generation not yet available for this job.</p>}
+      </section>
+    );
+    expect(blockedMarkup).toContain("stage_2_not_completed");
+    expect(blockedMarkup).toContain("not yet available");
+
+    const readyMarkup = renderToStaticMarkup(
+      <section className="panel">
+        <h2>Final Report</h2>
+        {reportReady.blockers.map((b) => (
+          <p className="warning-text" key={b}>{b}</p>
+        ))}
+        {!reportReady.eligible && <p className="meta">Report generation not yet available for this job.</p>}
+      </section>
+    );
+    expect(readyMarkup).not.toContain("not yet available");
+    expect(readyMarkup).toContain("Final Report");
+  });
+
+  it("generate does not auto-download", () => {
+    const generateMarkup = renderToStaticMarkup(
+      <div>
+        <button type="button">Generate report</button>
+        <div className="report-artifact-row">
+          <a href="/v1/reports/r1" download>Download</a>
+        </div>
+      </div>
+    );
+    expect(generateMarkup).toContain("Generate report");
+    expect(generateMarkup).toContain("Download");
+    // Generate button itself has no download attribute
+    expect(generateMarkup).toContain("<button");
+    expect(generateMarkup).not.toMatch(/<button[^>]*download/);
+  });
+
+  it("explicit download uses returned API URL", () => {
+    const downloadUrl = "/v1/reports/final/r1";
+    expect(downloadUrl.startsWith("/v1/")).toBe(true);
+    const resolved = resolveReportDownloadUrl(downloadUrl);
+    expect(resolved).toBe(`${CONTROL_TOWER_API_BASE_URL}${downloadUrl}`);
+    expect(resolved).toContain("/v1/reports/final/r1");
+  });
+
+  it("gate, evidence, approval, assistant, and POM panels still render", async () => {
+    const page = await MigrationCockpitPage({
+      params: Promise.resolve({ jobId: "429a9bb2154b4be7a99a32867780d744" }),
+    });
+    const children = page.props.children;
+    const cockpit = children[1];
+    expect(cockpit.type).toBe(MigrationCockpit);
+
+    const markup = renderToStaticMarkup(<MigrationCockpit jobId="job-123" />);
+    expect(markup).toContain("Loading cockpit");
+
+    const cockpitFunc = cockpit.type as () => React.JSX.Element;
+    const source = cockpitFunc.toString();
+    // All expected panel headings must appear in the component's rendering logic
+    expect(source).toContain("Stage Timeline");
+    expect(source).toContain("buildStageTimelineEntries(data.job.route_steps, data.stages)");
+    expect(source).toContain("Pipeline Status");
+    expect(source).toContain("Evidence");
+    expect(source).toContain("Assistant");
+    expect(source).toContain("Proof & Report");
+    expect(source).toContain("Final Report");
+  });
+
+  it("four-stage rendering is visible (Stage 4 appears as a stage)", () => {
+    const stages = [
+      { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "completed", input_source_kind: "legacy_source" },
+      { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "completed", input_source_kind: "stage_1_sandbox" },
+      { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "completed", input_source_kind: "stage_2_sandbox" },
+      { stage_index: 4, pipeline_stage: "Stage 4", chain_status: "pending", input_source_kind: "stage_3_sandbox" },
+    ];
+    expect(stages).toHaveLength(4);
+    const stage4 = stages.find((s) => s.stage_index === 4);
+    expect(stage4).toBeDefined();
+    expect(stage4!.pipeline_stage).toBe("Stage 4");
+    expect(stage4!.input_source_kind).toBe("stage_3_sandbox");
+
+    const markup = renderToStaticMarkup(
+      <div className="stage-list">
+        {stages.map((stage) => (
+          <div key={stage.stage_index} className={`stage-card ${stage.chain_status}`}>
+            <strong>{stage.pipeline_stage}</strong>
+            <span>{formatStageStatusLabel(stage.chain_status)}</span>
+            <p className="meta">Input: {stage.input_source_kind}</p>
+          </div>
+        ))}
+      </div>
+    );
+    expect(markup).toContain("Stage 4");
+    expect(markup).toContain("PENDING");
+    expect(markup).toContain("stage_3_sandbox");
+  });
+
+  it("no manual Stage 4 start, input, or path control appears", () => {
+    const forbiddenPatterns = ["start_stage_4", "Start Stage 4", "stage_4_path", "stage_4_input", "sandbox_path"];
+    const markup = renderToStaticMarkup(
+      <div className="cockpit-layout">
+        <section className="panel">
+          <h2>Stage Timeline</h2>
+          <div className="stage-list">
+            <div className="stage-card queued">
+              <div className="stage-header">
+                <strong>Stage 4</strong>
+                <span className="status-badge queued">QUEUED</span>
+              </div>
+              <p className="meta">Input: stage_3_sandbox</p>
+              <p className="meta">Stage 4 is the Spring Boot 4 migration stage and follows the same approval and evidence flow as the earlier stages.</p>
+            </div>
+          </div>
+        </section>
+      </div>
+    );
+    for (const pattern of forbiddenPatterns) {
+      expect(markup).not.toContain(pattern);
+    }
+    // Stage 4 renders as read-only status display
+    expect(markup).toContain("Stage 4");
+    expect(markup).toContain("QUEUED");
+    expect(markup).toContain("stage_3_sandbox");
+    expect(markup).toContain("follows the same approval and evidence flow");
+  });
+
+  it("does not imply a separate Stage 4 approval when no gate is open", () => {
+    const markup = renderToStaticMarkup(
+      <GatePanelContent
+        state={{
+          status: "success",
+          gates: [],
+          openGate: null,
+          openGateDetail: null,
+        }}
+      />
+    );
+
+    expect(markup).toContain("No gate is currently open for this job.");
+    expect(markup).not.toContain("requires explicit approval to start");
+  });
+});
+
+// ── PR-C — Cockpit integration tests ─────────────────────────────────
+
+describe("PR-C Repair Proposal Panel integration", () => {
+  it("MigrationCockpit source references RepairProposalPanel", () => {
+    const source = MigrationCockpit.toString();
+    expect(source).toContain("RepairProposalPanel");
+    expect(source).toContain("normalizedJobId &&");
+  });
+
+  it("RepairProposalPanel renders with jobId and shows loading state", () => {
+    const markup = renderToStaticMarkup(
+      <MigrationCockpit jobId="test-job-123" />
+    );
+    expect(markup).toContain("Loading cockpit");
+  });
+
+  it("route_steps still override legacy stages in cockpit", () => {
+    const routeSteps: V2RouteStepEntry[] = [
+      {
+        route_step_index: 1,
+        stage_index: 1,
+        source_profile: "springboot-2.7-java11",
+        target_profile: "springboot-3.5-java17",
+        runtime_profile: "springboot-2.7-to-3.5-java17",
+        catalog: "springboot-3.5-java17",
+        execution_jdk: "java17",
+        status: "running",
+        approval_gate_id: "",
+        artifact_refs: [],
+        evidence_refs: [],
+      },
+    ];
+    const stages = [
+      { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "running", input_source_kind: "legacy_source" },
+    ];
+    const entries = buildStageTimelineEntries(routeSteps, stages);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ route_step_index: 1, status: "running" });
+  });
+
+  it("no POST mutation APIs called from cockpit repair panel import", () => {
+    const source = MigrationCockpit.toString();
+    expect(source).not.toContain("getCurrentRepairProposal");
+    expect(source).not.toContain("getRepairAttempts");
+  });
+
+  it("PR-C cockpit source does not contain forbidden fields", () => {
+    const source = MigrationCockpit.toString();
+    const forbidden = [
+      "target_path",
+      "patch_content",
+      "sandbox_path",
+      "argv",
+      "env",
+      "raw_command",
+      "azure_endpoint",
+      "api_key",
+      "password",
+    ];
+    for (const f of forbidden) {
+      expect(source).not.toContain(f);
+    }
+  });
+});
+
+// ── Multi-stage approval flow regression ──────────────────────────────
+
+function approvalCard(
+  cardId: string,
+  stageIndex: number,
+  checksum: string,
+  status: "pending" | "approved" | "rejected",
+): V2ApprovalResponse {
+  return {
+    card_id: cardId,
+    job_id: "job-123",
+    interrupt_id: `run-${stageIndex}`,
+    request_checksum: checksum,
+    stage_index: stageIndex,
+    summary: "Pre-transform review required before sandbox transform.",
+    status,
+    created_at: "2026-07-02T00:00:00Z",
+  };
+}
+
+describe("V2 multi-stage approval flow", () => {
+  it("mergeCockpitLiveRefreshResults adds a new pending stage-3 approval while keeping stage-2 approved", () => {
+    const stage2Approved = approvalCard("gate-stage-2", 2, "checksum-stage-2", "approved");
+    const stage3Pending = approvalCard("gate-stage-3", 3, "checksum-stage-3", "pending");
+    const current: CockpitData = { ...makeCockpitData(), approvals: [stage2Approved] };
+    const merged = mergeCockpitLiveRefreshResults(current, [
+      { status: "fulfilled", value: { approvals: [stage2Approved, stage3Pending] } },
+      { status: "rejected", reason: new Error("stages fetch skipped") },
+      { status: "rejected", reason: new Error("events fetch skipped") },
+      { status: "rejected", reason: new Error("pipeline fetch skipped") },
+      { status: "rejected", reason: new Error("failure summary fetch skipped") },
+    ]);
+    expect(merged.data.approvals).toHaveLength(2);
+    const byCard = Object.fromEntries(merged.data.approvals.map((a) => [a.card_id, a.status]));
+    expect(byCard["gate-stage-2"]).toBe("approved");
+    expect(byCard["gate-stage-3"]).toBe("pending");
+  });
+
+  it("approved old gate does not hide pending new gate Approve/Reject buttons", () => {
+    const stage2Approved = approvalCard("gate-stage-2", 2, "checksum-stage-2", "approved");
+    const stage3Pending = approvalCard("gate-stage-3", 3, "checksum-stage-3", "pending");
+    const markup = renderToStaticMarkup(
+      <ApprovalDecisionsPanel
+        approvals={[stage2Approved, stage3Pending]}
+        approvalReviewOpen={true}
+        approvalBusy={null}
+        onApprove={() => {}}
+        onReject={() => {}}
+      />,
+    );
+    // Stage 2 shows approved status.
+    expect(markup).toContain("Stage 2");
+    expect(markup).toContain("APPROVED");
+    // Stage 3 pending gate renders its own active Approve/Reject buttons.
+    expect(markup).toContain("Stage 3");
+    expect(markup).toContain("checksum-stage-3");
+    expect(markup).toContain("Approve");
+    expect(markup).toContain("Reject");
+    // The stage-3 Approve button (second one) must not be disabled.
+    const lastApprove = markup.lastIndexOf("Approve");
+    expect(markup.slice(markup.lastIndexOf("<button", lastApprove), lastApprove)).not.toContain("disabled");
+  });
+
+  it("approveV2Card submits the exact stage-3 card id and checksum, not an earlier stage's", async () => {
+    const originalFetch = global.fetch;
+    const calls: { url: string; body: string | null }[] = [];
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), body: typeof init?.body === "string" ? init.body : null });
+      return new Response(
+        JSON.stringify({
+          resume_id: "res-3",
+          card_id: "gate-stage-3",
+          decision: "approved",
+          job_id: "job-123",
+          stage_index: 3,
+          command: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+    try {
+      await approveV2Card("job-123", "gate-stage-3", "checksum-stage-3");
+      expect(calls[0].url).toBe(
+        `${CONTROL_TOWER_API_BASE_URL}/v1/v2/jobs/job-123/approvals/gate-stage-3/approve`,
+      );
+      const body = JSON.parse(calls[0].body ?? "{}");
+      expect(body).toEqual({ expected_checksum: "checksum-stage-3" });
+      // Must not send an earlier stage's identity or checksum.
+      expect(body.expected_checksum).not.toBe("checksum-stage-2");
+      expect(calls[0].url).not.toContain("gate-stage-2");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("after stages 2 and 3 are approved, stage 4 pending still renders Approve/Reject", () => {
+    const stage2Approved = approvalCard("gate-stage-2", 2, "checksum-stage-2", "approved");
+    const stage3Approved = approvalCard("gate-stage-3", 3, "checksum-stage-3", "approved");
+    const stage4Pending = approvalCard("gate-stage-4", 4, "checksum-stage-4", "pending");
+    const markup = renderToStaticMarkup(
+      <ApprovalDecisionsPanel
+        approvals={[stage4Pending, stage3Approved, stage2Approved]}
+        approvalReviewOpen={true}
+        approvalBusy={null}
+        onApprove={() => {}}
+        onReject={() => {}}
+      />,
+    );
+    expect(markup).toContain("Stage 4");
+    expect(markup).toContain("checksum-stage-4");
+    expect(markup).toContain("Approve");
+    expect(markup).toContain("Reject");
+    // Earlier approved stages remain visible as approved.
+    expect(markup).toContain("APPROVED");
+    // The stage-4 Approve button (first one) must not be disabled.
+    const firstApprove = markup.indexOf("Approve");
+    expect(markup.slice(markup.lastIndexOf("<button", firstApprove), firstApprove)).not.toContain("disabled");
   });
 });
 

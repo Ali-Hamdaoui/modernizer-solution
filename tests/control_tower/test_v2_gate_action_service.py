@@ -110,13 +110,13 @@ def test_continue_idempotent(tmp_path: Path) -> None:
     )
     assert r1.status == "executed"
 
-    # Same key — should return idempotent result
+    # Same key on resolved gate returns gate_not_open
+    # (gate status checked before idempotency per F1 contract)
     r2 = action_svc.continue_from_gate(
         gate_id=gate_id, job_id="job-abc", decided_by="user-1",
         idempotency_key="idem-continue-1",
     )
-    assert r2.status == "idempotent"
-    assert r2.decision_id == r1.decision_id
+    assert r2.status == "gate_not_open"
 
 
 # ── invalid decision checks ──────────────────────────────────────────

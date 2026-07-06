@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,6 +14,7 @@ from migration_factory.control_tower.application.v2_job_service import (
     PIPELINE_ID,
     V2MigrationJobService,
 )
+from migration_factory.control_tower.adapters.fastapi.app import _v2_stages_from_job
 from migration_factory.control_tower.application.v2_setup_service import (
     CreateSetupRequest,
     V2SetupService,
@@ -344,6 +346,9 @@ def test_create_job_persists_run_configuration_and_defaults_auto_on_green_policy
     assert run_config_row["job_id"] == result.job_id
     assert run_config_row["runner_profile_id"] == "runner-default"
     assert run_config_row["pipeline_id"] == PIPELINE_ID
+    payload = json.loads(run_config_row["payload_json"])
+    assert payload["source_profile"] == "springboot-2.7-java11"
+    assert payload["target_profile"] == "springboot-4.0-java21"
     assert run_config_row["policy_json"] == canonical_json_text(
         {
             "continue_after_warning": False,
@@ -422,14 +427,16 @@ def test_dev_app_seeds_exact_v2_dependencies(tmp_path: Path, monkeypatch: pytest
     assert pipeline_row is not None
     pipeline = PipelineDefinition.model_validate_json(pipeline_row["payload_json"])
     assert pipeline.pipeline_id == PIPELINE_ID
-    assert len(pipeline.stages) == 3
+    assert len(pipeline.stages) == 4
     assert [stage.input_source.kind for stage in pipeline.stages] == [
         "legacy_source",
+        "previous_stage",
         "previous_stage",
         "previous_stage",
     ]
     assert pipeline.stages[1].input_source.previous_stage_index == 1
     assert pipeline.stages[2].input_source.previous_stage_index == 2
+    assert pipeline.stages[3].input_source.previous_stage_index == 3
 
 
 def test_dev_app_repairs_invalid_seeded_v2_pipeline_definition(
@@ -534,9 +541,11 @@ def test_dev_app_repairs_invalid_seeded_v2_pipeline_definition(
         "legacy_source",
         "previous_stage",
         "previous_stage",
+        "previous_stage",
     ]
     assert pipeline.stages[1].input_source.previous_stage_index == 1
     assert pipeline.stages[2].input_source.previous_stage_index == 2
+    assert pipeline.stages[3].input_source.previous_stage_index == 3
 
 
 def test_create_job_endpoint_returns_201_with_seeded_dependencies(tmp_path: Path) -> None:
@@ -555,8 +564,50 @@ def test_create_job_endpoint_returns_201_with_seeded_dependencies(tmp_path: Path
     assert response.status_code == 201, response.text
     data = response.json()
     assert data["pipeline_id"] == PIPELINE_ID
+    assert data["source_profile"] == "springboot-2.7-java11"
+    assert data["target_profile"] == "springboot-4.0-java21"
     assert data["stage_continuation_policy"] == "auto_on_green"
     assert data["run_configuration_id"]
+    assert data["validation_status"] == "valid"
+    assert data["included_stages"] == [2, 3, 4]
+    assert data["excluded_stages"] == []
+    assert data["skipped_stages"] == []
+
+
+def test_create_job_endpoint_accepts_explicit_profile_selection(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    _seed_exact_v2_dependencies(conn)
+
+    setup_repo = SqliteV2SetupRepository(conn)
+    setup_id, setup_checksum = _make_setup(setup_repo)
+    _save_ready_preflight(setup_repo, setup_id=setup_id, setup_checksum=setup_checksum)
+
+    response = client.post(
+        "/v1/v2/migration-jobs",
+        json={
+            "setup_id": setup_id,
+            "source_profile": "springboot-3.5-java17",
+            "target_profile": "springboot-4.0-java21",
+        },
+        headers=_mutation_headers(),
+    )
+    assert response.status_code == 201, response.text
+    data = response.json()
+    assert data["source_profile"] == "springboot-3.5-java17"
+    assert data["target_profile"] == "springboot-4.0-java21"
+    assert data["validation_status"] == "valid"
+    assert data["included_stages"] == [3, 4]
+    assert data["excluded_stages"] == []
+    assert data["skipped_stages"] == [2]
+
+    row = conn.execute(
+        "SELECT payload_json FROM run_configurations WHERE job_id = ?",
+        (data["job_id"],),
+    ).fetchone()
+    assert row is not None
+    payload = json.loads(row["payload_json"])
+    assert payload["source_profile"] == "springboot-3.5-java17"
+    assert payload["target_profile"] == "springboot-4.0-java21"
 
 
 def test_create_job_endpoint_accepts_explicit_auto_on_green_policy_contract(
@@ -680,7 +731,7 @@ def test_stage_inputs_are_fixed(tmp_path: Path) -> None:
     assert STAGE_INPUTS[1]["input_kind"] == "legacy_source"
     assert STAGE_INPUTS[2]["input_kind"] == "stage_1_sandbox"
     assert STAGE_INPUTS[3]["input_kind"] == "stage_2_sandbox"
-    assert 4 not in STAGE_INPUTS
+    assert STAGE_INPUTS[4]["input_kind"] == "stage_3_sandbox"
 
 
 def test_create_job_endpoint_rejects_missing_setup(tmp_path: Path) -> None:
@@ -730,16 +781,49 @@ def test_result_to_dict_has_correct_shape(tmp_path: Path) -> None:
              "input_source_kind": "stage_1_sandbox", "chain_status": "pending"},
             {"stage_index": 3, "stage_run_id": "run3", "pipeline_stage": "Stage 3",
              "input_source_kind": "stage_2_sandbox", "chain_status": "pending"},
+            {"stage_index": 4, "stage_run_id": "run4", "pipeline_stage": "Stage 4",
+             "input_source_kind": "stage_3_sandbox", "chain_status": "pending"},
         ),
         created_at="2026-06-13T00:00:00Z",
+        source_profile="springboot-2.7-java11",
+        target_profile="springboot-4.0-java21",
     )
     d = service.result_to_dict(result)
     assert d["job_id"] == "test-job-id"
     assert d["pipeline_id"] == PIPELINE_ID
-    assert len(d["stages"]) == 3
+    assert len(d["stages"]) == 4
     assert d["stages"][0]["chain_status"] == "queued"
     assert d["stages"][1]["chain_status"] == "pending"
     assert d["stages"][2]["input_source_kind"] == "stage_2_sandbox"
+    assert d["stages"][3]["stage_index"] == 4
+
+
+def test_stage4_projection_uses_backend_command_status() -> None:
+    job = SimpleNamespace(
+        stage_chain_json=json.dumps([
+            {"stage_index": 1, "stage_run_id": "run1", "pipeline_stage": "Stage 1", "input_source_kind": "legacy_source", "chain_status": "pending"},
+            {"stage_index": 2, "stage_run_id": "run2", "pipeline_stage": "Stage 2", "input_source_kind": "stage_1_sandbox", "chain_status": "pending"},
+            {"stage_index": 3, "stage_run_id": "run3", "pipeline_stage": "Stage 3", "input_source_kind": "stage_2_sandbox", "chain_status": "pending"},
+            {"stage_index": 4, "stage_run_id": "run4", "pipeline_stage": "Stage 4", "input_source_kind": "stage_3_sandbox", "chain_status": "pending"},
+        ])
+    )
+    events = (
+        SimpleNamespace(stage=1, type="stage_completed", status="completed", payload_json="{}", sequence=1),
+        SimpleNamespace(stage=2, type="stage_completed", status="completed", payload_json="{}", sequence=2),
+        SimpleNamespace(stage=3, type="stage_completed", status="completed", payload_json="{}", sequence=3),
+    )
+
+    stages_without_command = _v2_stages_from_job(job, (), events)
+    assert stages_without_command[3]["stage_index"] == 4
+    assert stages_without_command[3]["chain_status"] == "pending"
+
+    stages_with_command = _v2_stages_from_job(
+        job,
+        (SimpleNamespace(stage_index=4),),
+        events,
+    )
+    assert stages_with_command[3]["stage_index"] == 4
+    assert stages_with_command[3]["chain_status"] == "queued"
 
 
 def test_create_job_persistence_across_connections(tmp_path: Path) -> None:

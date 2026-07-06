@@ -476,6 +476,58 @@ class SandboxSnapshotDto:
 
 
 @dataclass(frozen=True, slots=True)
+class RepairAttemptSummaryDto:
+    """Safe attempt summary for PR-B attempt-history endpoint.
+
+    Contains only redacted/safe metadata. Never includes raw patch
+    content, target_path, raw command, argv, env, or secrets.
+    """
+
+    proposal_id: str
+    command_id: str | None = None
+    job_id: str | None = None
+    gate_id: str | None = None
+    attempt_number: int | None = None
+    revision_number: int | None = None
+    status: str = ""
+    reviewer_decision: str | None = None
+    diff_checksum: str | None = None
+    policy_validation_checksum: str | None = None
+    status_reason: str | None = None
+    created_at: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class LlmInvocationDto:
+    """API-safe projection of a governed LLM invocation.
+
+    Raw prompts, completions, endpoints, and API keys are never exposed.
+    Only redacted summaries, checksums, token counts, and safe alias values.
+    """
+
+    invocation_id: str
+    job_id: str
+    role: str
+    responsibility: str
+    status: str
+    created_at: str
+    proposal_id: str | None = None
+    gate_id: str | None = None
+    provider_alias: str | None = None
+    deployment_alias_hash: str | None = None
+    context_checksum: str | None = None
+    output_checksum: str | None = None
+    schema_name: str | None = None
+    fallback_used: bool = False
+    redacted_summary: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    latency_ms: int | None = None
+    completed_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class PatchApplicationDto:
     """DTO for an approved patch application result."""
 

@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { getAzureSmokeCopy, getStartReadinessCopy } from "../app/migrations/new/NewMigrationForm";
-import { DEFAULT_V2_STAGE_CONTINUATION_POLICY } from "../lib/controlTowerApi";
+import { getAzureSmokeCopy, getRouteValidationMessage, getStartReadinessCopy } from "../app/migrations/new/NewMigrationForm";
+import { DEFAULT_V2_STAGE_CONTINUATION_POLICY, createV2JobPayload } from "../lib/controlTowerApi";
+import {
+  MIGRATION_PROFILE_OPTIONS,
+  getRoutePreview,
+  getRoutePreviewKey,
+  getRouteValidationError,
+  type MigrationProfileId,
+} from "../lib/contracts";
 
 // Frontend contract tests for the New Migration form
 // These test the parsing/shape of env blocks without relying on mock API.
@@ -230,16 +237,15 @@ describe("V2 New Migration form contract", () => {
     expect(route).not.toContain("undefined");
   });
 
-  it("settings response contains no secret values", () => {
-    // The /v1/settings/ai endpoint returns env ref names, never values
+  it("settings response contains no runtime provider or env-ref fields", () => {
     const mockSettingsResponse = {
       azure: {
         profile_id: "azure-foundry-v2",
-        provider: "azure_openai",
-        endpoint: { env_ref: "AZURE_OPENAI_ENDPOINT", configured: false },
+        status: "not_configured",
+        connection_configured: false,
         roles: {
-          proposer: { env_ref: "AZURE_OPENAI_PROPOSER_DEPLOYMENT", configured: false, deployment_label: "proposer", enabled: true },
-          fallback: { env_ref: "AZURE_OPENAI_FALLBACK_DEPLOYMENT", configured: false, deployment_label: "fallback", enabled: false },
+          proposer: { configured: false, enabled: true },
+          fallback: { configured: false, enabled: false },
         },
       },
     };
@@ -248,8 +254,209 @@ describe("V2 New Migration form contract", () => {
     expect(json).not.toContain("sk-");
     expect(json).not.toContain("https://");
     expect(json).not.toContain("api_key=");
-    expect(mockSettingsResponse.azure.endpoint.env_ref).toBe("AZURE_OPENAI_ENDPOINT");
-    // The value is NOT in the response, only the env ref name
-    expect(mockSettingsResponse.azure.roles.proposer.env_ref).toBe("AZURE_OPENAI_PROPOSER_DEPLOYMENT");
+    expect(json).not.toContain("provider");
+    expect(json).not.toContain("env_ref");
+    expect(json).not.toContain("endpoint");
+    expect(json).not.toContain("deployment");
+  });
+
+  it("NewMigrationForm does not add direct unsafe API helpers (no sandbox_path, report_root, raw command fields)", () => {
+    const formFieldNames = [
+      "run_name",
+      "legacy_app_path",
+      "output_parent_path",
+      "ai_hub_path",
+      "java11_home",
+      "java17_home",
+      "java21_home",
+      "maven_cmd",
+      "proof_level",
+      "skip_endpoint_smoke",
+    ];
+    const unsafeFields = ["sandbox_path", "report_root", "raw_command", "run_command", "shell_cmd", "executable"];
+    for (const unsafe of unsafeFields) {
+      expect(formFieldNames).not.toContain(unsafe);
+    }
+    // Verify no unintended API helper fields slipped into form payloads
+    const setupPayload = {
+      run_name: "my-migration",
+      legacy_app_path: "/path/to/legacy",
+      output_parent_path: "/path/to/output",
+      ai_hub_path: "/path/to/hub",
+      java11_home: "/usr/lib/jvm/java-11",
+      java17_home: "/usr/lib/jvm/java-17",
+      java21_home: "/usr/lib/jvm/java-21",
+      maven_cmd: "/usr/bin/mvn",
+      proof_level: "build_test_verified",
+      skip_endpoint_smoke: false,
+    };
+    const serialized = JSON.stringify(setupPayload);
+    expect(serialized).not.toContain("sandbox_path");
+    expect(serialized).not.toContain("report_root");
+    expect(serialized).not.toContain("raw_command");
+  });
+});
+
+// ── F3/F4 — Profile selectors and route preview ──────────────────────
+
+describe("F3/F4 Profile selectors and route preview", () => {
+  it("profile options include selectableAsSource and selectableAsTarget roles", () => {
+    const sources = MIGRATION_PROFILE_OPTIONS.filter((p) => p.selectableAsSource);
+    const targets = MIGRATION_PROFILE_OPTIONS.filter((p) => p.selectableAsTarget);
+    expect(sources.length).toBeGreaterThanOrEqual(1);
+    expect(targets.length).toBeGreaterThanOrEqual(1);
+    expect(MIGRATION_PROFILE_OPTIONS.find((p) => p.id === "springboot-2.1-java11")?.selectableAsSource).toBe(true);
+    expect(MIGRATION_PROFILE_OPTIONS.find((p) => p.id === "springboot-2.7-java11")?.selectableAsTarget).toBe(true);
+  });
+
+  it("defaults are springboot-2.7-java11 source and springboot-4.0-java21 target", () => {
+    const defaults = {
+      sourceProfile: "springboot-2.7-java11" as MigrationProfileId,
+      targetProfile: "springboot-4.0-java21" as MigrationProfileId,
+    };
+    const sourceOption = MIGRATION_PROFILE_OPTIONS.find((p) => p.id === defaults.sourceProfile);
+    const targetOption = MIGRATION_PROFILE_OPTIONS.find((p) => p.id === defaults.targetProfile);
+    expect(sourceOption).toBeDefined();
+    expect(sourceOption!.selectableAsSource).toBe(true);
+    expect(sourceOption!.selectableAsTarget).toBe(true);
+    expect(targetOption).toBeDefined();
+    expect(targetOption!.selectableAsSource).toBe(false);
+    expect(targetOption!.selectableAsTarget).toBe(true);
+  });
+
+  it("includes springboot-3.5-java21 as a selectable intermediate profile", () => {
+    const intermediate = MIGRATION_PROFILE_OPTIONS.find(
+      (p) => p.id === "springboot-3.5-java21",
+    );
+    expect(intermediate).toBeDefined();
+    expect(intermediate!.selectableAsSource).toBe(true);
+    expect(intermediate!.selectableAsTarget).toBe(true);
+    expect(intermediate!.orderIndex).toBe(3);
+  });
+
+  it("supports canonical profile pairs and reports expected stages", () => {
+    const pairs: Array<{
+      source: MigrationProfileId;
+      target: MigrationProfileId;
+      included: string[];
+      skipped: string[];
+      excluded: string[];
+    }> = [
+      { source: "springboot-2.1-java11", target: "springboot-2.7-java11", included: ["1"], skipped: [], excluded: ["2", "3", "4"] },
+      { source: "springboot-2.1-java11", target: "springboot-3.5-java17", included: ["1", "2"], skipped: [], excluded: ["3", "4"] },
+      { source: "springboot-2.1-java11", target: "springboot-3.5-java21", included: ["1", "2", "3"], skipped: [], excluded: ["4"] },
+      { source: "springboot-2.1-java11", target: "springboot-4.0-java21", included: ["1", "2", "3", "4"], skipped: [], excluded: [] },
+      { source: "springboot-2.7-java11", target: "springboot-3.5-java17", included: ["2"], skipped: ["1"], excluded: ["3", "4"] },
+      { source: "springboot-2.7-java11", target: "springboot-3.5-java21", included: ["2", "3"], skipped: ["1"], excluded: ["4"] },
+      { source: "springboot-2.7-java11", target: "springboot-4.0-java21", included: ["2", "3", "4"], skipped: ["1"], excluded: [] },
+      { source: "springboot-3.5-java17", target: "springboot-3.5-java21", included: ["3"], skipped: ["1", "2"], excluded: ["4"] },
+      { source: "springboot-3.5-java17", target: "springboot-4.0-java21", included: ["3", "4"], skipped: ["1", "2"], excluded: [] },
+      { source: "springboot-3.5-java21", target: "springboot-4.0-java21", included: ["4"], skipped: ["1", "2", "3"], excluded: [] },
+    ];
+    for (const pair of pairs) {
+      const validation = getRouteValidationError(pair.source, pair.target);
+      expect(validation).toBeNull();
+      const preview = getRoutePreview(pair.source, pair.target);
+      expect(preview).toEqual({
+        included: pair.included,
+        skipped: pair.skipped,
+        excluded: pair.excluded,
+      });
+      const key = getRoutePreviewKey(pair.source, pair.target);
+      expect(key).toBe(`${pair.source}->${pair.target}`);
+    }
+  });
+
+  it("same-profile pair blocks start (local validation)", () => {
+    const msg = getRouteValidationMessage("springboot-2.7-java11", "springboot-2.7-java11");
+    expect(msg).toBe("Source and target profiles must differ.");
+  });
+
+  it("reversed pair blocks start (local validation)", () => {
+    const msg = getRouteValidationMessage("springboot-4.0-java21", "springboot-2.7-java11");
+    expect(msg).toBe("Target profile must be a higher stage than the source profile.");
+  });
+
+  it("valid pair returns no validation error", () => {
+    const msg = getRouteValidationMessage("springboot-2.7-java11", "springboot-4.0-java21");
+    expect(msg).toBeNull();
+  });
+
+  it("non-source profile cannot be a source", () => {
+    const msg = getRouteValidationMessage("springboot-4.0-java21", "springboot-2.7-java11");
+    expect(msg).toBe("Target profile must be a higher stage than the source profile.");
+  });
+
+  it("non-target profile cannot be a target", () => {
+    const msg = getRouteValidationMessage("springboot-2.7-java11", "springboot-2.7-java11");
+    expect(msg).toBe("Source and target profiles must differ.");
+  });
+
+  it("route preview includes correct stages for springboot-2.7 to springboot-4.0", () => {
+    const preview = getRoutePreview("springboot-2.7-java11", "springboot-4.0-java21");
+    expect(preview).toBeDefined();
+    expect(preview!.included).toEqual(["2", "3", "4"]);
+    expect(preview!.skipped).toEqual(["1"]);
+    expect(preview!.excluded).toEqual([]);
+  });
+
+  it("route preview includes one step for springboot-2.1 to springboot-2.7", () => {
+    const preview = getRoutePreview("springboot-2.1-java11", "springboot-2.7-java11");
+    expect(preview).toBeDefined();
+    expect(preview!.included).toEqual(["1"]);
+    expect(preview!.skipped).toEqual([]);
+    expect(preview!.excluded).toEqual(["2", "3", "4"]);
+  });
+
+  it("route preview includes four steps for springboot-2.1 to springboot-4.0", () => {
+    const preview = getRoutePreview("springboot-2.1-java11", "springboot-4.0-java21");
+    expect(preview).toBeDefined();
+    expect(preview!.included).toEqual(["1", "2", "3", "4"]);
+    expect(preview!.skipped).toEqual([]);
+    expect(preview!.excluded).toEqual([]);
+  });
+
+  it("route preview includes skipped stages for springboot-3.5-java17 to springboot-4.0", () => {
+    const preview = getRoutePreview("springboot-3.5-java17", "springboot-4.0-java21");
+    expect(preview).toBeDefined();
+    expect(preview!.included).toEqual(["3", "4"]);
+    expect(preview!.skipped).toEqual(["1", "2"]);
+    expect(preview!.excluded).toEqual([]);
+  });
+
+  it("start payload includes selected profile pair", () => {
+    const payload = createV2JobPayload("setup-1", "auto_on_green", {
+      sourceProfile: "springboot-3.5-java17",
+      targetProfile: "springboot-4.0-java21",
+    });
+    expect(payload.source_profile).toBe("springboot-3.5-java17");
+    expect(payload.target_profile).toBe("springboot-4.0-java21");
+  });
+
+  it("forbidden execution fields are absent from profile-aware payload", () => {
+    const payload = createV2JobPayload("setup-1", "auto_on_green", {
+      sourceProfile: "springboot-2.7-java11",
+      targetProfile: "springboot-4.0-java21",
+    });
+    const serialized = JSON.stringify(payload);
+    const forbiddenPatterns = [
+      "sandbox_path", "argv", "raw_command",
+      "filesystem_target", "filesystem_root", "output_root",
+      "report_root", "run_root", "ai_hub_path",
+      "java_home", "java11_home", "java17_home", "java21_home",
+      "maven_cmd",
+    ];
+    for (const field of forbiddenPatterns) {
+      expect(serialized).not.toContain(field);
+    }
+    // "provider", "model", "deployment", "endpoint" may appear as substrings
+    // of allowed policy fields — check as standalone JSON keys
+    expect(serialized).not.toMatch(/"provider"/);
+    expect(serialized).not.toMatch(/"model"/);
+    expect(serialized).not.toMatch(/"model_id"/);
+    expect(serialized).not.toMatch(/"deployment"/);
+    expect(serialized).not.toMatch(/"endpoint"/);
+    expect(serialized).not.toMatch(/"api_key"/);
+    expect(serialized).not.toMatch(/"access_token"/);
   });
 });

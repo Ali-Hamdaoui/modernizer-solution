@@ -1,9 +1,11 @@
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 import re
 
 from migration_factory.agents.planning_agent.artifact_reader import LoadedAnalysisArtifacts
 from migration_factory.agents.planning_agent.profile_compatibility import StackFingerprint
+from migration_factory.profile_semantics import should_openrewrite_impact_be_fatal
 
 RiskSeverity = Literal["BLOCKER", "HIGH", "WARNING", "INFO"]
 
@@ -31,6 +33,8 @@ def classify_planning_risks(
     route_strategy: str | None = None,
     selected_hops: tuple[dict[str, Any], ...] = (),
     planned_unit_ids: tuple[str, ...] = (),
+    profile_id: str | None = None,
+    migration_units: Sequence[str] | None = None,
 ) -> PlanningRiskResult:
     risks: list[PlanningRiskItem] = []
 
@@ -110,7 +114,14 @@ def classify_planning_risks(
             internal_dependencies=internal_dependencies,
         )
     )
-    risks.extend(_classify_openrewrite_impact(loaded_artifacts))
+
+    risks.extend(
+        _classify_openrewrite_impact(
+            loaded_artifacts,
+            profile_id=profile_id,
+            migration_units=migration_units,
+        )
+    )
 
     has_blocker = any(r.severity == "BLOCKER" for r in risks)
     return PlanningRiskResult(ok=not has_blocker, risks=risks)
@@ -360,6 +371,9 @@ def _classify_framework_library_risks(
 
 def _classify_openrewrite_impact(
     loaded_artifacts: LoadedAnalysisArtifacts,
+    *,
+    profile_id: str | None = None,
+    migration_units: Sequence[str] | None = None,
 ) -> list[PlanningRiskItem]:
     impact_summary = loaded_artifacts.optional.get("rewrite_impact_summary.json")
     if not isinstance(impact_summary, dict):
@@ -381,6 +395,10 @@ def _classify_openrewrite_impact(
     if impact not in {"LOW", "MEDIUM", "HIGH", "BLOCKED", "UNKNOWN"}:
         impact = "UNKNOWN"
 
+    fatal_blocked = should_openrewrite_impact_be_fatal(
+        profile_id=profile_id,
+        unit_ids=migration_units,
+    )
     severity_by_impact: dict[str, RiskSeverity] = {
         "LOW": "INFO",
         "MEDIUM": "WARNING",
@@ -395,11 +413,20 @@ def _classify_openrewrite_impact(
         "BLOCKED": "OpenRewrite impact is blocked; planning output is not executable.",
         "UNKNOWN": "OpenRewrite impact is unknown or missing.",
     }
+    severity = severity_by_impact[impact]
+    message = message_by_impact[impact]
+    if impact == "BLOCKED" and not fatal_blocked:
+        severity = "WARNING"
+        message = (
+            "OpenRewrite impact is blocked for a Java 21 runtime-validation route; "
+            "continuing to runtime validation gate."
+        )
+
     risks.append(
         PlanningRiskItem(
             code=f"OPENREWRITE_IMPACT_{impact}",
-            severity=severity_by_impact[impact],
-            message=message_by_impact[impact],
+            severity=severity,
+            message=message,
             source="openrewrite",
         )
     )

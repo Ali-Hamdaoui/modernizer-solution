@@ -18,10 +18,19 @@ from migration_factory.control_tower.application.redaction import (
 REQUIRED_SCHEMAS = (
     "PlanProposal",
     "RepairProposal",
+    "RepairPrimaryOutput",
+    "RepairReviewerOutput",
     "ReviewerCritique",
     "RepairProposerShadowOutput",
     "RepairReviewerShadowOutput",
     "RepairFallbackShadowOutput",
+    "SafeDiffLine",
+    "SafeDiffHunk",
+    "SafeDiffFile",
+    "SafeDiffPreview",
+    "ReviewerVerdictProjection",
+    "FilesChangedSummary",
+    "ReviewedDiffProposal",
     "ActionRequest",
     "AssistantAnswer",
     "GateActionRequest",
@@ -73,6 +82,58 @@ REPAIR_PROPOSAL_SCHEMA = {
         "affected_paths": {"type": "array", "items": {"type": "string"}},
         "validation_plan": {"type": "string"},
         "rollback_note": {"type": "string"},
+    },
+}
+
+REPAIR_PRIMARY_OUTPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "root_cause",
+        "fix_strategy",
+        "changed_files",
+        "proposed_diff",
+        "risk",
+        "confidence",
+        "rationale",
+    ],
+    "properties": {
+        "root_cause": {"type": "string"},
+        "fix_strategy": {"type": "string"},
+        "changed_files": {"type": "array", "items": {"type": "string"}},
+        "proposed_diff": {"type": "string"},
+        "deterministic_rule_id": {"type": "string"},
+        "risk": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "rationale": {"type": "string"},
+        "no_fix_reason": {"type": "string"},
+        "machine_readable_metadata": {"type": "object"},
+    },
+}
+
+REPAIR_REVIEWER_OUTPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "decision",
+        "notes",
+        "risks",
+        "confidence",
+        "policy_concerns",
+        "reviewed_context_checksum",
+        "reviewed_primary_output_checksum",
+        "reviewed_diff_checksum",
+    ],
+    "properties": {
+        "decision": {"type": "string", "enum": ["accept", "revise", "reject"]},
+        "notes": {"type": "array", "items": {"type": "string"}},
+        "risks": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "policy_concerns": {"type": "array", "items": {"type": "string"}},
+        "reviewed_context_checksum": {"type": "string"},
+        "reviewed_primary_output_checksum": {"type": "string"},
+        "reviewed_diff_checksum": {"type": "string"},
+        "review_dimensions": {"type": "object"},
     },
 }
 
@@ -339,14 +400,148 @@ ASSISTANT_GATE_ANSWER_SCHEMA = {
     },
 }
 
+SAFE_DIFF_LINE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["kind", "text", "redacted"],
+    "properties": {
+        "kind": {"type": "string", "enum": ["context", "addition", "deletion"]},
+        "old_line_number": {"type": ["integer", "null"], "minimum": 0},
+        "new_line_number": {"type": ["integer", "null"], "minimum": 0},
+        "text": {"type": "string"},
+        "redacted": {"type": "boolean"},
+    },
+}
+
+SAFE_DIFF_HUNK_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["old_start", "old_lines", "new_start", "new_lines", "lines"],
+    "properties": {
+        "old_start": {"type": "integer", "minimum": 0},
+        "old_lines": {"type": "integer", "minimum": 0},
+        "new_start": {"type": "integer", "minimum": 0},
+        "new_lines": {"type": "integer", "minimum": 0},
+        "section_header": {"type": ["string", "null"]},
+        "lines": {"type": "array", "items": SAFE_DIFF_LINE_SCHEMA},
+    },
+}
+
+SAFE_DIFF_FILE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["path", "change_type", "additions", "deletions", "hunks", "truncated"],
+    "properties": {
+        "path": {"type": "string"},
+        "change_type": {"type": "string", "enum": ["added", "modified", "deleted", "renamed", "binary"]},
+        "additions": {"type": "integer", "minimum": 0},
+        "deletions": {"type": "integer", "minimum": 0},
+        "hunks": {"type": "array", "items": SAFE_DIFF_HUNK_SCHEMA},
+        "truncated": {"type": "boolean"},
+    },
+}
+
+SAFE_DIFF_PREVIEW_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["proposal_id", "diff_ref", "diff_checksum", "files", "total_additions", "total_deletions", "truncated", "redactions"],
+    "properties": {
+        "proposal_id": {"type": "string"},
+        "diff_ref": {"type": ["string", "null"]},
+        "diff_checksum": {"type": "string"},
+        "files": {"type": "array", "items": SAFE_DIFF_FILE_SCHEMA},
+        "total_additions": {"type": "integer", "minimum": 0},
+        "total_deletions": {"type": "integer", "minimum": 0},
+        "truncated": {"type": "boolean"},
+        "redactions": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+FILES_CHANGED_SUMMARY_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["path", "change_type", "additions", "deletions"],
+    "properties": {
+        "path": {"type": "string"},
+        "change_type": {"type": "string", "enum": ["added", "modified", "deleted", "renamed", "binary"]},
+        "additions": {"type": "integer", "minimum": 0},
+        "deletions": {"type": "integer", "minimum": 0},
+    },
+}
+
+REVIEWER_VERDICT_PROJECTION_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["decision", "missing_evidence", "unsafe_assumptions"],
+    "properties": {
+        "reviewer_verdict_id": {"type": ["string", "null"]},
+        "decision": {"type": "string", "enum": ["accept", "revise", "reject", "unknown"]},
+        "reasoning": {"type": ["string", "null"]},
+        "missing_evidence": {"type": "array", "items": {"type": "string"}},
+        "unsafe_assumptions": {"type": "array", "items": {"type": "string"}},
+        "model_invocation_id": {"type": ["string", "null"]},
+        "output_checksum": {"type": ["string", "null"]},
+    },
+}
+
+REVIEWED_DIFF_PROPOSAL_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "proposal_id",
+        "status",
+        "failure_summary",
+        "diff_ref",
+        "diff_checksum",
+        "safe_diff_preview",
+        "reviewer_verdict",
+        "files_changed",
+        "required_validation",
+        "allowed_actions",
+        "redactions",
+    ],
+    "properties": {
+        "proposal_id": {"type": "string"},
+        "job_id": {"type": ["string", "null"]},
+        "command_id": {"type": ["string", "null"]},
+        "gate_id": {"type": ["string", "null"]},
+        "route_step_index": {"type": ["integer", "null"], "minimum": 0},
+        "stage_index": {"type": ["integer", "null"], "minimum": 0},
+        "status": {"type": "string"},
+        "attempt_number": {"type": ["integer", "null"], "minimum": 0},
+        "revision_number": {"type": ["integer", "null"], "minimum": 0},
+        "failure_summary": {"type": "string"},
+        "diagnosis_ref": {"type": ["string", "null"]},
+        "repair_plan_ref": {"type": ["string", "null"]},
+        "diff_ref": {"type": ["string", "null"]},
+        "diff_checksum": {"type": "string"},
+        "safe_diff_preview": SAFE_DIFF_PREVIEW_SCHEMA,
+        "reviewer_verdict": REVIEWER_VERDICT_PROJECTION_SCHEMA,
+        "files_changed": {"type": "array", "items": FILES_CHANGED_SUMMARY_SCHEMA},
+        "risk": {"type": ["string", "null"]},
+        "required_validation": {"type": "array", "items": {"type": "string"}},
+        "allowed_actions": {"type": "array", "items": {"type": "string"}},
+        "redactions": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
 
 SCHEMA_REGISTRY = {
     "PlanProposal": PLAN_PROPOSAL_SCHEMA,
     "RepairProposal": REPAIR_PROPOSAL_SCHEMA,
+    "RepairPrimaryOutput": REPAIR_PRIMARY_OUTPUT_SCHEMA,
+    "RepairReviewerOutput": REPAIR_REVIEWER_OUTPUT_SCHEMA,
     "ReviewerCritique": REVIEWER_CRITIQUE_SCHEMA,
     "RepairProposerShadowOutput": REPAIR_PROPOSER_SHADOW_OUTPUT_SCHEMA,
     "RepairReviewerShadowOutput": REPAIR_REVIEWER_SHADOW_OUTPUT_SCHEMA,
     "RepairFallbackShadowOutput": REPAIR_FALLBACK_SHADOW_OUTPUT_SCHEMA,
+    "SafeDiffLine": SAFE_DIFF_LINE_SCHEMA,
+    "SafeDiffHunk": SAFE_DIFF_HUNK_SCHEMA,
+    "SafeDiffFile": SAFE_DIFF_FILE_SCHEMA,
+    "SafeDiffPreview": SAFE_DIFF_PREVIEW_SCHEMA,
+    "ReviewerVerdictProjection": REVIEWER_VERDICT_PROJECTION_SCHEMA,
+    "FilesChangedSummary": FILES_CHANGED_SUMMARY_SCHEMA,
+    "ReviewedDiffProposal": REVIEWED_DIFF_PROPOSAL_SCHEMA,
     "ActionRequest": ACTION_REQUEST_SCHEMA,
     "AssistantAnswer": ASSISTANT_ANSWER_SCHEMA,
     "GateActionRequest": GATE_ACTION_REQUEST_SCHEMA,
@@ -535,6 +730,16 @@ class SchemaValidator:
             return
 
         schema_type = schema.get("type")
+        schema_types = schema_type if isinstance(schema_type, list) else [schema_type] if schema_type is not None else []
+
+        if value is None:
+            if "null" in schema_types:
+                return
+            if schema_type is not None:
+                raise SchemaValidationError(
+                    f"Expected non-null value at {'.'.join(path)!r}, got null"
+                )
+            return
 
         # Check additionalProperties
         if schema.get("additionalProperties") is False and isinstance(value, dict):
@@ -547,25 +752,29 @@ class SchemaValidator:
                     )
 
         # Check type constraints
-        if schema_type == "object" and not isinstance(value, dict):
+        if "object" in schema_types and not isinstance(value, dict):
             raise SchemaValidationError(
                 f"Expected object at {'.'.join(path)!r}, got {type(value).__name__}"
             )
-        if schema_type == "array" and not isinstance(value, (list, tuple)):
+        if "array" in schema_types and not isinstance(value, (list, tuple)):
             raise SchemaValidationError(
                 f"Expected array at {'.'.join(path)!r}, got {type(value).__name__}"
             )
-        if schema_type == "string" and not isinstance(value, str):
+        if "string" in schema_types and not isinstance(value, str):
             raise SchemaValidationError(
                 f"Expected string at {'.'.join(path)!r}, got {type(value).__name__}"
             )
-        if schema_type == "integer" and not isinstance(value, int):
+        if "integer" in schema_types and not isinstance(value, int):
             raise SchemaValidationError(
                 f"Expected integer at {'.'.join(path)!r}, got {type(value).__name__}"
             )
+        if "number" in schema_types and not isinstance(value, (int, float)):
+            raise SchemaValidationError(
+                f"Expected number at {'.'.join(path)!r}, got {type(value).__name__}"
+            )
 
         # Check required fields
-        if schema_type == "object" and isinstance(value, dict):
+        if "object" in schema_types and isinstance(value, dict):
             required = schema.get("required", [])
             for field in required:
                 if field not in value:
@@ -594,7 +803,7 @@ class SchemaValidator:
                 )
 
         # Check array items
-        if schema_type == "array" and isinstance(value, (list, tuple)):
+        if "array" in schema_types and isinstance(value, (list, tuple)):
             items_schema = schema.get("items")
             if items_schema:
                 for i, item in enumerate(value):
@@ -603,7 +812,7 @@ class SchemaValidator:
                     )
 
         # Check property values
-        if schema_type == "object" and isinstance(value, dict):
+        if "object" in schema_types and isinstance(value, dict):
             properties = schema.get("properties", {})
             for key, prop_schema in properties.items():
                 if key in value:

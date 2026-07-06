@@ -253,3 +253,100 @@ def test_superseded_update_blocked(tmp_path: Path) -> None:
             "UPDATE v2_phase_gates SET gate_decision = ? WHERE gate_id = ?",
             ("continue", "gate-sup"),
         )
+
+
+def _apply_up_to_0045(conn: sqlite3.Connection) -> None:
+    from migration_factory.control_tower.infrastructure.sqlite.migrations import (
+        _apply_single_migration,
+        discover_migrations,
+    )
+    for m in discover_migrations():
+        _apply_single_migration(conn, m)
+        if m.version == 45:
+            break
+
+
+def test_migration_0046_phase_gates_stage4(tmp_path: Path) -> None:
+    conn = sqlite3.connect(
+        str(tmp_path / "test_0046_gates.sqlite3"),
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    conn.row_factory = sqlite3.Row
+    try:
+        _apply_up_to_0045(conn)
+
+        job = "job-0046-g"
+
+        # Seed with Stage 1-3 data
+        conn.execute(
+            "INSERT INTO v2_phase_gates (gate_id, job_id, gate_phase, stage_index, gate_status, gate_decision, source_artifact_checksum, source_artifact_refs_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("g-pre1", job, "analysis_review", 1, "open", "pending", "chk1", "[]", "2026-06-17T12:00:00Z"),
+        )
+        conn.execute(
+            "INSERT INTO v2_phase_gates (gate_id, job_id, gate_phase, stage_index, gate_status, gate_decision, source_artifact_checksum, source_artifact_refs_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("g-pre2", job, "planning_review", 3, "open", "pending", "chk2", "[]", "2026-06-17T13:00:00Z"),
+        )
+
+        # Apply 0046
+        from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+        apply_pending_migrations(conn)
+
+        # Verify Stage 1-3 values survive
+        row = conn.execute("SELECT stage_index FROM v2_phase_gates WHERE gate_id = 'g-pre1'").fetchone()
+        assert row["stage_index"] == 1
+        row = conn.execute("SELECT stage_index FROM v2_phase_gates WHERE gate_id = 'g-pre2'").fetchone()
+        assert row["stage_index"] == 3
+
+        # Stage 4 insert succeeds
+        conn.execute(
+            "INSERT INTO v2_phase_gates (gate_id, job_id, gate_phase, stage_index, gate_status, gate_decision, source_artifact_checksum, source_artifact_refs_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("g-s4", job, "approval_review", 4, "open", "pending", "chk4", "[]", "2026-06-17T14:00:00Z"),
+        )
+
+        # Stage 5 insert fails
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO v2_phase_gates (gate_id, job_id, gate_phase, stage_index, gate_status, gate_decision, source_artifact_checksum, source_artifact_refs_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("g-s5", job, "review", 5, "open", "pending", "chk5", "[]", "2026-06-17T15:00:00Z"),
+            )
+
+        # Open gate uniqueness still enforced for Stage 4
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO v2_phase_gates (gate_id, job_id, gate_phase, stage_index, gate_status, gate_decision, source_artifact_checksum, source_artifact_refs_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                ("g-s4dup", job, "approval_review", 4, "open", "pending", "chk4b", "[]", "2026-06-17T16:00:00Z"),
+            )
+
+        # Different phase at same job+stage+open is still allowed
+        conn.execute(
+            "INSERT INTO v2_phase_gates (gate_id, job_id, gate_phase, stage_index, gate_status, gate_decision, source_artifact_checksum, source_artifact_refs_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("g-s4diff", job, "repair_review", 4, "open", "pending", "chk4c", "[]", "2026-06-17T17:00:00Z"),
+        )
+
+        # Resolved gate allows new open for same key (Stage 4)
+        conn.execute(
+            "UPDATE v2_phase_gates SET gate_status = 'resolved', gate_decision = 'continue', resolved_at = '2026-06-17T18:00:00Z', resolved_by = 'user' WHERE gate_id = 'g-s4'",
+        )
+        conn.execute(
+            "INSERT INTO v2_phase_gates (gate_id, job_id, gate_phase, stage_index, gate_status, gate_decision, source_artifact_checksum, source_artifact_refs_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("g-s4after", job, "approval_review", 4, "open", "pending", "chk4d", "[]", "2026-06-17T19:00:00Z"),
+        )
+
+        # DELETE still blocked
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("DELETE FROM v2_phase_gates WHERE gate_id = 'g-pre1'")
+
+        # Update of resolved gate still blocked
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("UPDATE v2_phase_gates SET gate_decision = 'reject' WHERE gate_id = 'g-s4'")
+
+        # Update of open gate still allowed
+        conn.execute(
+            "UPDATE v2_phase_gates SET gate_status = 'resolved', gate_decision = 'continue', resolved_at = '2026-06-17T20:00:00Z', resolved_by = 'user' WHERE gate_id = 'g-s4diff'",
+        )
+        row = conn.execute("SELECT gate_status FROM v2_phase_gates WHERE gate_id = 'g-s4diff'").fetchone()
+        assert row["gate_status"] == "resolved"
+    finally:
+        conn.close()

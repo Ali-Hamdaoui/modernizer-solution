@@ -15,9 +15,7 @@ from migration_factory.orchestrator.preflight import (
 from migration_factory.orchestrator.state import (
     FULL_SANDBOX_MIGRATION_MODE,
     READ_ONLY_ASSESSMENT_MODE,
-    apply_copilot_config,
     build_initial_state,
-    parse_copilot_config_from_env,
 )
 from migration_factory.orchestrator.summary import (
     finalize_orchestration_state,
@@ -32,6 +30,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Run read-only migration assessment orchestration.",
     )
     parser.add_argument("--run-id", required=True)
+    parser.add_argument("--job-id", default="")
     parser.add_argument("--legacy", required=True)
     parser.add_argument("--modernized", required=True)
     parser.add_argument("--ai-hub", required=True)
@@ -65,8 +64,11 @@ def main(argv: list[str] | None = None) -> int:
         thread_id=args.run_id,
         mode=args.mode,
     )
-    if args.phase:
-        state["phase"] = args.phase
+    if getattr(args, "job_id", None):
+        state["job_id"] = args.job_id
+    phase = getattr(args, "phase", None)
+    if phase:
+        state["phase"] = phase
 
     try:
         state = load_copilot_config(state)
@@ -111,11 +113,11 @@ def _render_result(result: Any) -> Any:
 
 
 def load_copilot_config(state: dict[str, Any]) -> dict[str, Any]:
-    return apply_copilot_config(state)
+    return dict(state)
 
 
 def parse_copilot_config() -> dict[str, Any]:
-    return parse_copilot_config_from_env()
+    return {}
 
 
 def _extract_interrupt_payload(result: Any) -> dict[str, Any] | None:

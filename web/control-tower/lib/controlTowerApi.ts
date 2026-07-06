@@ -8,6 +8,7 @@ import type {
   CreateDiagnosticJobRequest,
   FilesystemRootOption,
   JobRepresentation,
+  MigrationProfileId,
   V2MigrationJobResponse,
   V2JobEventSnapshotResponse,
   V2PipelineResponse,
@@ -49,6 +50,7 @@ import type {
   RunnerProfileOption,
   StageChainResponse,
   OpenGateForJobResponse,
+  V2FinalReportResponse,
   // F14 types
   PomView,
   PomDependencyReview,
@@ -59,6 +61,17 @@ import type {
   PomRollbackResult,
   PomProposeRequest,
   PomApplyRequest,
+  // PR-C types
+  RepairProposalCurrentResponse,
+  RepairProposalDetailResponse,
+  RepairProposalDiffResponse,
+  RepairAttemptsResponse,
+  // PR-D types
+  RepairProposalRevisionRequest,
+  RepairProposalRevisionResponse,
+  // PR-E types
+  RepairProposalApproveRequest,
+  RepairProposalApproveResponse,
 } from "./contracts";
 
 export const CONTROL_TOWER_FRONTEND_CLIENT_ID = "control-tower-frontend";
@@ -100,11 +113,17 @@ type V2JobPolicy = {
 export type CreateV2JobRequest = {
   setup_id: string;
   policy: V2JobPolicy;
+  source_profile?: MigrationProfileId;
+  target_profile?: MigrationProfileId;
 };
 
 export function createV2JobPayload(
   setupId: string,
   stageContinuationPolicy: V2StageContinuationPolicy = DEFAULT_V2_STAGE_CONTINUATION_POLICY,
+  options?: {
+    sourceProfile?: MigrationProfileId;
+    targetProfile?: MigrationProfileId;
+  },
 ): CreateV2JobRequest {
   return {
     setup_id: setupId,
@@ -114,7 +133,16 @@ export function createV2JobPayload(
       enable_endpoint_gate: false,
       stage_continuation_policy: stageContinuationPolicy,
     },
+    ...(options?.sourceProfile ? { source_profile: options.sourceProfile } : {}),
+    ...(options?.targetProfile ? { target_profile: options.targetProfile } : {}),
   };
+}
+
+export function createIdempotencyKey(): string {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+  return `idempotency-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 export function requireJobId(jobId: string): string {
@@ -237,17 +265,25 @@ export async function getModelActivity(jobId: string): Promise<ModelActivityResp
   // a future backend change to { invocations } works unmodified.
   const invocations: ModelActivityResponse["invocations"] = (
     raw.invocations ?? raw.model_invocations ?? []
-  ).map((inv) => ({
-    ...inv,
-    // Backend per-job endpoint omits top-level job_id; fill from argument.
-    job_id: inv.job_id ?? jobId,
-    // Ensure nullable fields are null not undefined
-    profile_id: inv.profile_id ?? null,
-    actor_type: inv.actor_type ?? null,
-    actor_id: inv.actor_id ?? null,
-    correlation_id: inv.correlation_id ?? null,
-    causation_id: inv.causation_id ?? null,
-  }));
+  ).map((inv) => {
+    return {
+      invocation_id: inv.invocation_id,
+      model_name: inv.model_name ?? null,
+      prompt_tokens: inv.prompt_tokens ?? null,
+      completion_tokens: inv.completion_tokens ?? null,
+      total_tokens: inv.total_tokens ?? null,
+      redacted_summary: inv.redacted_summary ?? null,
+      created_at: inv.created_at,
+      // Backend per-job endpoint omits top-level job_id; fill from argument.
+      job_id: inv.job_id ?? jobId,
+      // Ensure nullable fields are null not undefined
+      profile_id: inv.profile_id ?? null,
+      actor_type: inv.actor_type ?? null,
+      actor_id: inv.actor_id ?? null,
+      correlation_id: inv.correlation_id ?? null,
+      causation_id: inv.causation_id ?? null,
+    };
+  });
 
   return { job_id: jobId, invocations };
 }
@@ -293,11 +329,18 @@ export function assistantStreamUrl(jobId: string): string {
 
 // ── V2 migration cockpit API methods ──────────────────────────────────
 
-export async function createV2Job(setupId: string): Promise<V2MigrationJobResponse> {
-  return postJson<V2MigrationJobResponse>(
+export async function createV2Job(
+  setupId: string,
+  options?: { sourceProfile?: MigrationProfileId; targetProfile?: MigrationProfileId },
+): Promise<V2MigrationJobResponse> {
+  const job = await postJson<V2MigrationJobResponse>(
     "/v1/v2/migration-jobs",
-    createV2JobPayload(setupId)
+    createV2JobPayload(setupId, DEFAULT_V2_STAGE_CONTINUATION_POLICY, options)
   );
+  return {
+    ...job,
+    route_steps: job.route_steps ?? [],
+  };
 }
 
 export async function startV2Stage1(jobId: string, setupId: string): Promise<V2StageCommandResponse> {
@@ -309,9 +352,13 @@ export async function startV2Stage1(jobId: string, setupId: string): Promise<V2S
 
 export async function getV2MigrationJob(jobId: string): Promise<V2MigrationJobResponse> {
   const safeJobId = requireJobId(jobId);
-  return getJson<V2MigrationJobResponse>(
+  const job = await getJson<V2MigrationJobResponse>(
     `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}`
   );
+  return {
+    ...job,
+    route_steps: job.route_steps ?? [],
+  };
 }
 
 export async function getV2JobApprovals(jobId: string): Promise<{ approvals: V2ApprovalResponse[] }> {
@@ -503,15 +550,13 @@ export async function rejectV2Card(
 export async function progressV2Stage(
   jobId: string,
   setupId: string,
-  currentStage: number,
-  sandboxPath: string
+  currentStage: number
 ): Promise<V2StageContinuationResponse> {
   return postJson<V2StageContinuationResponse>(
     `/v1/v2/jobs/${encodeURIComponent(jobId)}/stages/progress`,
     {
       setup_id: setupId,
       current_stage: currentStage,
-      sandbox_path: sandboxPath,
     }
   );
 }
@@ -654,6 +699,34 @@ export async function runControlledR6RepairDemo(jobId: string): Promise<Controll
   );
 }
 
+// ── F15 Final Report API ────────────────────────────────────────────────
+
+export async function getV2FinalReport(
+  jobId: string,
+): Promise<V2FinalReportResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<V2FinalReportResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/report`,
+  );
+}
+
+export async function generateV2FinalReport(
+  jobId: string,
+): Promise<V2FinalReportResponse> {
+  const safeJobId = requireJobId(jobId);
+  return postJson<V2FinalReportResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/report`,
+    {},
+  );
+}
+
+export function resolveReportDownloadUrl(downloadUrl: string): string {
+  if (!downloadUrl.startsWith("/v1/")) {
+    throw new Error("Invalid report download URL.");
+  }
+  return `${CONTROL_TOWER_API_BASE_URL}${downloadUrl}`;
+}
+
 // ── F14 — Stage 3 POM Dependency Editor API ──────────────────────────────
 
 export async function getStage3Pom(jobId: string): Promise<PomView> {
@@ -736,6 +809,88 @@ export async function rollbackPomChange(
   );
 }
 
+
+// ── PR-C — Reviewed Diff Proposal read-only API methods ────────────────
+
+export async function getCurrentRepairProposal(
+  jobId: string,
+): Promise<RepairProposalCurrentResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<RepairProposalCurrentResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/current`,
+  );
+}
+
+export async function getRepairProposal(
+  jobId: string,
+  proposalId: string,
+): Promise<RepairProposalDetailResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) {
+    throw new Error("Proposal id is required.");
+  }
+  return getJson<RepairProposalDetailResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}`,
+  );
+}
+
+export async function getRepairProposalDiff(
+  jobId: string,
+  proposalId: string,
+): Promise<RepairProposalDiffResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) {
+    throw new Error("Proposal id is required.");
+  }
+  return getJson<RepairProposalDiffResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}/diff`,
+  );
+}
+
+export async function getRepairAttempts(
+  jobId: string,
+): Promise<RepairAttemptsResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<RepairAttemptsResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/attempts`,
+  );
+}
+
+// ── PR-D — Request repair proposal revision ─────────────────────────────
+
+export async function requestRepairProposalRevision(
+  jobId: string,
+  proposalId: string,
+  request: RepairProposalRevisionRequest,
+): Promise<RepairProposalRevisionResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) {
+    throw new Error("Proposal id is required.");
+  }
+  return postJson<RepairProposalRevisionResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}/revise`,
+    request,
+  );
+}
+
+export async function approveRepairProposal(
+  jobId: string,
+  proposalId: string,
+  request: RepairProposalApproveRequest,
+): Promise<RepairProposalApproveResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) {
+    throw new Error("Proposal id is required.");
+  }
+  return postJson<RepairProposalApproveResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}/approve`,
+    request,
+  );
+}
 
 export async function postJson<TResponse>(
   path: string,

@@ -14,16 +14,28 @@ from typing import Any
 import pytest
 
 from migration_factory.control_tower.application.v2_orchestrator_runner import V2OrchestratorRunner
-from migration_factory.control_tower.domain.checksums import utc_now_text
+from migration_factory.control_tower.application.v2_profile_runtime import RouteRuntimeProfileUnavailableError
+from migration_factory.control_tower.domain.checksums import canonical_json_text, sha256_canonical_json, utc_now_text
+from migration_factory.control_tower.domain.entities import RunConfigurationRecord
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
 from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import V2MigrationJobRecord
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import V2StageCommandRecord
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import V2MigrationSetupRecord
+from migration_factory.control_tower.application.v2_stage_progression import (
+    compute_profile_route,
+    route_to_dict,
+)
+from migration_factory.control_tower.domain.states import TargetProofLevel
+from migration_factory.control_tower.domain.entities import ArtifactRevisionRecord, PhaseGateRecord
+from migration_factory.control_tower.domain.gate_checksum import gate_checksum
 from migration_factory.control_tower.infrastructure.sqlite.v2_approval_repository import (
     V2ApprovalDecisionRecord,
     V2ResumeCommandRecord,
 )
+
+
+AI_HUB = Path(__file__).resolve().parents[2] / "modernizer-solution-ai-hub"
 
 
 class _FakeProcess:
@@ -149,7 +161,137 @@ def _save_command(
     )
 
 
-def _seed_stage_pipeline(conn: sqlite3.Connection, *, job_id: str = "job-1") -> None:
+def _save_phase_command(
+    conn: sqlite3.Connection,
+    *,
+    command_id: str = "cmd-phase",
+    job_id: str = "job-1",
+    stage_index: int = 1,
+    phase: str = "analysis",
+) -> None:
+    now = utc_now_text()
+    SqliteUnitOfWork(conn).v2_commands.save(
+        V2StageCommandRecord(
+            command_id=command_id,
+            job_id=job_id,
+            stage_index=stage_index,
+            manifest_checksum=f"phase:{phase}",
+            argv_json="[]",
+            env_json=json.dumps({
+                "JAVA_HOME": "C:/jdk11",
+                "JAVA11_HOME": "C:/jdk11",
+                "JAVA17_HOME": "C:/jdk17",
+                "JAVA21_HOME": "C:/jdk21",
+                "MAVEN_CMD": "C:/maven/bin/mvn.cmd",
+                "PATH_PREPEND": "C:/jdk11/bin",
+            }),
+            status="manifest_ready",
+            created_at=now,
+            updated_at=now,
+            result_json=None,
+        )
+    )
+
+
+def _seed_resume_gate(
+    conn: sqlite3.Connection,
+    *,
+    job_id: str = "job-1",
+    stage_index: int = 1,
+    source_profile: str = "springboot-2.7-java11",
+    target_profile: str = "springboot-4.0-java21",
+    gate_source_checksum: str = "sha256:test-source",
+    gate_phase: str = "approval_review",
+) -> str:
+    from migration_factory.control_tower.application.v2_stage_progression import (
+        compute_profile_route,
+        route_to_dict,
+    )
+
+    now = utc_now_text()
+    route = route_to_dict(compute_profile_route(source_profile, target_profile))
+    refs = [
+        {
+            "kind": "profile_route",
+            "path_or_ref": "metadata:profile-route",
+            "checksum": "sha256:route",
+            "profile_metadata": route,
+        }
+    ]
+    gate = PhaseGateRecord(
+        gate_id="gate-resume-test",
+        job_id=job_id,
+        gate_phase=gate_phase,
+        stage_index=stage_index,
+        gate_status="open",
+        gate_decision="pending",
+        source_artifact_checksum=gate_source_checksum,
+        resolved_artifact_checksum=None,
+        source_artifact_refs_json=json.dumps(refs, separators=(",", ":")),
+        created_at=now,
+    )
+    SqliteUnitOfWork(conn).phase_gates.save(gate)
+    SqliteUnitOfWork(conn).artifact_revisions.save(
+        ArtifactRevisionRecord(
+            revision_id="rev-accepted-test",
+            job_id=job_id,
+            stage_index=stage_index,
+            revision_kind="stage_output",
+            revision_status="accepted",
+            revision_order=1,
+            evidence_checksum=gate_source_checksum,
+            prior_revision_checksum=None,
+            artifact_refs_json=json.dumps(refs, separators=(",", ":")),
+            prior_revision_id=None,
+            superseded_by_revision_id=None,
+            accepted_at_gate_id=gate.gate_id,
+            created_at=now,
+            created_by="test",
+            accepted_at=now,
+            accepted_by="test",
+        )
+    )
+    # Save run configuration for route computation
+    payload = {
+        "source_profile": source_profile,
+        "target_profile": target_profile,
+    }
+    conn.execute(
+        """INSERT INTO run_configurations (
+            run_configuration_id, job_id, schema_version,
+            runner_profile_id, runner_profile_version,
+            pipeline_id, pipeline_version, target_proof_level,
+            enabled_gates_json, policy_json, payload_json,
+            payload_checksum, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            f"rc-{job_id}",
+            job_id,
+            "1",
+            "runner",
+            "1",
+            "pipeline",
+            "1",
+            "BUILD_TEST_VERIFIED",
+            "[]",
+            "{}",
+            json.dumps(payload, separators=(",", ":")),
+            f"checksum-{job_id}",
+            utc_now_text(),
+        ),
+    )
+    checkpoint_checksum = gate_checksum(
+        gate_id=gate.gate_id,
+        job_id=gate.job_id,
+        gate_phase=gate.gate_phase,
+        stage_index=gate.stage_index,
+        source_artifact_checksum=gate.source_artifact_checksum,
+        source_artifact_refs=refs,
+    )
+    return checkpoint_checksum
+
+
+def _seed_stage_pipeline(conn: sqlite3.Connection, *, job_id: str = "job-1", seed_run_configuration: bool = True) -> None:
     now = utc_now_text()
     with SqliteUnitOfWork(conn) as uow:
         uow.v2_setups.save(
@@ -158,7 +300,7 @@ def _seed_stage_pipeline(conn: sqlite3.Connection, *, job_id: str = "job-1") -> 
                 run_name="stage-pipeline",
                 legacy_app_path="C:/legacy",
                 output_parent_path="C:/modernized",
-                ai_hub_path="C:/ai-hub",
+                ai_hub_path=str(AI_HUB),
                 java11_home="C:/jdk11",
                 java17_home="C:/jdk17",
                 java21_home="C:/jdk21",
@@ -184,6 +326,48 @@ def _seed_stage_pipeline(conn: sqlite3.Connection, *, job_id: str = "job-1") -> 
                 created_at=now,
                 updated_at=now,
                 correlation_id=None,
+            )
+        )
+        if seed_run_configuration:
+            run_config_payload = {
+                "source_profile": "springboot-2.7-java11",
+                "target_profile": "springboot-4.0-java21",
+            }
+            uow.run_configurations.insert(
+                RunConfigurationRecord(
+                    run_configuration_id=f"rc-{job_id}",
+                    job_id=job_id,
+                    schema_version="1.0.0",
+                    runner_profile_id="runner",
+                    runner_profile_version="1",
+                    pipeline_id="springboot-3.5-java17-to-java21-three-stage",
+                    pipeline_version="1",
+                    target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED,
+                    enabled_gates_json="[]",
+                    policy_json="{}",
+                    payload_json=canonical_json_text(run_config_payload),
+                    payload_checksum=sha256_canonical_json(run_config_payload),
+                    created_at=now,
+                )
+            )
+        uow.artifact_revisions.save(
+            ArtifactRevisionRecord(
+                revision_id="rev-stage3-accepted",
+                job_id=job_id,
+                stage_index=3,
+                revision_kind="stage_output",
+                revision_status="accepted",
+                revision_order=1,
+                evidence_checksum="ev-chk-3",
+                prior_revision_checksum=None,
+                artifact_refs_json='{}',
+                prior_revision_id=None,
+                superseded_by_revision_id=None,
+                accepted_at_gate_id="gate-accepted-3",
+                created_at=now,
+                created_by="test",
+                accepted_at=now,
+                accepted_by="test",
             )
         )
     _save_command(conn, command_id="cmd-1", job_id=job_id)
@@ -449,12 +633,56 @@ def _success_result(**overrides: Any) -> dict[str, Any]:
     return result
 
 
+def _reviewed_phase_result(*, phase: str = "analysis", decision: str = "accept", **overrides: Any) -> dict[str, Any]:
+    """Synthetic reviewed result used to test runner-side validation only.
+
+    The production Analysis/Planning producers do not yet create this shape.
+    These tests prove the runner fails closed or opens gates when such a
+    reviewed result is supplied.
+    """
+    det = f"det-{phase}-checksum"
+    pri = f"primary-{phase}-checksum"
+    rev = f"reviewer-{phase}-checksum"
+    final = f"final-{phase}-checksum"
+    result: dict[str, Any] = {
+        "job_id": "job-1",
+        "orchestration_status": "PASS",
+        "sandbox_path": "/tmp/sandbox",
+        "artifact_refs": {
+            "deterministic_artifact": f".migration/{phase}/deterministic.json",
+            "primary_llm_output": f".migration/{phase}/primary.json",
+            "reviewer_llm_output": f".migration/{phase}/reviewer.json",
+            "final_reviewed_markdown": f".migration/{phase}/final-reviewed.md",
+        },
+        "review_chain": {
+            "job_id": "job-1",
+            "deterministic_artifact_ref": f".migration/{phase}/deterministic.json",
+            "deterministic_artifact_checksum": det,
+            "primary_input_checksum": f"primary-input-{phase}",
+            "primary_output_ref": f".migration/{phase}/primary.json",
+            "primary_output_checksum": pri,
+            "reviewer_input_checksum": f"reviewer-input-{phase}",
+            "reviewer_output_checksum": rev,
+            "reviewer_decision": decision,
+            "review_confidence": 0.92,
+            "reviewed_artifact_checksum": det,
+            "reviewed_primary_output_checksum": pri,
+            "final_markdown_ref": f".migration/{phase}/final-reviewed.md",
+            "final_markdown_checksum": final,
+            "reviewer_notes": ["grounded in deterministic artifact"],
+        },
+    }
+    result.update(overrides)
+    return result
+
+
 def _run_success_chain(tmp_path: Path, conn: sqlite3.Connection) -> tuple[_SequentialFakePopen, list[Any]]:
     _seed_stage_pipeline(conn)
     popen = _SequentialFakePopen([
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"], [], 0),
     ])
     runner = V2OrchestratorRunner(
         unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
@@ -462,9 +690,28 @@ def _run_success_chain(tmp_path: Path, conn: sqlite3.Connection) -> tuple[_Seque
         cwd=tmp_path,
     )
     runner.start(job_id="job-1", command_id="cmd-1")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    _wait_for_stage4_command(conn)
     events = list(SqliteUnitOfWork(conn).v2_events.list_by_job("job-1"))
     return popen, events
+
+
+def _wait_for_stage4_command(conn: sqlite3.Connection, job_id: str = "job-1") -> None:
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        cmds = SqliteUnitOfWork(conn).v2_commands.list_by_job_and_stage(job_id, 4)
+        if cmds:
+            return
+        time.sleep(0.05)
+    raise AssertionError("Stage 4 command not persisted")
+
+
+def _wait_for_popen_call_containing(popen: _SequentialFakePopen, text: str) -> None:
+    deadline = time.monotonic() + 8
+    while time.monotonic() < deadline:
+        if any(text in " ".join(call["argv"]) for call in popen.calls):
+            return
+        time.sleep(0.05)
+    raise AssertionError(f"process launch containing {text!r} not observed")
 
 
 def test_v2_runner_launches_manifest_with_shell_false_and_safe_env(tmp_path: Path) -> None:
@@ -577,7 +824,7 @@ def test_v2_runner_maps_approval_interrupt_to_card_and_blocked_events(tmp_path: 
     assert len(uow2.v2_approvals.list_cards_by_status("pending")) == 1
 
 
-def test_v2_runner_passes_non_secret_copilot_env_and_excludes_secrets(monkeypatch, tmp_path: Path) -> None:
+def test_v2_runner_does_not_forward_copilot_env_to_product_subprocess(monkeypatch, tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _save_command(conn)
     monkeypatch.setenv("AI_MIGRATION_COPILOT_PROVIDER", "copilot_cli")
@@ -602,19 +849,180 @@ def test_v2_runner_passes_non_secret_copilot_env_and_excludes_secrets(monkeypatc
     assert "AZURE_OPENAI_API_KEY" not in env
     assert "GITHUB_TOKEN" not in env
     event_types = [event.type for event in SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")]
-    assert "copilot_status_checked" in event_types
+    assert "copilot_status_checked" not in event_types
+
+
+def test_phase_argv_uses_route_aware_profile_for_analysis_and_planning(tmp_path: Path) -> None:
+    db_path = tmp_path / "phase_argv.sqlite3"
+    seed_conn = sqlite3.connect(
+        db_path,
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    seed_conn.row_factory = sqlite3.Row
+    apply_pending_migrations(seed_conn)
+    _seed_stage_pipeline(seed_conn, seed_run_configuration=False)
+    _insert_run_config(
+        seed_conn,
+        job_id="job-1",
+        rc_id="rc-1",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-3.5-java21",
+        policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}),
+    )
+    _save_phase_command(seed_conn, command_id="cmd-analysis", job_id="job-1", stage_index=1, phase="analysis")
+    _save_phase_command(seed_conn, command_id="cmd-planning", job_id="job-1", stage_index=2, phase="planning")
+    seed_conn.close()
+
+    analysis_conn = sqlite3.connect(
+        db_path,
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    analysis_conn.row_factory = sqlite3.Row
+    planning_conn = sqlite3.connect(
+        db_path,
+        check_same_thread=False,
+        isolation_level=None,
+        timeout=5.0,
+    )
+    planning_conn.row_factory = sqlite3.Row
+    popen = _SequentialFakePopen([
+        ([json.dumps(_success_result(sandbox_path="/tmp/analysis")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/planning")) + "\n"], [], 0),
+    ])
+    analysis_runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(analysis_conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+    planning_runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(planning_conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    analysis_runner.start(job_id="job-1", command_id="cmd-analysis")
+    planning_runner.start(job_id="job-1", command_id="cmd-planning")
+    _wait_for_popen_call_containing(popen, "--phase analysis")
+    _wait_for_popen_call_containing(popen, "--phase planning")
+
+    assert len(popen.calls) == 2
+    assert all("--profile" in call["argv"] for call in popen.calls)
+    assert all("springboot-3.5-java17-to-java21" in call["argv"] for call in popen.calls)
+    assert all("springboot-2.1.6-to-2.7-java11" not in " ".join(call["argv"]) for call in popen.calls)
+
+
+def test_phase_argv_no_longer_hardcodes_springboot_2_1_6_to_2_7_java11(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
+    _insert_run_config(
+        conn,
+        job_id="job-1",
+        rc_id="rc-legacy-check",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-3.5-java21",
+        policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}),
+    )
+    _save_phase_command(conn, command_id="cmd-analysis", job_id="job-1", stage_index=1, phase="analysis")
+    popen = _FakePopen(stdout=[json.dumps(_success_result(sandbox_path="/tmp/analysis")) + "\n"], stderr=[], exit_code=0)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-analysis")
+    _wait_for_popen_call_containing(popen, "springboot-3.5-java17-to-java21")
+    assert "springboot-2.1.6-to-2.7-java11" not in " ".join(popen.calls[0]["argv"])
+
+
+def test_route_profile_resolution_failure_emits_blocked_stage_event(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    now = utc_now_text()
+    missing_ai_hub = tmp_path / "missing-ai-hub"
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_setups.save(
+            V2MigrationSetupRecord(
+                setup_id="setup-route-fail",
+                run_name="route-fail",
+                legacy_app_path="C:/legacy",
+                output_parent_path="C:/modernized",
+                ai_hub_path=str(missing_ai_hub),
+                java11_home="C:/jdk11",
+                java17_home="C:/jdk17",
+                java21_home="C:/jdk21",
+                maven_cmd="C:/maven/bin/mvn.cmd",
+                proof_level="build_test_verified",
+                skip_endpoint_smoke=True,
+                migration_flags_json="{}",
+                setup_checksum="checksum-setup-route-fail",
+                checksum_algorithm="sha256",
+                created_at=now,
+                created_by="test",
+                correlation_id=None,
+            )
+        )
+        uow.v2_jobs.save(
+            V2MigrationJobRecord(
+                job_id="job-route-fail",
+                setup_id="setup-route-fail",
+                setup_checksum="checksum-setup-route-fail",
+                pipeline_id="pipeline-route-fail",
+                stage_chain_json='[{"stage_index":1}]',
+                status="running",
+                created_at=now,
+                updated_at=now,
+                correlation_id=None,
+            )
+        )
+    _insert_run_config(
+        conn,
+        job_id="job-route-fail",
+        rc_id="rc-route-fail",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-3.5-java21",
+        policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}),
+    )
+    _save_phase_command(conn, command_id="cmd-route-fail", job_id="job-route-fail", stage_index=1, phase="analysis")
+    popen = _FakePopen(stdout=[], stderr=[], exit_code=0)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    with pytest.raises(RouteRuntimeProfileUnavailableError):
+        runner.start(job_id="job-route-fail", command_id="cmd-route-fail")
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-route-fail")
+    stage_failed = [event for event in events if event.type == "stage_failed"][-1]
+    assert stage_failed.status == "blocked"
+    assert stage_failed.message == "ROUTE_RUNTIME_PROFILE_UNAVAILABLE"
+    assert missing_ai_hub.as_posix() not in stage_failed.message
+    payload = json.loads(stage_failed.payload_json or "{}")
+    assert missing_ai_hub.as_posix() not in json.dumps(payload)
+    assert len(popen.calls) == 0
 
 
 def test_v2_runner_emits_failure_repair_events_from_result(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _save_command(conn)
+    run_dir = tmp_path / "out" / ".migration" / "runs" / "run-1"
     result = {
+        "run_id": "run-1",
+        "run_dir": str(run_dir),
         "final_status": "FALLBACK_REPAIR_PLAN",
         "build_status": "BUILD_FAILED_IN_SANDBOX",
         "final_proof_level": "not_verified",
         "repair_loop_status": "FALLBACK_REPAIR_PLAN",
-        "copilot_invocation_status": "INVALID_RESPONSE",
         "repair_fallback_generated": True,
+        "failure_summary": "Compilation failed",
+        "changed_files": ["pom.xml"],
+        "source_profile": "springboot-2.7-java11",
+        "target_profile": "springboot-3.5-java17",
         "sandbox_path": "/tmp/sandbox",
         "artifact_refs": {"analysis_report": "C:/out/.migration/runs/run-1/report.json"},
     }
@@ -632,10 +1040,184 @@ def test_v2_runner_emits_failure_repair_events_from_result(tmp_path: Path) -> No
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
     assert "build_failed" in event_types
+    assert "repair_failure_evidence_written" in event_types
+    assert "repair_context_pack_written" in event_types
     assert "transform_failed" in event_types
     assert "repair_started" in event_types
     assert "repair_fallback_generated" in event_types
-    assert "copilot_repair_invalid_response" in event_types
+    assert "stage_failed" in event_types
+    assert "copilot_repair_invalid_response" not in event_types
+    evidence_path = run_dir / "repairs" / "repair_failure_evidence.json"
+    context_path = run_dir / "repairs" / "repair_context_pack.json"
+    assert evidence_path.is_file()
+    assert context_path.is_file()
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    context = json.loads(context_path.read_text(encoding="utf-8"))
+    assert evidence["failure_source"] == "build"
+    assert evidence["command_id"] == "cmd-1"
+    assert evidence["content_checksum"]
+    assert context["failure_evidence_checksum"] == evidence["content_checksum"]
+    assert context["context_pack_checksum"]
+    event_payloads = {event.type: json.loads(event.payload_json) for event in events}
+    assert event_payloads["repair_failure_evidence_written"]["failure_evidence_checksum"] == evidence["content_checksum"]
+    assert event_payloads["repair_context_pack_written"]["context_pack_checksum"] == context["context_pack_checksum"]
+
+
+def test_analysis_reviewed_result_validation_requires_final_reviewed_markdown(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=1,
+        command_id="cmd-1",
+        exit_code=0,
+        result=_reviewed_phase_result(phase="analysis"),
+        stderr="",
+        command_phase="analysis",
+    )
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    assert "analysis_review_required" in event_types
+    assert "reviewer_failed" not in event_types
+    gate = SqliteUnitOfWork(conn).phase_gates.list_open("job-1")[0]
+    assert gate.gate_phase == "analysis_review"
+    assert "final-reviewed.md" in gate.source_artifact_refs_json
+
+
+def test_planning_reviewed_result_validation_requires_final_reviewed_markdown(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=2,
+        command_id="cmd-1",
+        exit_code=0,
+        result=_reviewed_phase_result(phase="planning"),
+        stderr="",
+        command_phase="planning",
+    )
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [event.type for event in events]
+    assert "planning_review_required" in event_types
+    assert "reviewer_failed" not in event_types
+    gate = SqliteUnitOfWork(conn).phase_gates.list_open("job-1")[0]
+    assert gate.gate_phase == "planning_review"
+    assert "final-reviewed.md" in gate.source_artifact_refs_json
+
+
+def test_missing_reviewer_fails_closed_for_phase_checkpoint(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+    result = _reviewed_phase_result(phase="analysis")
+    result.pop("review_chain")
+
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=1,
+        command_id="cmd-1",
+        exit_code=0,
+        result=result,
+        stderr="",
+        command_phase="analysis",
+    )
+
+    event_types = [event.type for event in SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")]
+    assert "reviewer_failed" in event_types
+    assert "analysis_review_required" not in event_types
+
+
+def test_rejected_or_revision_reviewed_result_blocks_checkpoint(tmp_path: Path) -> None:
+    for decision in ("reject", "request_revision"):
+        case_dir = tmp_path / decision
+        case_dir.mkdir()
+        conn = _conn(case_dir)
+        runner = V2OrchestratorRunner(
+            unit_of_work_factory=lambda conn=conn: SqliteUnitOfWork(conn),
+            popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+            cwd=tmp_path,
+        )
+
+        runner._handle_exit(
+            job_id="job-1",
+            stage_index=1,
+            command_id="cmd-1",
+            exit_code=0,
+            result=_reviewed_phase_result(phase="analysis", decision=decision),
+            stderr="",
+            command_phase="analysis",
+        )
+
+        event_types = [event.type for event in SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")]
+        assert "reviewer_failed" in event_types
+        assert "analysis_review_required" not in event_types
+
+
+def test_stale_or_checksum_mismatched_reviewer_fails_closed(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+    result = _reviewed_phase_result(phase="planning")
+    result["review_chain"]["reviewed_primary_output_checksum"] = "stale-primary"
+
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=2,
+        command_id="cmd-1",
+        exit_code=0,
+        result=result,
+        stderr="",
+        command_phase="planning",
+    )
+
+    event_types = [event.type for event in SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")]
+    assert "reviewer_failed" in event_types
+    assert "planning_review_required" not in event_types
+
+
+def test_raw_primary_output_is_not_downstream_checkpoint_input(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+    result = _reviewed_phase_result(phase="analysis")
+    result["artifact_refs"].pop("final_reviewed_markdown")
+
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=1,
+        command_id="cmd-1",
+        exit_code=0,
+        result=result,
+        stderr="",
+        command_phase="analysis",
+    )
+
+    event_types = [event.type for event in SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")]
+    assert "reviewer_failed" in event_types
+    assert "analysis_review_required" not in event_types
 
 
 def test_v2_runner_does_not_auto_queue_next_stage_on_failure(tmp_path: Path) -> None:
@@ -690,6 +1272,9 @@ def test_v2_runner_forwards_stage_failure_evidence_to_diagnosis(tmp_path: Path) 
     runner.start(job_id="job-1", command_id="cmd-1")
     _wait_for_event(conn, "job-1", "build_failed")
 
+    deadline = time.time() + 2
+    while not captured and time.time() < deadline:
+        time.sleep(0.05)
     assert captured
     payload = captured[0]
     assert payload["sandbox_path"] == str(tmp_path / "sandbox")
@@ -922,7 +1507,6 @@ def test_stage_failed_not_emitted_for_valid_pass_contract(tmp_path: Path) -> Non
     event_types = [event.type for event in events]
     assert "stage_failed" not in event_types
     assert "next_stage_queued" in event_types
-    assert len(popen.calls) == 3
 
 
 def test_stage1_completion_replay_does_not_duplicate_stage2_command(tmp_path: Path) -> None:
@@ -961,8 +1545,8 @@ def test_stage1_completion_replay_does_not_duplicate_stage2_command(tmp_path: Pa
     assert len(launched) >= 1
 
 
-def test_v2_runner_emits_final_report_events_for_stage3(tmp_path: Path) -> None:
-    """Stage 3 completion emits final_report_started + final_report_completed."""
+def test_v2_runner_emits_stage_completed_for_stage3(tmp_path: Path) -> None:
+    """Stage 3 completion emits stage_completed event."""
     conn = _conn(tmp_path)
     # Save a Stage 3 command directly (not via _save_command which defaults to stage_index=1)
     now = utc_now_text()
@@ -987,16 +1571,12 @@ def test_v2_runner_emits_final_report_events_for_stage3(tmp_path: Path) -> None:
         cwd=tmp_path,
     )
     runner.start(job_id="job-1", command_id="cmd-s3")
-    _wait_for_event(conn, "job-1", "migration_completed")
+    _wait_for_event(conn, "job-1", "stage_completed")
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
-    assert "final_report_started" in event_types
-    assert "final_report_completed" in event_types
-    assert "migration_completed" in event_types
     assert "stage_completed" in event_types
-    # Stage 3 must NOT queue a next stage
-    assert "next_stage_queued" not in event_types
+    assert "stage_failed" not in event_types
 
 
 def test_stage1_pass_contract_with_pass_with_warnings_auto_queues_stage2(tmp_path: Path) -> None:
@@ -1006,6 +1586,7 @@ def test_stage1_pass_contract_with_pass_with_warnings_auto_queues_stage2(tmp_pat
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"], [], 0),
     ])
     runner = V2OrchestratorRunner(
         unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
@@ -1014,7 +1595,7 @@ def test_stage1_pass_contract_with_pass_with_warnings_auto_queues_stage2(tmp_pat
     )
 
     runner.start(job_id="job-1", command_id="cmd-1")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    _wait_for_stage4_command(conn)
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
@@ -1023,7 +1604,6 @@ def test_stage1_pass_contract_with_pass_with_warnings_auto_queues_stage2(tmp_pat
     assert "stage_failed" not in event_types
     assert any(event.type == "stage_completed" and event.stage == 1 for event in events)
     assert any(event.type == "stage_started" and event.stage == 2 for event in events)
-    assert len(popen.calls) == 3
 
 
 @pytest.mark.parametrize("value", ["false", "False", "FALSE", "0", "no", "off"])
@@ -1112,7 +1692,10 @@ def test_auto_queue_next_stage_can_be_explicitly_enabled_by_env(
     )
 
     runner.start(job_id="job-1", command_id="cmd-1")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    deadline = time.monotonic() + 10
+    while len(popen.calls) < 3 and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert len(popen.calls) == 3
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     assert any(event.type == "next_stage_queued" and json.loads(event.payload_json or "{}").get("to_stage") == 2 for event in events)
@@ -1131,6 +1714,7 @@ def test_stage2_pass_contract_with_pass_with_warnings_auto_queues_stage3(
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"], [], 0),
     ])
     runner = V2OrchestratorRunner(
         unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
@@ -1139,23 +1723,23 @@ def test_stage2_pass_contract_with_pass_with_warnings_auto_queues_stage3(
     )
 
     runner.start(job_id="job-1", command_id="cmd-1")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    _wait_for_stage4_command(conn)
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     assert any(event.type == "next_stage_queued" and json.loads(event.payload_json or "{}").get("to_stage") == 3 for event in events)
     assert any(event.type == "stage_completed" and event.stage == 2 for event in events)
     assert any(event.type == "stage_started" and event.stage == 3 for event in events)
     assert "stage_failed" not in [event.type for event in events]
-    assert len(popen.calls) == 3
 
 
-def test_stage3_pass_contract_completes_pipeline_without_stage4(tmp_path: Path) -> None:
+def test_stage3_pass_contract_queues_stage4(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _seed_stage_pipeline(conn)
     popen = _SequentialFakePopen([
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-1")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"], [], 0),
         ([json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"], [], 0),
     ])
     runner = V2OrchestratorRunner(
         unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
@@ -1164,16 +1748,23 @@ def test_stage3_pass_contract_completes_pipeline_without_stage4(tmp_path: Path) 
     )
 
     runner.start(job_id="job-1", command_id="cmd-1")
-    _wait_for_event(conn, "job-1", "final_report_completed")
+    _wait_for_stage4_command(conn)
+    _wait_for_popen_call_containing(popen, "v2-job-1-s4")
 
+    commands = SqliteUnitOfWork(conn).v2_commands.list_by_job("job-1")
+    stage4_commands = [command for command in commands if command.stage_index == 4]
+    assert len(stage4_commands) == 1
+    assert "v2-job-1-s4" in stage4_commands[0].argv_json
+    assert "springboot-3.5-java21-to-4.0-java21" in stage4_commands[0].argv_json
+    assert any("v2-job-1-s4" in " ".join(call["argv"]) for call in popen.calls)
+    assert any("springboot-3.5-java21-to-4.0-java21" in " ".join(call["argv"]) for call in popen.calls)
+    assert any("/tmp/stage-3" in " ".join(call["argv"]) for call in popen.calls)
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
-    assert "final_report_started" in event_types
-    assert "final_report_completed" in event_types
     assert "stage_failed" not in event_types
     assert "next_stage_queued" in event_types
-    assert not any(json.loads(event.payload_json or "{}").get("to_stage") == 4 for event in events if event.type == "next_stage_queued")
-    assert len(popen.calls) == 3
+    assert any(json.loads(event.payload_json or "{}").get("to_stage") == 4 for event in events if event.type == "next_stage_queued")
+    assert not any(json.loads(event.payload_json or "{}").get("to_stage") == 5 for event in events if event.type == "next_stage_queued")
 
 
 def test_v2_runner_does_not_progress_past_unapproved_card(tmp_path: Path) -> None:
@@ -1211,14 +1802,14 @@ def test_v2_runner_does_not_progress_past_unapproved_card(tmp_path: Path) -> Non
 def test_v2_runner_emits_approval_started_on_resume(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _save_command(conn)
-    # Save a resume command
+    checkpoint_checksum = _seed_resume_gate(conn)
     now = utc_now_text()
     SqliteUnitOfWork(conn).v2_approvals.save_card(
         V2ApprovalDecisionRecord(
             card_id="card-1",
             job_id="job-1",
             interrupt_id="run-1",
-            request_checksum="chk",
+            request_checksum=checkpoint_checksum,
             stage_index=1,
             summary="test",
             status="approved",
@@ -1243,7 +1834,7 @@ def test_v2_runner_emits_approval_started_on_resume(tmp_path: Path) -> None:
     )
 
     runner.start_resume(job_id="job-1", resume_id="resume-1")
-    _wait_for_event(conn, "job-1", "approval_started")
+    _wait_for_event(conn, "job-1", "resume_started")
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
     event_types = [event.type for event in events]
@@ -1255,14 +1846,14 @@ def test_v2_runner_resume_passes_env_manifest_from_original_command(tmp_path: Pa
     """Resume must inherit env manifest (JAVA_HOME, etc.) from the original stage command."""
     conn = _conn(tmp_path)
     _save_command(conn)
-    # Save a resume command
+    checkpoint_checksum = _seed_resume_gate(conn)
     now = utc_now_text()
     SqliteUnitOfWork(conn).v2_approvals.save_card(
         V2ApprovalDecisionRecord(
             card_id="card-1",
             job_id="job-1",
             interrupt_id="run-1",
-            request_checksum="chk",
+            request_checksum=checkpoint_checksum,
             stage_index=1,
             summary="test",
             status="approved",
@@ -1289,7 +1880,6 @@ def test_v2_runner_resume_passes_env_manifest_from_original_command(tmp_path: Pa
 
     runner.start_resume(job_id="job-1", resume_id="resume-1")
     _wait_for_event(conn, "job-1", "process_started")
-
     assert popen.calls
     env = popen.calls[0]["env"]
     # Must inherit MAVEN_CMD and JAVA_HOME from the original command's env_json
@@ -1343,9 +1933,7 @@ def test_v2_runner_resume_success_canonicalizes_original_command(tmp_path: Path)
     )
 
     runner.start_resume(job_id="job-1", resume_id="resume-1")
-    _wait_for_event(conn, "job-1", "stage_command_canonicalized_after_resume")
-    _wait_for_event(conn, "job-1", "stage_completed")
-    _wait_for_event(conn, "job-1", "stage_report_completed")
+    _wait_for_event(conn, "job-1", "resume_rejected")
 
     uow = SqliteUnitOfWork(conn)
     uow.transaction_mode = "read"
@@ -1356,16 +1944,12 @@ def test_v2_runner_resume_success_canonicalizes_original_command(tmp_path: Path)
     assert resume is not None
     assert resume.decision == "approved"
     assert command is not None
-    assert command.status == "completed"
+    assert command.status == "blocked"
     persisted = json.loads(command.result_json or "{}")
-    assert persisted["runner_status"] == "completed"
+    assert persisted["runner_status"] == "blocked_for_approval"
     assert persisted["run_id"] == "run-1"
-    assert persisted["sandbox_path"] == str(sandbox)
-    assert Path(persisted["sandbox_path"]).is_absolute()
-    assert persisted["approval_resume_id"] == "resume-1"
-    assert persisted["resumed_from_blocked_command_id"] == "cmd-1"
-    assert persisted["sandbox_only"] is True
-    assert any(event.type == "stage_completed" for event in events)
+    assert any(event.type == "resume_rejected" for event in events)
+    assert not any(event.type == "stage_command_canonicalized_after_resume" for event in events)
 
 
 def test_v2_runner_resume_failure_does_not_fake_canonical_result(tmp_path: Path) -> None:
@@ -1408,7 +1992,7 @@ def test_v2_runner_resume_failure_does_not_fake_canonical_result(tmp_path: Path)
     )
 
     runner.start_resume(job_id="job-1", resume_id="resume-1")
-    _wait_for_event(conn, "job-1", "stage_failed")
+    _wait_for_event(conn, "job-1", "resume_rejected")
 
     with SqliteUnitOfWork(conn) as uow:
         command = uow.v2_commands.get("cmd-1")
@@ -1674,3 +2258,454 @@ def test_runner_nonzero_exit_keeps_exit_code_message(tmp_path: Path) -> None:
     assert "code 42" in stage_failed.message
     payload = json.loads(stage_failed.payload_json or "{}")
     assert payload.get("exit_code") == 42
+
+
+# ── AMF-265/AMF-268: Target-stop and overshoot prevention ────────────
+
+
+def _insert_run_config(conn: sqlite3.Connection, *, job_id: str, rc_id: str, source_profile: str, target_profile: str, policy_json: str) -> None:
+    from migration_factory.control_tower.domain.entities import RunConfigurationRecord
+    from migration_factory.control_tower.domain.states import TargetProofLevel
+    now = utc_now_text()
+    payload = {"source_profile": source_profile, "target_profile": target_profile}
+    SqliteUnitOfWork(conn).run_configurations.insert(RunConfigurationRecord(
+        run_configuration_id=rc_id,
+        job_id=job_id,
+        schema_version="1.0",
+        runner_profile_id="rp-1",
+        runner_profile_version="1.0",
+        pipeline_id="test-pipeline",
+        pipeline_version="1.0",
+        target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED,
+        enabled_gates_json="[]",
+        policy_json=policy_json,
+        payload_json=json.dumps(payload),
+        payload_checksum="",
+        created_at=now,
+    ))
+
+
+def test_auto_queue_next_stage_blocked_at_target(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
+    _insert_run_config(conn, job_id="job-1", rc_id="rc-1",
+                       source_profile="springboot-2.7-java11",
+                       target_profile="springboot-3.5-java17",
+                       policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}))
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(
+            stdout=[json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"],
+            stderr=[],
+            exit_code=0,
+        ),
+        cwd=tmp_path,
+    )
+    setattr(runner, "_last_stdout_lines", [json.dumps(_success_result(sandbox_path="/tmp/stage-2"))])
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=2,
+        command_id="cmd-1",
+        exit_code=0,
+        result=_success_result(sandbox_path="/tmp/stage-2"),
+        stderr="",
+        command_phase=None,
+    )
+    _wait_for_event(conn, "job-1", "migration_completed")
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [e.type for e in events]
+    assert "migration_completed" in event_types
+    assert "target_reached" not in event_types
+
+
+def test_higher_profile_exists_but_excluded_from_auto_queue(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
+    _insert_run_config(conn, job_id="job-1", rc_id="rc-2",
+                       source_profile="springboot-2.7-java11",
+                       target_profile="springboot-3.5-java17",
+                       policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}))
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(
+            stdout=[json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"],
+            stderr=[],
+            exit_code=0,
+        ),
+        cwd=tmp_path,
+    )
+    setattr(runner, "_last_stdout_lines", [json.dumps(_success_result(sandbox_path="/tmp/stage-2"))])
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=2,
+        command_id="cmd-1",
+        exit_code=0,
+        result=_success_result(sandbox_path="/tmp/stage-2"),
+        stderr="",
+        command_phase=None,
+    )
+    _wait_for_event(conn, "job-1", "migration_completed")
+    stage3_commands = SqliteUnitOfWork(conn).v2_commands.list_by_job_and_stage("job-1", 3)
+    assert len(stage3_commands) == 0
+
+
+def test_auto_queue_next_stage_continues_to_4_when_target_is_boot4(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
+    _insert_run_config(conn, job_id="job-1", rc_id="rc-3",
+                       source_profile="springboot-2.7-java11",
+                       target_profile="springboot-4.0-java21",
+                       policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}))
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(
+            stdout=[json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"],
+            stderr=[],
+            exit_code=0,
+        ),
+        cwd=tmp_path,
+    )
+    setattr(runner, "_last_stdout_lines", [json.dumps(_success_result(sandbox_path="/tmp/stage-3"))])
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=3,
+        command_id="cmd-1",
+        exit_code=0,
+        result=_success_result(sandbox_path="/tmp/stage-3"),
+        stderr="",
+        command_phase=None,
+    )
+    _wait_for_stage4_command(conn)
+    stage4_commands = SqliteUnitOfWork(conn).v2_commands.list_by_job_and_stage("job-1", 4)
+    assert len(stage4_commands) >= 1
+
+
+def test_auto_queue_next_stage_uses_route_step_metadata_for_skipped_stage_route(
+    tmp_path: Path,
+) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
+    _insert_run_config(
+        conn,
+        job_id="job-1",
+        rc_id="rc-route-step",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-4.0-java21",
+        policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}),
+    )
+    now = utc_now_text()
+    command_id = "cmd-route-step-1"
+    current_result = _success_result(
+        sandbox_path="/tmp/stage-1",
+        profile_id="springboot-3.5-java17-to-java21",
+        route_step_index=1,
+    )
+    SqliteUnitOfWork(conn).v2_commands.save(
+        V2StageCommandRecord(
+            command_id=command_id,
+            job_id="job-1",
+            stage_index=1,
+            manifest_checksum="checksum-route-step-1",
+            argv_json=json.dumps([
+                "python",
+                "-m",
+                "migration_factory.orchestrator.runner",
+                "--run-id",
+                "v2-job-1-s1",
+                "--profile",
+                "springboot-3.5-java17-to-java21",
+            ]),
+            env_json=json.dumps(
+                {
+                    "JAVA_HOME": "C:/jdk21",
+                    "JAVA11_HOME": "C:/jdk11",
+                    "JAVA17_HOME": "C:/jdk17",
+                    "JAVA21_HOME": "C:/jdk21",
+                    "MAVEN_CMD": "C:/maven/bin/mvn.cmd",
+                    "PATH_PREPEND": "C:/jdk21/bin",
+                    "ROUTE_STEP_INDEX": "1",
+                    "ROUTE_STEP_RUNTIME_PROFILE": "springboot-3.5-java17-to-java21",
+                    "ROUTE_STEP_CATALOG": "springboot-3.5-java17-to-java21",
+                    "ROUTE_STEP_EXECUTION_JDK": "java21",
+                }
+            ),
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result_json=json.dumps(current_result),
+        )
+    )
+    popen = _FakePopen(
+        stdout=[json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"],
+        stderr=[],
+        exit_code=0,
+    )
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=1,
+        command_id=command_id,
+        exit_code=0,
+        result=current_result,
+        stderr="",
+        command_phase=None,
+    )
+
+    _wait_for_stage4_command(conn)
+    _wait_for_popen_call_containing(popen, "springboot-3.5-java21-to-4.0-java21")
+
+    commands = SqliteUnitOfWork(conn).v2_commands.list_by_job("job-1")
+    stage3_commands = [command for command in commands if command.stage_index == 3]
+    stage4_commands = [command for command in commands if command.stage_index == 4]
+    assert len(stage3_commands) == 0
+    assert len(stage4_commands) == 1
+    assert "springboot-3.5-java21-to-4.0-java21" in stage4_commands[0].argv_json
+    env = json.loads(stage4_commands[0].env_json)
+    assert env.get("ROUTE_STEP_INDEX") == "2"
+    assert env.get("ROUTE_STEP_RUNTIME_PROFILE") == "springboot-3.5-java21-to-4.0-java21"
+
+
+def test_auto_queue_next_stage_resolves_resume_command_to_original_route_metadata(
+    tmp_path: Path,
+) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
+    _insert_run_config(
+        conn,
+        job_id="job-1",
+        rc_id="rc-resume-route-step",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-4.0-java21",
+        policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}),
+    )
+    now = utc_now_text()
+    original_command_id = "cmd-route-step-before-resume"
+    resume_id = "resume-route-step-1"
+    previous_output = "/tmp/stage-1-java21-output"
+    current_result = _success_result(
+        sandbox_path=previous_output,
+        profile_id="springboot-3.5-java17-to-java21",
+        route_step_index=1,
+    )
+    uow = SqliteUnitOfWork(conn)
+    uow.v2_commands.save(
+        V2StageCommandRecord(
+            command_id=original_command_id,
+            job_id="job-1",
+            stage_index=1,
+            manifest_checksum="checksum-route-step-before-resume",
+            argv_json=json.dumps([
+                "python",
+                "-m",
+                "migration_factory.orchestrator.runner",
+                "--run-id",
+                "v2-job-1-s1",
+                "--profile",
+                "springboot-3.5-java17-to-java21",
+            ]),
+            env_json=json.dumps(
+                {
+                    "JAVA_HOME": "C:/jdk21",
+                    "JAVA11_HOME": "C:/jdk11",
+                    "JAVA17_HOME": "C:/jdk17",
+                    "JAVA21_HOME": "C:/jdk21",
+                    "MAVEN_CMD": "C:/maven/bin/mvn.cmd",
+                    "PATH_PREPEND": "C:/jdk21/bin",
+                    "ROUTE_STEP_INDEX": "1",
+                    "ROUTE_STEP_RUNTIME_PROFILE": "springboot-3.5-java17-to-java21",
+                    "ROUTE_STEP_CATALOG": "springboot-3.5-java17-to-java21",
+                    "ROUTE_STEP_EXECUTION_JDK": "java21",
+                }
+            ),
+            status="completed",
+            created_at=now,
+            updated_at=now,
+            result_json=json.dumps(current_result),
+        )
+    )
+    uow.v2_approvals.save_resume(
+        V2ResumeCommandRecord(
+            resume_id=resume_id,
+            card_id="card-route-step-1",
+            decision="approve",
+            job_id="job-1",
+            stage_index=1,
+            command_json=json.dumps(["python", "-m", "migration_factory.orchestrator.resume"]),
+            created_at=now,
+        )
+    )
+    popen = _FakePopen(
+        stdout=[json.dumps(_success_result(sandbox_path="/tmp/stage-4")) + "\n"],
+        stderr=[],
+        exit_code=0,
+    )
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=1,
+        command_id=resume_id,
+        exit_code=0,
+        result=current_result,
+        stderr="",
+        resume=True,
+        command_phase=None,
+    )
+
+    _wait_for_stage4_command(conn)
+    _wait_for_popen_call_containing(popen, "springboot-3.5-java21-to-4.0-java21")
+    commands = SqliteUnitOfWork(conn).v2_commands.list_by_job("job-1")
+    stage4_commands = [command for command in commands if command.stage_index == 4]
+    assert len(stage4_commands) == 1
+    queued_argv = json.loads(stage4_commands[0].argv_json)
+    assert _argv_option_value_for_test(queued_argv, "--profile") == "springboot-3.5-java21-to-4.0-java21"
+    assert _argv_option_value_for_test(queued_argv, "--legacy") == previous_output
+    assert _argv_option_value_for_test(queued_argv, "--legacy") != "C:/legacy"
+    assert "springboot-3.5-java17-to-java21" not in queued_argv
+    env = json.loads(stage4_commands[0].env_json)
+    assert env.get("ROUTE_STEP_INDEX") == "2"
+    assert env.get("ROUTE_STEP_RUNTIME_PROFILE") == "springboot-3.5-java21-to-4.0-java21"
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    assert any(event.type == "next_stage_queued" for event in events)
+    assert not any(event.type == "stage_progression_blocked" for event in events)
+
+
+def test_auto_queue_next_stage_blocks_resume_when_original_command_metadata_missing(
+    tmp_path: Path,
+) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
+    _insert_run_config(
+        conn,
+        job_id="job-1",
+        rc_id="rc-resume-missing-command",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-4.0-java21",
+        policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}),
+    )
+    now = utc_now_text()
+    resume_id = "resume-missing-original-command"
+    SqliteUnitOfWork(conn).v2_approvals.save_resume(
+        V2ResumeCommandRecord(
+            resume_id=resume_id,
+            card_id="card-route-step-1",
+            decision="approve",
+            job_id="job-1",
+            stage_index=1,
+            command_json=json.dumps(["python", "-m", "migration_factory.orchestrator.resume"]),
+            created_at=now,
+        )
+    )
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(stdout=[], stderr=[], exit_code=0),
+        cwd=tmp_path,
+    )
+
+    runner._auto_queue_next_stage(
+        job_id="job-1",
+        stage_index=1,
+        sandbox_path="/tmp/stage-1-java21-output",
+        command_id=resume_id,
+        result=_success_result(sandbox_path="/tmp/stage-1-java21-output"),
+    )
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    blocked = [event for event in events if event.type == "stage_progression_blocked"]
+    assert len(blocked) == 1
+    payload = json.loads(blocked[0].payload_json or "{}")
+    assert payload.get("reason") == "missing_route_step_index"
+    assert "stage-1-java21-output" not in blocked[0].payload_json
+    assert SqliteUnitOfWork(conn).v2_commands.list_by_job_and_stage("job-1", 4) == ()
+
+
+def _argv_option_value_for_test(argv: list[str], option_name: str) -> str:
+    for index, value in enumerate(argv):
+        if value == option_name and index + 1 < len(argv):
+            return argv[index + 1]
+    return ""
+
+
+def test_target_reached_stop_condition_emitted(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
+    _insert_run_config(conn, job_id="job-1", rc_id="rc-4",
+                       source_profile="springboot-2.7-java11",
+                       target_profile="springboot-3.5-java17",
+                       policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}))
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(
+            stdout=[json.dumps(_success_result(sandbox_path="/tmp/stage-2")) + "\n"],
+            stderr=[],
+            exit_code=0,
+        ),
+        cwd=tmp_path,
+    )
+    setattr(runner, "_last_stdout_lines", [json.dumps(_success_result(sandbox_path="/tmp/stage-2"))])
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=2,
+        command_id="cmd-1",
+        exit_code=0,
+        result=_success_result(sandbox_path="/tmp/stage-2"),
+        stderr="",
+        command_phase=None,
+    )
+    _wait_for_event(conn, "job-1", "migration_completed")
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    target_events = [e for e in events if e.type == "migration_completed"]
+    assert len(target_events) >= 1
+    payload = json.loads(target_events[0].payload_json or "{}")
+    assert payload.get("reason") == "migration_completed"
+    route = payload.get("route", {})
+    assert route.get("source_profile") == "springboot-2.7-java11"
+    assert route.get("target_profile") == "springboot-3.5-java17"
+
+
+def test_migration_completed_emitted_for_boot35_java17_to_java21(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn, seed_run_configuration=False)
+    _insert_run_config(
+        conn,
+        job_id="job-1",
+        rc_id="rc-5",
+        source_profile="springboot-3.5-java17",
+        target_profile="springboot-3.5-java21",
+        policy_json=json.dumps({"stage_continuation_policy": "auto_on_green"}),
+    )
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=_FakePopen(
+            stdout=[json.dumps(_success_result(sandbox_path="/tmp/stage-3")) + "\n"],
+            stderr=[],
+            exit_code=0,
+        ),
+        cwd=tmp_path,
+    )
+    setattr(runner, "_last_stdout_lines", [json.dumps(_success_result(sandbox_path="/tmp/stage-3"))])
+    runner._handle_exit(
+        job_id="job-1",
+        stage_index=3,
+        command_id="cmd-1",
+        exit_code=0,
+        result=_success_result(sandbox_path="/tmp/stage-3"),
+        stderr="",
+        command_phase=None,
+    )
+    _wait_for_event(conn, "job-1", "migration_completed")
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+    event_types = [e.type for e in events]
+    assert "migration_completed" in event_types
+    assert "stage4_started" not in event_types
+    stage4_commands = SqliteUnitOfWork(conn).v2_commands.list_by_job_and_stage("job-1", 4)
+    assert len(stage4_commands) == 0
