@@ -15,6 +15,7 @@ export function RepairActionsBar({
   approveEnabled,
   revisionEnabled = true,
   checksumMismatch,
+  directProposal,
 }: {
   onViewDiff: () => void;
   onViewReviewerOpinion: () => void;
@@ -27,6 +28,7 @@ export function RepairActionsBar({
   approveEnabled?: boolean;
   revisionEnabled?: boolean;
   checksumMismatch?: boolean;
+  directProposal?: boolean;
 }) {
   const [showDialog, setShowDialog] = useState(false);
 
@@ -71,12 +73,18 @@ export function RepairActionsBar({
             checksumMismatch
               ? "Cannot approve: diff checksum mismatch detected"
               : approvePending
-                ? "Approving and applying to sandbox..."
-                : "Approve and apply reviewed repair to sandbox"
+                ? (directProposal ? "Applying reviewer diff..." : "Applying...")
+                : directProposal
+                  ? "Backend will apply the exact reviewer diff shown above, then rerun validation"
+                  : "Approve and apply reviewed repair to sandbox"
           }
           data-testid="action-approve-sandbox-apply"
         >
-          {approvePending ? "Applying..." : "Approve sandbox apply"}
+          {approvePending
+            ? (directProposal ? "Applying reviewer diff..." : "Applying...")
+            : directProposal
+              ? "Apply reviewer diff"
+              : "Approve sandbox apply"}
         </button>
       </div>
       <RepairRevisionDialog

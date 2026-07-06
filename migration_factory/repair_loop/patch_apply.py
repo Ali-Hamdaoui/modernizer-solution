@@ -496,6 +496,114 @@ def check_patch_applicability(
     )
 
 
+def apply_patch_to_sandbox_direct(
+    *,
+    run_dir: str | Path,
+    sandbox_path: str | Path,
+    attempt: int,
+    unified_diff: str,
+    touched_paths: list[str] | None = None,
+    run: RunCallable = subprocess.run,
+) -> PatchApplyResult:
+    """Apply patch to sandbox without structural validation or git apply --check.
+
+    AMF-252: Direct apply for reviewer-accepted diffs. Skips
+    validate_unified_diff_structure and git apply --check.
+    The patch is persisted from the reviewer's reviewed_diff as-is.
+    Uses shell=False and argument list style for all command execution.
+    """
+    run_path = Path(run_dir)
+    sandbox = Path(sandbox_path).resolve()
+    repairs_dir = run_path / "repairs"
+    repairs_dir.mkdir(parents=True, exist_ok=True)
+    patch_path = repairs_dir / f"patch_attempt_{attempt}_direct.diff"
+
+    patch_bytes = _normalize_patch_bytes(unified_diff)
+    patch_text = patch_bytes.decode("utf-8")
+    patch_path.write_bytes(patch_bytes)
+
+    extract_paths = _extract_touched_paths_from_diff(patch_text)
+    resolved_touched_paths = touched_paths or extract_paths
+
+    snapshot_dir = repairs_dir / "snapshots" / f"attempt_{attempt}_direct"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    before_hashes, created_paths = _snapshot_files(sandbox, snapshot_dir, resolved_touched_paths)
+
+    git_exe = _resolve_git_executable()
+    if git_exe is None:
+        return PatchApplyResult(
+            status="REJECTED",
+            reason="Git executable not found on this system",
+            patch_path=patch_path,
+            touched_paths=resolved_touched_paths,
+            before_hashes=before_hashes,
+            after_hashes={},
+            snapshot_dir=snapshot_dir,
+            created_paths=created_paths,
+            errors=["Git not found: PATCH_ENGINE_UNAVAILABLE"],
+            reason_code=REASON_CODE_PATCH_ENGINE_UNAVAILABLE,
+        )
+
+    preflight_issue = _check_sandbox_preflight(sandbox, patch_path, resolved_touched_paths, patch_text)
+    if preflight_issue is not None:
+        return PatchApplyResult(
+            status="REJECTED",
+            reason=f"Sandbox preflight check failed: {preflight_issue}",
+            patch_path=patch_path,
+            touched_paths=resolved_touched_paths,
+            before_hashes=before_hashes,
+            after_hashes={},
+            snapshot_dir=snapshot_dir,
+            created_paths=created_paths,
+            errors=[f"Sandbox preflight: {preflight_issue}"],
+            reason_code=preflight_issue,
+        )
+
+    applied = _git_apply([git_exe, "apply", str(patch_path)], cwd=sandbox, run=run)
+    if applied.returncode != 0:
+        if applied.returncode == 127:
+            reason_code = REASON_CODE_PATCH_ENGINE_UNAVAILABLE
+            reason = "Git executable not found at runtime"
+        elif applied.returncode == 126:
+            reason_code = REASON_CODE_PATCH_ENGINE_OS_ERROR
+            reason = _stderr_reason(applied, "Git executable could not be invoked")
+        elif applied.returncode == 124:
+            reason_code = REASON_CODE_PATCH_APPLY_TIMEOUT
+            reason = _stderr_reason(applied, "git apply timed out")
+        else:
+            reason_code = REASON_CODE_PATCH_APPLY_FAILED
+            reason = _stderr_reason(applied, "git apply failed")
+        return PatchApplyResult(
+            status="REJECTED",
+            reason=reason,
+            patch_path=patch_path,
+            touched_paths=resolved_touched_paths,
+            before_hashes=before_hashes,
+            after_hashes={},
+            snapshot_dir=snapshot_dir,
+            created_paths=created_paths,
+            errors=[reason],
+            reason_code=reason_code,
+            stdout=str(applied.stdout or ""),
+            stderr=str(applied.stderr or ""),
+        )
+
+    return PatchApplyResult(
+        status="APPLIED",
+        reason="patch applied inside sandbox (direct)",
+        patch_path=patch_path,
+        touched_paths=resolved_touched_paths,
+        before_hashes=before_hashes,
+        after_hashes=_hash_files(sandbox, resolved_touched_paths),
+        snapshot_dir=snapshot_dir,
+        created_paths=created_paths,
+        errors=[],
+        reason_code="",
+        stdout=str(applied.stdout or ""),
+        stderr=str(applied.stderr or ""),
+    )
+
+
 def rollback_patch(
     *,
     sandbox_path: str | Path,

@@ -259,17 +259,15 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
       setErrorBanner(null);
       const reviewerVerdictId = state.proposal.reviewer_verdict?.reviewer_verdict_id;
       const gateId = state.proposal.gate_id;
-      if (!reviewerVerdictId || !gateId) {
-        setErrorBanner("Approval unavailable - missing reviewer verdict or gate binding.");
-        return;
-      }
-      await approveRepairProposal(jobId, state.proposal.proposal_id, {
+      // AMF-252: Direct proposals may have null reviewer_verdict_id and gate_id
+      const body: Record<string, string | undefined> = {
         proposal_id: state.proposal.proposal_id,
         diff_checksum: state.proposal.diff_checksum,
-        reviewer_verdict_id: reviewerVerdictId,
-        gate_id: gateId,
         idempotency_key: createIdempotencyKey(),
-      });
+      };
+      if (reviewerVerdictId) body.reviewer_verdict_id = reviewerVerdictId;
+      if (gateId) body.gate_id = gateId;
+      await approveRepairProposal(jobId, state.proposal.proposal_id, body);
       await refreshProposalData();
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Approval failed";
@@ -378,6 +376,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
   const activityError = activityState.status === "error" ? activityState.message : null;
 
   // approve_failed is a terminal read-only state
+  const isDirectProposal = proposal.gate_id == null;
   const isApproveFailed = proposal.status === "approve_failed";
   const isApplyCheckFailed = proposal.reason_code === "PATCH_CHECK_FAILED";
 
@@ -425,8 +424,8 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
     <section className="panel repair-proposal-panel" data-testid="repair-proposal-panel">
       <div className="repair-proposal-layout">
         <div className="repair-proposal-main">
-          <div className="repair-panel-kicker">Backend-governed repair gate</div>
-          <h2>Reviewed Repair Proposal</h2>
+          <div className="repair-panel-kicker">{isDirectProposal ? "Direct Reviewer Diff" : "Backend-governed repair gate"}</div>
+          <h2>{isDirectProposal ? "Reviewer Diff Ready" : "Reviewed Repair Proposal"}</h2>
 
           {errorBanner && (
             <div className="error-banner" data-testid="approve-error-banner" role="alert">
@@ -452,13 +451,24 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
             </div>
           )}
 
-          <PolicyBannerSection
-            status={policyStatus}
-            reason={policyReason}
-            reasonCode={policyReasonCode}
-            validationChecksum={policyValidationChecksum}
-            banner={policyBanner}
-          />
+          {!isDirectProposal && (
+            <PolicyBannerSection
+              status={policyStatus}
+              reason={policyReason}
+              reasonCode={policyReasonCode}
+              validationChecksum={policyValidationChecksum}
+              banner={policyBanner}
+            />
+          )}
+          {isDirectProposal && (
+            <div className="reviewed-repair-banner reviewed-repair-banner-allowed" data-testid="direct-proposal-banner">
+              <div className="reviewed-repair-banner-top">
+                <strong>Reviewer diff ready for apply</strong>
+                <span className="status-badge">DIRECT</span>
+              </div>
+              <p className="meta">Reviewer accepted this repair and produced the diff below. Backend will apply the exact reviewer diff shown above, then rerun validation.</p>
+            </div>
+          )}
 
           {proposal.failure_summary && (
             <div className="failure-summary" data-testid="failure-summary">
@@ -513,6 +523,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
             approveEnabled={approveAllowed}
             revisionEnabled={revisionAllowed}
             checksumMismatch={diff?.checksum_mismatch ?? false}
+            directProposal={isDirectProposal}
           />
         </div>
 

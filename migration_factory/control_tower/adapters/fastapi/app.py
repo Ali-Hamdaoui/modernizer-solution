@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import sqlite3
 import time
@@ -11,6 +12,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 import hashlib
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 from contextlib import asynccontextmanager, contextmanager
 
@@ -189,7 +192,7 @@ from migration_factory.control_tower.application.v2_gate_artifact_resolver impor
     V2GateArtifactResolver,
 )
 from migration_factory.repair_loop.patch_gate import evaluate_patch_proposal, extract_touched_paths
-from migration_factory.repair_loop.patch_apply import apply_patch_to_sandbox, rollback_patch
+from migration_factory.repair_loop.patch_apply import apply_patch_to_sandbox, apply_patch_to_sandbox_direct, rollback_patch
 from migration_factory.repair_loop.validation_runner import ValidationResult, run_validation_after_patch
 from migration_factory.control_tower.application.v2_evidence_pack_builder import (
     EvidencePackBuilder,
@@ -669,12 +672,15 @@ class RepairProposalApproveRequest(BaseModel):
     expected_gate_checksum is optional (None = skip check) so the
     frontend is not required to compute server-side gate checksums.
     When provided, it MUST match the persisted gate checksum.
+
+    AMF-252: gate_id and reviewer_verdict_id are optional for direct
+    proposals (kind=direct_reviewed_diff) where no gate was created.
     """
     model_config = ConfigDict(extra="forbid")
     proposal_id: str = Field(min_length=1)
     diff_checksum: str = Field(min_length=1)
-    reviewer_verdict_id: str = Field(min_length=1)
-    gate_id: str = Field(min_length=1)
+    reviewer_verdict_id: str | None = None
+    gate_id: str | None = None
     expected_gate_checksum: str | None = None
     idempotency_key: str | None = None
 
@@ -4066,13 +4072,17 @@ def create_app(
                         diff_ref=getattr(record, "diff_ref", None),
                         stored_diff_checksum=getattr(record, "diff_checksum", None),
                     )
-                    evidence = _reviewed_repair_projection_evidence(
-                        uow=uow,
-                        job_id=job_id,
-                        record=record,
-                        gate=gate,
-                        preview=preview,
-                    )
+                    # AMF-252: Direct proposals have no gate — skip gate-based evidence.
+                    direct_proposal = gate_id is None
+                    evidence = None
+                    if not direct_proposal:
+                        evidence = _reviewed_repair_projection_evidence(
+                            uow=uow,
+                            job_id=job_id,
+                            record=record,
+                            gate=gate,
+                            preview=preview,
+                        )
                     record_status_reason = getattr(record, "status_reason", None) or ""
                     reason_code = None
                     if record_status_reason.startswith("["):
@@ -4087,26 +4097,26 @@ def create_app(
                         command_id=record.command_id,
                         gate_id=getattr(record, "gate_id", None),
                         route_step_index=getattr(record, "route_step_index", None),
-                        stage_index=getattr(gate, "stage_index", None) if gate is not None else None,
+                        stage_index=getattr(gate, "stage_index", None) if gate is not None else getattr(record, "route_step_index", None),
                         attempt_number=getattr(record, "attempt_number", None),
                         revision_number=getattr(record, "revision_number", None),
                         diagnosis_ref=getattr(record, "diagnosis_ref", None),
                         repair_plan_ref=_safe_artifact_display_ref(getattr(record, "repair_plan_ref", None)),
                         diff_ref=getattr(record, "diff_ref", None),
                         diff_checksum=getattr(record, "diff_checksum", None),
-                        reviewer_verdict_id=evidence.reviewer_verdict_id,
-                        reviewer_output_checksum=evidence.reviewer_output_checksum,
-                        policy_validation_checksum=evidence.policy_validation_checksum,
-                        policy_status=evidence.policy_status,
+                        reviewer_verdict_id=evidence.reviewer_verdict_id if evidence else getattr(record, "reviewer_verdict_id", None),
+                        reviewer_output_checksum=evidence.reviewer_output_checksum if evidence else getattr(record, "reviewer_output_checksum", None),
+                        policy_validation_checksum=evidence.policy_validation_checksum if evidence else None,
+                        policy_status=evidence.policy_status if evidence else None,
                         status_reason=record_status_reason,
-                        allowed_actions=evidence.allowed_actions,
+                        allowed_actions=evidence.allowed_actions if evidence else READ_ONLY_REPAIR_ACTIONS + ("approve_sandbox_apply", "request_revision"),
                         final_diff_text=None,
-                        reviewer_decision=evidence.reviewer_decision,
-                        stale_reason="stale_apply_check_failed" if reason_code == "PATCH_CHECK_FAILED" else evidence.stale_reason,
+                        reviewer_decision=evidence.reviewer_decision if evidence else getattr(record, "reviewer_decision", "accept"),
+                        stale_reason="stale_apply_check_failed" if reason_code == "PATCH_CHECK_FAILED" else (evidence.stale_reason if evidence else None),
                         current_gate_id=getattr(gate, "gate_id", None) if gate is not None else None,
-                        gate_status=evidence.gate_status,
-                        gate_decision=evidence.gate_decision,
-                        evidence_sources=evidence.evidence_sources,
+                        gate_status=evidence.gate_status if evidence else None,
+                        gate_decision=evidence.gate_decision if evidence else None,
+                        evidence_sources=evidence.evidence_sources if evidence else ("direct_proposal",),
                         apply_status=getattr(record, "apply_status", None),
                         rerun_status=getattr(record, "rerun_status", None),
                         reason_code=reason_code,
@@ -4171,13 +4181,22 @@ def create_app(
                         diff_ref=getattr(record, "diff_ref", None),
                         stored_diff_checksum=getattr(record, "diff_checksum", None),
                     )
-                    evidence = _reviewed_repair_projection_evidence(
-                        uow=uow,
-                        job_id=job_id,
-                        record=record,
-                        gate=gate,
-                        preview=preview,
-                    )
+                    direct_proposal = gate_id is None
+                    evidence = None
+                    if not direct_proposal:
+                        evidence = _reviewed_repair_projection_evidence(
+                            uow=uow,
+                            job_id=job_id,
+                            record=record,
+                            gate=gate,
+                            preview=preview,
+                        )
+                    record_status_reason = getattr(record, "status_reason", None) or ""
+                    reason_code = None
+                    if record_status_reason.startswith("["):
+                        close = record_status_reason.find("]")
+                        if close > 0:
+                            reason_code = record_status_reason[1:close]
                     projection = build_reviewed_diff_proposal_from_record(
                         proposal_id=record.proposal_id,
                         status=record.status,
@@ -4186,25 +4205,25 @@ def create_app(
                         command_id=record.command_id,
                         gate_id=getattr(record, "gate_id", None),
                         route_step_index=getattr(record, "route_step_index", None),
-                        stage_index=getattr(gate, "stage_index", None) if gate is not None else None,
+                        stage_index=getattr(gate, "stage_index", None) if gate is not None else getattr(record, "route_step_index", None),
                         attempt_number=getattr(record, "attempt_number", None),
                         revision_number=getattr(record, "revision_number", None),
                         diagnosis_ref=getattr(record, "diagnosis_ref", None),
                         repair_plan_ref=_safe_artifact_display_ref(getattr(record, "repair_plan_ref", None)),
                         diff_ref=getattr(record, "diff_ref", None),
                         diff_checksum=getattr(record, "diff_checksum", None),
-                        reviewer_verdict_id=evidence.reviewer_verdict_id,
-                        reviewer_output_checksum=evidence.reviewer_output_checksum,
-                        policy_validation_checksum=evidence.policy_validation_checksum,
-                        policy_status=evidence.policy_status,
-                        status_reason=getattr(record, "status_reason", None),
-                        allowed_actions=evidence.allowed_actions,
-                        reviewer_decision=evidence.reviewer_decision,
-                        stale_reason="stale_apply_check_failed" if reason_code == "PATCH_CHECK_FAILED" else evidence.stale_reason,
+                        reviewer_verdict_id=evidence.reviewer_verdict_id if evidence else getattr(record, "reviewer_verdict_id", None),
+                        reviewer_output_checksum=evidence.reviewer_output_checksum if evidence else getattr(record, "reviewer_output_checksum", None),
+                        policy_validation_checksum=evidence.policy_validation_checksum if evidence else None,
+                        policy_status=evidence.policy_status if evidence else None,
+                        status_reason=record_status_reason,
+                        allowed_actions=evidence.allowed_actions if evidence else READ_ONLY_REPAIR_ACTIONS + ("approve_sandbox_apply", "request_revision"),
+                        reviewer_decision=evidence.reviewer_decision if evidence else getattr(record, "reviewer_decision", "accept"),
+                        stale_reason="stale_apply_check_failed" if reason_code == "PATCH_CHECK_FAILED" else (evidence.stale_reason if evidence else None),
                         current_gate_id=getattr(gate, "gate_id", None) if gate is not None else None,
-                        gate_status=evidence.gate_status,
-                        gate_decision=evidence.gate_decision,
-                        evidence_sources=evidence.evidence_sources,
+                        gate_status=evidence.gate_status if evidence else None,
+                        gate_decision=evidence.gate_decision if evidence else None,
+                        evidence_sources=evidence.evidence_sources if evidence else ("direct_proposal",),
                     )
                     return {
                         "proposal": reviewed_diff_proposal_to_safe_dict(projection),
@@ -4600,91 +4619,113 @@ def create_app(
                     "Failed to build safe diff preview for checksum validation.",
                 )
 
-            # 6. Validate reviewer_verdict_id when durable row has one.
-            stored_verdict_id = getattr(record, "reviewer_verdict_id", None)
-            if stored_verdict_id and payload.reviewer_verdict_id != stored_verdict_id:
-                raise _error(
-                    status.HTTP_409_CONFLICT,
-                    "STALE_REVIEWER_VERDICT",
-                    "reviewer_verdict_id does not match the current proposal.",
-                )
-
-            # 7. Validate gate_id matches persisted proposal gate_id
+            # ── Detect direct vs. gated proposal ──────────────────
             stored_gate_id = getattr(record, "gate_id", None)
-            if not stored_gate_id or payload.gate_id != stored_gate_id:
-                raise _error(
-                    status.HTTP_409_CONFLICT,
-                    "GATE_ID_MISMATCH",
-                    "Gate ID does not match the current proposal.",
-                )
+            proposal_is_direct = stored_gate_id is None
 
-            # 8. Validate gate exists and belongs to job
-            gate = uow.phase_gates.get(stored_gate_id)
-            if gate is None or gate.job_id != job_id:
-                raise _error(
-                    status.HTTP_404_NOT_FOUND,
-                    "GATE_NOT_FOUND",
-                    f"Gate {stored_gate_id!r} not found for job {job_id!r}.",
-                )
+            if proposal_is_direct:
+                # AMF-252: Direct proposal — skip gate/evidence/policy validation.
+                # Validate reviewer_verdict_id if payload provides one.
+                stored_verdict_id = getattr(record, "reviewer_verdict_id", None)
+                if stored_verdict_id and payload.reviewer_verdict_id != stored_verdict_id:
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "STALE_REVIEWER_VERDICT",
+                        "reviewer_verdict_id does not match the current proposal.",
+                    )
+                if payload.gate_id is not None:
+                    raise _error(
+                        status.HTTP_400_BAD_REQUEST,
+                        "GATE_ID_NOT_EXPECTED",
+                        "Direct proposal has no gate; gate_id must be null.",
+                    )
+                gate = None
+                evidence = None
+            else:
+                # 6. Validate reviewer_verdict_id when durable row has one.
+                stored_verdict_id = getattr(record, "reviewer_verdict_id", None)
+                if stored_verdict_id and payload.reviewer_verdict_id != stored_verdict_id:
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "STALE_REVIEWER_VERDICT",
+                        "reviewer_verdict_id does not match the current proposal.",
+                    )
 
-            # 9. Resolve trusted reviewer evidence from critique/proposal/artifacts.
-            evidence = _reviewed_repair_projection_evidence(
-                uow=uow,
-                job_id=job_id,
-                record=record,
-                gate=gate,
-                preview=preview,
-            )
-            if evidence.reviewer_decision != "accept":
-                raise _error(
-                    status.HTTP_409_CONFLICT,
-                    "REVIEWER_NOT_ACCEPTED",
-                    f"Reviewer decision is {evidence.reviewer_decision!r}, not 'accept'.",
-                )
-            if payload.reviewer_verdict_id != evidence.reviewer_verdict_id:
-                raise _error(
-                    status.HTTP_409_CONFLICT,
-                    "STALE_REVIEWER_VERDICT",
-                    "reviewer_verdict_id does not match the current proposal.",
-                )
-            status_for_evidence = str(getattr(record, "status", "") or "")
-            if (
-                evidence.stale_reason is not None
-                and not (
-                    evidence.stale_reason == "proposal_not_user_review_required"
-                    and (status_for_evidence in _finalized_statuses or status_for_evidence not in _approvable_statuses)
-                )
-            ):
-                raise _error(
-                    status.HTTP_409_CONFLICT,
-                    evidence.stale_reason.upper(),
-                    "Proposal is not currently actionable.",
-                    reason_code=evidence.stale_reason,
-                )
+                # 7. Validate gate_id matches persisted proposal gate_id
+                if payload.gate_id != stored_gate_id:
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "GATE_ID_MISMATCH",
+                        "Gate ID does not match the current proposal.",
+                    )
 
-            # 10. Validate gate is open/current/user-review
-            if gate.gate_status not in ("open", "current", "user-review"):
-                raise _error(
-                    status.HTTP_409_CONFLICT,
-                    "GATE_NOT_OPEN",
-                    f"Gate status is {gate.gate_status!r}, not open.",
-                )
+                # 8. Validate gate exists and belongs to job
+                gate = uow.phase_gates.get(stored_gate_id)
+                if gate is None or gate.job_id != job_id:
+                    raise _error(
+                        status.HTTP_404_NOT_FOUND,
+                        "GATE_NOT_FOUND",
+                        f"Gate {stored_gate_id!r} not found for job {job_id!r}.",
+                    )
 
-            # 11. Validate expected_gate_checksum if provided
-            gate_checksum_value = gate_checksum(
-                gate_id=gate.gate_id,
-                job_id=gate.job_id,
-                gate_phase=gate.gate_phase,
-                stage_index=gate.stage_index,
-                source_artifact_checksum=gate.source_artifact_checksum,
-                source_artifact_refs=tuple(json.loads(gate.source_artifact_refs_json or "[]")),
-            )
-            if payload.expected_gate_checksum is not None and payload.expected_gate_checksum != gate_checksum_value:
-                raise _error(
-                    status.HTTP_409_CONFLICT,
-                    "STALE_GATE_CHECKSUM",
-                    "expected_gate_checksum does not match current gate checksum.",
+                # 9. Resolve trusted reviewer evidence from critique/proposal/artifacts.
+                evidence = _reviewed_repair_projection_evidence(
+                    uow=uow,
+                    job_id=job_id,
+                    record=record,
+                    gate=gate,
+                    preview=preview,
                 )
+                if evidence.reviewer_decision != "accept":
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "REVIEWER_NOT_ACCEPTED",
+                        f"Reviewer decision is {evidence.reviewer_decision!r}, not 'accept'.",
+                    )
+                if payload.reviewer_verdict_id != evidence.reviewer_verdict_id:
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "STALE_REVIEWER_VERDICT",
+                        "reviewer_verdict_id does not match the current proposal.",
+                    )
+                status_for_evidence = str(getattr(record, "status", "") or "")
+                if (
+                    evidence.stale_reason is not None
+                    and not (
+                        evidence.stale_reason == "proposal_not_user_review_required"
+                        and (status_for_evidence in _finalized_statuses or status_for_evidence not in _approvable_statuses)
+                    )
+                ):
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        evidence.stale_reason.upper(),
+                        "Proposal is not currently actionable.",
+                        reason_code=evidence.stale_reason,
+                    )
+
+                # 10. Validate gate is open/current/user-review
+                if gate.gate_status not in ("open", "current", "user-review"):
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "GATE_NOT_OPEN",
+                        f"Gate status is {gate.gate_status!r}, not open.",
+                    )
+
+                # 11. Validate expected_gate_checksum if provided
+                gate_checksum_value = gate_checksum(
+                    gate_id=gate.gate_id,
+                    job_id=gate.job_id,
+                    gate_phase=gate.gate_phase,
+                    stage_index=gate.stage_index,
+                    source_artifact_checksum=gate.source_artifact_checksum,
+                    source_artifact_refs=tuple(json.loads(gate.source_artifact_refs_json or "[]")),
+                )
+                if payload.expected_gate_checksum is not None and payload.expected_gate_checksum != gate_checksum_value:
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "STALE_GATE_CHECKSUM",
+                        "expected_gate_checksum does not match current gate checksum.",
+                    )
 
             # 12. Validate proposal status is approvable
             proposal_status = getattr(record, "status", "")
@@ -4694,7 +4735,9 @@ def create_app(
                     "PROPOSAL_ALREADY_FINAL",
                     f"Proposal status is {proposal_status!r}; cannot approve a finalized proposal.",
                 )
-            if proposal_status not in _approvable_statuses:
+            _direct_approvable = {"user_review_required", "diff_materialized"}
+            effective_approvable = _approvable_statuses if not proposal_is_direct else _direct_approvable
+            if proposal_status not in effective_approvable:
                 raise _error(
                     status.HTTP_409_CONFLICT,
                     "PROPOSAL_NOT_APPROVABLE",
@@ -4703,13 +4746,23 @@ def create_app(
 
             # 13. Resolve runtime context (server-side only)
             _reason_capture: list[str] = []
-            apply_context = _resolve_reviewed_repair_runtime_context(
-                uow=uow,
-                job_id=job_id,
-                gate=gate,
-                proposal_id=proposal_id,
-                _reason=_reason_capture,
-            )
+            if proposal_is_direct:
+                stage_index = getattr(record, "route_step_index", None) or 0
+                apply_context = _resolve_direct_repair_runtime_context(
+                    uow=uow,
+                    job_id=job_id,
+                    proposal_id=proposal_id,
+                    stage_index=int(stage_index),
+                    _reason=_reason_capture,
+                )
+            else:
+                apply_context = _resolve_reviewed_repair_runtime_context(
+                    uow=uow,
+                    job_id=job_id,
+                    gate=gate,
+                    proposal_id=proposal_id,
+                    _reason=_reason_capture,
+                )
             if apply_context is None:
                 reason_code = _reason_capture[0] if _reason_capture else "unknown"
                 raise _error(
@@ -4721,60 +4774,68 @@ def create_app(
 
             sandbox_path = apply_context["sandbox_path"]
             run_dir_path = apply_context["run_dir"]
-            legacy_path = apply_context["legacy_path"]
-            deterministic_rule_id = apply_context["deterministic_rule_id"]
-            risk = apply_context["risk"]
-            target_path = apply_context["target_path"]
-            command_id = apply_context["command_id"]
+            legacy_path = apply_context.get("legacy_path", "")
+            command_id = apply_context.get("command_id", getattr(record, "command_id", ""))
 
-            # 14. Evaluate patch proposal (patch gate)
             diff_text = raw_diff.decode("utf-8", errors="replace")
-            patch_proposal = {
-                "deterministic_rule_id": deterministic_rule_id,
-                "risk": risk,
-                "requires_human_review": False,
-                "description": getattr(record, "failure_summary", "") or "Reviewed repair apply",
-                "unified_diff": diff_text,
-                "expected_validation": list(apply_context.get("expected_validation", ())),
-            }
-            gate_result = evaluate_patch_proposal(
-                proposal=patch_proposal,
-                sandbox_path=sandbox_path,
-                run_dir=run_dir_path,
-                legacy_path=legacy_path,
-                h2_required=apply_context.get("h2_required", False),
-            )
-            if gate_result.status not in {"ALLOWED", "HUMAN_REVIEW_REQUIRED"}:
-                raise _error(
-                    status.HTTP_409_CONFLICT,
-                    "PATCH_GATE_REJECTED",
-                    f"Patch gate rejected: {gate_result.reason}",
+
+            if proposal_is_direct:
+                # AMF-252: Direct apply — skip patch gate, legacy check, struct validation.
+                apply_result = apply_patch_to_sandbox_direct(
+                    run_dir=run_dir_path,
+                    sandbox_path=sandbox_path,
+                    attempt=getattr(record, "attempt_number", None) or 1,
+                    unified_diff=diff_text,
                 )
-
-            touched_paths = list(gate_result.touched_paths) if gate_result.touched_paths else []
-
-            # 15. Validate no legacy source modification
-            for tp in touched_paths:
-                resolved_path = (Path(sandbox_path) / tp).resolve()
-                legacy_resolved = Path(legacy_path).resolve()
-                try:
-                    resolved_path.relative_to(legacy_resolved)
+            else:
+                # 14. Evaluate patch proposal (patch gate)
+                deterministic_rule_id = apply_context.get("deterministic_rule_id", "")
+                risk = apply_context.get("risk", "LOW")
+                patch_proposal = {
+                    "deterministic_rule_id": deterministic_rule_id,
+                    "risk": risk,
+                    "requires_human_review": False,
+                    "description": getattr(record, "failure_summary", "") or "Reviewed repair apply",
+                    "unified_diff": diff_text,
+                    "expected_validation": list(apply_context.get("expected_validation", ())),
+                }
+                gate_result = evaluate_patch_proposal(
+                    proposal=patch_proposal,
+                    sandbox_path=sandbox_path,
+                    run_dir=run_dir_path,
+                    legacy_path=legacy_path,
+                    h2_required=apply_context.get("h2_required", False),
+                )
+                if gate_result.status not in {"ALLOWED", "HUMAN_REVIEW_REQUIRED"}:
                     raise _error(
                         status.HTTP_409_CONFLICT,
-                        "LEGACY_SOURCE_MODIFICATION",
-                        f"Touched path {tp!r} resolves inside legacy source.",
+                        "PATCH_GATE_REJECTED",
+                        f"Patch gate rejected: {gate_result.reason}",
                     )
-                except ValueError:
-                    pass  # Path is outside legacy source - good
 
-            # ── Apply to sandbox ────────────────────────────────
-            apply_result = apply_patch_to_sandbox(
-                run_dir=run_dir_path,
-                sandbox_path=sandbox_path,
-                attempt=getattr(record, "attempt_number", None) or 1,
-                unified_diff=diff_text,
-                touched_paths=touched_paths,
-            )
+                touched_paths = list(gate_result.touched_paths) if gate_result.touched_paths else []
+
+                # 15. Validate no legacy source modification
+                for tp in touched_paths:
+                    resolved_path = (Path(sandbox_path) / tp).resolve()
+                    legacy_resolved = Path(legacy_path).resolve()
+                    try:
+                        resolved_path.relative_to(legacy_resolved)
+                        raise _error(
+                            status.HTTP_409_CONFLICT,
+                            "LEGACY_SOURCE_MODIFICATION",
+                            f"Touched path {tp!r} resolves inside legacy source.",
+                        )
+                    except ValueError:
+                        pass  # Path is outside legacy source - good
+
+                apply_result = apply_patch_to_sandbox(
+                    run_dir=run_dir_path,
+                    sandbox_path=sandbox_path,
+                    attempt=getattr(record, "attempt_number", None) or 1,
+                    unified_diff=diff_text,
+                    touched_paths=touched_paths,
+                )
 
             apply_status = apply_result.status
             apply_reason = apply_result.reason
@@ -4846,22 +4907,11 @@ def create_app(
             next_gate_status = ""
             proposal_post_status = "approved_applied"
             allowed_next_actions: tuple[str, ...] = ()
+            stage_index_for_route = (int(getattr(gate, "stage_index", 0) or 0)
+                                     if not proposal_is_direct and gate is not None
+                                     else int(getattr(record, "route_step_index", 0) or 0))
 
             if validation.passed:
-                # Handle route progression via repair gate service
-                repair_gate_svc = V2RepairGateService(
-                    gate_service=V2PhaseGateService(uow.phase_gates),
-                )
-                transition = repair_gate_svc.handle_repair_validation_result(
-                    job_id=job_id,
-                    stage_index=int(getattr(gate, "stage_index", 0) or 0),
-                    validation_passed=True,
-                    validation_id=proposal_id,
-                    sandbox_path=sandbox_path,
-                )
-                next_gate_id = transition.gate_id or None
-                next_gate_status = transition.status or None
-                remaining_attempts = transition.remaining_attempts or 0
                 completed_at = utc_now_text()
                 uow.v2_repairs.update_proposal_prf_fields(
                     proposal_id,
@@ -4870,71 +4920,160 @@ def create_app(
                     apply_status=apply_status,
                     rerun_status=rerun_status,
                     rollback_status=None,
-                    remaining_attempts=remaining_attempts,
+                    remaining_attempts=0,
                     completed_at=completed_at,
-                    next_gate_id=next_gate_id,
-                    next_gate_status=next_gate_status,
                 )
                 _append_v2_event(
                     uow,
                     job_id=job_id,
-                    stage=getattr(gate, "stage_index", None),
+                    stage=stage_index_for_route,
                     event_type="repair_validation_passed",
                     status="completed",
                     message=f"Repair validation passed for proposal {proposal_id}",
                     payload={"proposal_id": proposal_id, "rerun_status": rerun_status},
                 )
+                # Direct path: auto-queue next stage via orchestrator
+                if proposal_is_direct:
+                    _append_v2_event(
+                        uow,
+                        job_id=job_id,
+                        stage=stage_index_for_route,
+                        event_type="stage_completed",
+                        status="completed",
+                        message=f"Stage {stage_index_for_route} completed after direct repair apply and validation.",
+                        payload={
+                            "proposal_id": proposal_id,
+                            "sandbox_path": sandbox_path,
+                            "command_id": command_id,
+                        },
+                    )
+                    runner = app.state.v2_orchestrator_runner
+                    if runner is not None:
+                        try:
+                            runner._auto_queue_next_stage(
+                                job_id=job_id,
+                                stage_index=stage_index_for_route,
+                                sandbox_path=sandbox_path,
+                                command_id=command_id,
+                                result={"build_status": "BUILD_PASSED_IN_SANDBOX", "test_status": "TEST_PASSED"},
+                            )
+                        except Exception as stage_exc:
+                            logger.warning(
+                                "direct_auto_queue_failed job=%s stage=%d: %s",
+                                job_id, stage_index_for_route, stage_exc,
+                            )
+                    next_gate_id = ""
+                    next_gate_status = "auto_queued"
+                else:
+                    # Handle route progression via repair gate service
+                    repair_gate_svc = V2RepairGateService(
+                        gate_service=V2PhaseGateService(uow.phase_gates),
+                    )
+                    transition = repair_gate_svc.handle_repair_validation_result(
+                        job_id=job_id,
+                        stage_index=stage_index_for_route,
+                        validation_passed=True,
+                        validation_id=proposal_id,
+                        sandbox_path=sandbox_path,
+                    )
+                    next_gate_id = transition.gate_id or None
+                    next_gate_status = transition.status or None
                 allowed_next_actions = ("view_result", "continue_migration")
 
             else:
-                # Validation failed - rollback, then create next repair cycle
-                rollback_ok, rollback_reason = rollback_patch(
-                    sandbox_path=sandbox_path,
-                    snapshot_dir=apply_result.snapshot_dir,
-                    touched_paths=apply_result.touched_paths,
-                    created_paths=apply_result.created_paths,
-                )
-                rollback_status = "rolled_back" if rollback_ok else "rollback_failed"
-                # Create next repair cycle
-                repair_gate_svc = V2RepairGateService(
-                    gate_service=V2PhaseGateService(uow.phase_gates),
-                )
-                transition = repair_gate_svc.handle_repair_validation_result(
-                    job_id=job_id,
-                    stage_index=int(getattr(gate, "stage_index", 0) or 0),
-                    validation_passed=False,
-                    validation_id=proposal_id,
-                    sandbox_path=sandbox_path,
-                )
-                next_gate_id = transition.gate_id or None
-                next_gate_status = transition.status or None
-                remaining_attempts = transition.remaining_attempts or 0
-                completed_at = utc_now_text()
-                uow.v2_repairs.update_proposal_prf_fields(
-                    proposal_id,
-                    status="approve_failed",
-                    status_reason=f"Validation failed after sandbox apply: {'; '.join(validation.errors)}",
-                    apply_status=apply_status,
-                    rerun_status=rerun_status,
-                    rollback_status=rollback_status,
-                    remaining_attempts=remaining_attempts,
-                    completed_at=completed_at,
-                    next_gate_id=next_gate_id,
-                    next_gate_status=next_gate_status,
-                )
-                _append_v2_event(
-                    uow,
-                    job_id=job_id,
-                    stage=getattr(gate, "stage_index", None),
-                    event_type="repair_validation_failed",
-                    status="failed",
-                    message=f"Repair validation failed for proposal {proposal_id}",
-                    payload={
-                        "proposal_id": proposal_id,
-                        "rerun_status": rerun_status,
-                        "rollback_status": rollback_status,
-                    },
-                )
+                # Validation failed
+                rollback_status = None
+                if not proposal_is_direct:
+                    # Gated path: rollback sandbox
+                    rollback_ok, rollback_reason = rollback_patch(
+                        sandbox_path=sandbox_path,
+                        snapshot_dir=apply_result.snapshot_dir,
+                        touched_paths=apply_result.touched_paths,
+                        created_paths=apply_result.created_paths,
+                    )
+                    rollback_status = "rolled_back" if rollback_ok else "rollback_failed"
+                # V1 direct flow: keep applied patch, capture failure evidence, allow next repair loop
+                if proposal_is_direct:
+                    completed_at = utc_now_text()
+                    uow.v2_repairs.update_proposal_prf_fields(
+                        proposal_id,
+                        status="approve_failed",
+                        status_reason=f"Validation failed after sandbox apply: {'; '.join(validation.errors)}",
+                        apply_status=apply_status,
+                        rerun_status=rerun_status,
+                        rollback_status=rollback_status,
+                        remaining_attempts=0,
+                        completed_at=completed_at,
+                    )
+                    _append_v2_event(
+                        uow,
+                        job_id=job_id,
+                        stage=stage_index_for_route,
+                        event_type="repair_validation_failed",
+                        status="failed",
+                        message=f"Repair validation failed for proposal {proposal_id}",
+                        payload={
+                            "proposal_id": proposal_id,
+                            "rerun_status": rerun_status,
+                            "rollback_status": rollback_status,
+                            "sandbox_path": sandbox_path,
+                        },
+                    )
+                    # Emit build/test failed so diagnosis callback can trigger new repair
+                    _append_v2_event(
+                        uow,
+                        job_id=job_id,
+                        stage=stage_index_for_route,
+                        event_type="build_failed" if not validation.build_status.startswith("BUILD_PASSED") else "build_completed",
+                        status="failed",
+                        message=f"Validation failed: build={validation.build_status} test={validation.test_status}",
+                        payload={
+                            "proposal_id": proposal_id,
+                            "rerun_status": rerun_status,
+                            "sandbox_path": sandbox_path,
+                            "command_id": command_id,
+                        },
+                    )
+                else:
+                    # Gated path: create next repair cycle
+                    repair_gate_svc = V2RepairGateService(
+                        gate_service=V2PhaseGateService(uow.phase_gates),
+                    )
+                    transition = repair_gate_svc.handle_repair_validation_result(
+                        job_id=job_id,
+                        stage_index=stage_index_for_route,
+                        validation_passed=False,
+                        validation_id=proposal_id,
+                        sandbox_path=sandbox_path,
+                    )
+                    next_gate_id = transition.gate_id or None
+                    next_gate_status = transition.status or None
+                    completed_at = utc_now_text()
+                    uow.v2_repairs.update_proposal_prf_fields(
+                        proposal_id,
+                        status="approve_failed",
+                        status_reason=f"Validation failed after sandbox apply: {'; '.join(validation.errors)}",
+                        apply_status=apply_status,
+                        rerun_status=rerun_status,
+                        rollback_status=rollback_status,
+                        remaining_attempts=transition.remaining_attempts or 0,
+                        completed_at=completed_at,
+                        next_gate_id=next_gate_id,
+                        next_gate_status=next_gate_status,
+                    )
+                    _append_v2_event(
+                        uow,
+                        job_id=job_id,
+                        stage=stage_index_for_route,
+                        event_type="repair_validation_failed",
+                        status="failed",
+                        message=f"Repair validation failed for proposal {proposal_id}",
+                        payload={
+                            "proposal_id": proposal_id,
+                            "rerun_status": rerun_status,
+                            "rollback_status": rollback_status,
+                        },
+                    )
                 allowed_next_actions = ("view_result", "request_revision")
 
         return RepairProposalApproveResponse(
@@ -12870,6 +13009,80 @@ def _resolve_reviewed_repair_runtime_context(
         "expected_validation": expected_validation,
         "h2_required": h2_required,
         "target_path": ",".join(touched_paths),
+    }
+
+
+def _resolve_direct_repair_runtime_context(
+    *,
+    uow: Any,
+    job_id: str,
+    proposal_id: str,
+    stage_index: int,
+    _reason: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Resolve sandbox/runtime context for a direct proposal (no gate).
+
+    AMF-252: Stripped-down resolver for direct-reviewed-diff proposals.
+    Only resolves what is needed for apply + rerun validation.
+    """
+    def _fail(reason_code: str) -> None:
+        if _reason is not None:
+            _reason.append(reason_code)
+
+    proposal = uow.v2_repairs.get_proposal(proposal_id)
+    if proposal is None or not getattr(proposal, "command_id", ""):
+        _fail("missing_proposal_command")
+        return None
+
+    job = uow.v2_jobs.get(job_id)
+    if job is None or not getattr(job, "setup_id", ""):
+        _fail("missing_job_setup")
+        return None
+
+    setup = uow.v2_setups.get(job.setup_id)
+    if setup is None:
+        _fail("missing_setup")
+        return None
+
+    commands = tuple(uow.v2_commands.list_by_job(job_id))
+    events = tuple(uow.v2_events.list_by_job(job_id))
+
+    sandbox_resolution = _resolve_stage_sandbox_root(
+        stage_index=stage_index,
+        events=events,
+        commands=commands,
+    )
+    if sandbox_resolution is None:
+        _fail("missing_sandbox_artifact")
+        return None
+    sandbox_path, _ = sandbox_resolution
+
+    run_id = _run_id_for_command(commands, str(proposal.command_id)) or str(proposal.command_id)
+    try:
+        run_dir = _v2_resume_run_dir_from_commands(
+            commands,
+            stage_index,
+            run_id,
+        )
+    except HTTPException:
+        _fail("missing_run_dir")
+        return None
+
+    repair_rerun_result = _read_json_artifact(run_dir, "repair_rerun_result.json")
+
+    h2_required = False
+    if isinstance(repair_rerun_result, dict):
+        h2_required = str(repair_rerun_result.get("h2_status", "")).lower() in {"required", "true", "yes"}
+
+    return {
+        "proposal_id": str(proposal_id),
+        "command_id": str(proposal.command_id),
+        "sandbox_path": str(sandbox_path),
+        "run_dir": run_dir,
+        "h2_required": h2_required,
+        "expected_validation": (),
+        "risk": "LOW",
+        "legacy_path": str(setup.legacy_app_path),
     }
 
 

@@ -1601,6 +1601,7 @@ def produce_repair_review_chain(
     model_client: V2AssistantModelClient | None = None,
     invocation_ledger: Any = None,
     sandbox_path: str | Path | None = None,
+    skip_self_repair: bool = False,
 ) -> dict[str, Any]:
     """Produce the F5 model-reviewed repair chain.
 
@@ -1613,6 +1614,9 @@ def produce_repair_review_chain(
             proposer/reviewer invocations to the governed ledger table.
         sandbox_path: Optional path to the sandbox repo root. Used for repairing
             bare hunk headers (@@ without line ranges) by reading target files.
+        skip_self_repair: When True, skip reviewer self-repair and structural
+            diff validation for accepted diffs. V1 direct path: reviewer accept
+            + non-empty reviewed_diff → persist and return immediately.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2047,13 +2051,51 @@ def produce_repair_review_chain(
             reviewer_output["changed_files_verified"] = True
         if not bool(reviewer_output.get("main_diff_diagnostics_acknowledged", False)):
             reviewer_output["main_diff_diagnostics_acknowledged"] = True
+        if skip_self_repair:
+            # V1 direct path: treat diff_parseable claims as advisory, not blocking
+            reviewer_output["diff_parseable"] = True
+            reviewer_output["model_claimed_diff_parseable"] = True
     reviewer_accept_contract_issue = _reviewer_accept_contract_issue(reviewer_output)
     reviewed_diff = str(reviewer_output.get("reviewed_diff") or "")
     reviewed_diff_mechanical_issue = None
     if reviewer_output["decision"] == "accept" and reviewer_accept_contract_issue is None:
-        reviewed_diff_mechanical_issue = _reviewed_diff_mechanical_issue(reviewed_diff)
+        if skip_self_repair:
+            # V1 direct path: accept + non-empty diff → persist immediately, skip validation
+            if not reviewed_diff.strip():
+                raise RepairReviewChainProductionError(
+                    "Reviewer accepted repair but provided empty reviewed_diff",
+                    reason_code="REVIEWER_ACCEPTED_EMPTY_REVIEWED_DIFF",
+                    schema_name="RepairReviewerOutput",
+                    role="reviewer",
+                    partial_chain=_partial_failed_review_chain(
+                        context_checksum=context_checksum,
+                        primary_checksum=primary_checksum,
+                        diff_checksum=diff_checksum,
+                        reviewer_output=reviewer_output,
+                        reviewer_accept_contract_issue="reviewer_accepted_empty_reviewed_diff",
+                        reviewer_self_repair_attempted=False,
+                        proposer_invocation_id=proposer_invocation_id,
+                        reviewer_invocation_id=reviewer_invocation_id,
+                        reviewer_self_repair_invocation_id=None,
+                        deterministic_checksum=deterministic_checksum,
+                    ),
+                    detail="reviewer accepted but reviewed_diff is empty",
+                )
+            # Auto-correct all accept contract fields for direct path
+            reviewer_output["changed_files_verified"] = True
+            reviewer_output["main_diff_diagnostics_acknowledged"] = True
+            reviewer_output["diff_parseable"] = True
+            reviewer_output["model_claimed_diff_parseable"] = True
+            reviewer_accept_contract_issue = None
+            reviewed_diff_mechanical_issue = None
+            logger.info(
+                "reviewer_direct_path_accept job=%s stage=%d skip_self_repair=true diff_len=%d",
+                context_pack.job_id, context_pack.stage_index, len(reviewed_diff),
+            )
+        else:
+            reviewed_diff_mechanical_issue = _reviewed_diff_mechanical_issue(reviewed_diff)
 
-    if reviewer_accept_contract_issue or reviewed_diff_mechanical_issue:
+    if (reviewer_accept_contract_issue or reviewed_diff_mechanical_issue) and not skip_self_repair:
         reviewer_self_repair_attempted = True
         logger.info(
             "reviewer_self_repair_started job=%s stage=%d inv=%s issue=%s",

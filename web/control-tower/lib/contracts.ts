@@ -1192,8 +1192,8 @@ export type ReviewedDiffProposal = {
   attempt_number: number | null;
   revision_number: number | null;
   failure_summary: string;
-  hypothesis: string;
-  patch_summary: string;
+  hypothesis?: string | null;
+  patch_summary?: string | null;
   diagnosis_ref: string | null;
   repair_plan_ref: string | null;
   diff_ref: string | null;
@@ -1383,8 +1383,8 @@ export type RepairProposalRevisionResponse = {
 export type RepairProposalApproveRequest = {
   proposal_id: string;
   diff_checksum: string;
-  reviewer_verdict_id: string;
-  gate_id: string;
+  reviewer_verdict_id?: string | null;
+  gate_id?: string | null;
   expected_gate_checksum?: string;
   idempotency_key?: string;
 };
