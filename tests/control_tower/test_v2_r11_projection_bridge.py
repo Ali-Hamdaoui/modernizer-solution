@@ -104,6 +104,53 @@ def test_verified_candidate_with_open_gate_is_ready_not_accepted() -> None:
     assert projected["proof_accepted"] is False
 
 
+def test_contradictory_public_candidate_with_resolved_gate_is_proof_accepted() -> None:
+    candidate = {
+        "stage_index": 1,
+        "status": "verified",
+        "execution_status": "verified",
+        "post_repair_verification_status": "failed",
+        "verification_status": "passed",
+        "rollback_status": "not_needed",
+        "proof_artifact": "proof.json",
+    }
+    uow = MagicMock()
+    uow.phase_gates.list_by_job_and_stage.return_value = [
+        MagicMock(gate_phase="repair_review", gate_status="resolved", gate_decision="continue")
+    ]
+
+    projected = _repair_candidate_with_review_projection(candidate, uow, "job-1")
+
+    assert projected["post_repair_verification_status"] == "passed"
+    assert projected["proof_review_status"] == "accepted"
+    assert projected["proof_accepted"] is True
+
+
+def test_genuine_failed_post_repair_candidate_is_not_proof_accepted() -> None:
+    candidate = {
+        "stage_index": 1,
+        "status": "verified",
+        "execution_status": "verified",
+        "post_repair_verification_status": "failed",
+        "verification_status": "passed",
+        "rollback_status": "not_needed",
+        "proof_artifact": "proof.json",
+        "stage_recovery_status": "still_failed",
+        "classification": {"failure_type": "JACKSON_VERSION_ALIGNMENT_DRIFT"},
+        "next_repair_candidate": {"family": "JACKSON_VERSION_ALIGNMENT_DRIFT"},
+    }
+    uow = MagicMock()
+    uow.phase_gates.list_by_job_and_stage.return_value = [
+        MagicMock(gate_phase="repair_review", gate_status="resolved", gate_decision="continue")
+    ]
+
+    projected = _repair_candidate_with_review_projection(candidate, uow, "job-1")
+
+    assert projected["post_repair_verification_status"] == "failed"
+    assert projected["proof_review_status"] == ""
+    assert projected["proof_accepted"] is False
+
+
 def test_stage_projection_marks_terminal_stage_proof_accepted() -> None:
     job = MagicMock(stage_chain_json=json.dumps([
         {

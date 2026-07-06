@@ -461,7 +461,7 @@ def _has_accepted_repair_proof(uow: Any, job_id: str, stage_index: int) -> bool:
         return False
     if str(candidate.get("execution_status") or "") != "verified":
         return False
-    if str(candidate.get("post_repair_verification_status") or candidate.get("verification_status") or "") != "passed":
+    if _effective_post_repair_verification_status(candidate) != "passed":
         return False
     if str(candidate.get("rollback_status") or "") != "not_needed":
         return False
@@ -483,6 +483,47 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _effective_post_repair_verification_status(candidate: dict[str, Any]) -> str:
+    nested = candidate.get("post_repair_verification")
+    if isinstance(nested, dict):
+        nested_status = str(nested.get("post_repair_verification_status") or "").strip()
+        if nested_status:
+            return nested_status
+    top_level = str(candidate.get("post_repair_verification_status") or "").strip()
+    if top_level == "passed":
+        return "passed"
+    if top_level == "failed" and _has_concrete_post_repair_failure_evidence(candidate):
+        return "failed"
+    apply_status = str(candidate.get("verification_status") or "").strip()
+    if top_level == "failed" and apply_status == "passed":
+        return "passed"
+    return top_level or apply_status
+
+
+def _has_concrete_post_repair_failure_evidence(candidate: dict[str, Any]) -> bool:
+    if str(candidate.get("stage_recovery_status") or "") == "still_failed":
+        return True
+    if candidate.get("next_repair_candidate") is not None:
+        return True
+    if str(candidate.get("next_repair_candidate_blocked_reason") or "").strip():
+        return True
+    classification = candidate.get("classification")
+    if isinstance(classification, dict) and str(classification.get("failure_type") or "").strip():
+        return True
+    nested = candidate.get("post_repair_verification")
+    if isinstance(nested, dict):
+        if str(nested.get("stage_recovery_status") or "") == "still_failed":
+            return True
+        if nested.get("next_repair_candidate") is not None:
+            return True
+        if str(nested.get("next_repair_candidate_blocked_reason") or "").strip():
+            return True
+        nested_classification = nested.get("classification")
+        if isinstance(nested_classification, dict) and str(nested_classification.get("failure_type") or "").strip():
+            return True
+    return False
 
 
 def _compute_input_checksum(state: dict[str, Any]) -> str:
