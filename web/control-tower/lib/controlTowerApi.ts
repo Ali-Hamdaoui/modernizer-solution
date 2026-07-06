@@ -353,6 +353,24 @@ export async function getV2MigrationJob(jobId: string): Promise<V2MigrationJobRe
   };
 }
 
+export type V2CancelMigrationResponse = {
+  job_id: string;
+  status: "cancelled" | "already_cancelled" | "already_completed" | "already_failed" | string;
+  process: {
+    process_found: boolean;
+    terminated: boolean;
+    process_count: number;
+  };
+};
+
+export async function cancelV2MigrationJob(jobId: string): Promise<V2CancelMigrationResponse> {
+  const safeJobId = requireJobId(jobId);
+  return postJson<V2CancelMigrationResponse>(
+    `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/cancel`,
+    {}
+  );
+}
+
 export async function getV2JobApprovals(jobId: string): Promise<{ approvals: V2ApprovalResponse[] }> {
   const safeJobId = requireJobId(jobId);
   return getJson<{ approvals: V2ApprovalResponse[] }>(

@@ -1,9 +1,11 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import {
   askV2Assistant,
   approveV2Card,
+  cancelV2MigrationJob,
   getV2ArtifactPreview,
   getV2RootPomPreview,
   getV2AssistantMessages,
@@ -942,6 +944,7 @@ export function ApprovalDecisionsPanel({
 }
 
 export function MigrationCockpit({ jobId }: { jobId?: string }) {
+  const router = useRouter();
   const [data, setData] = useState<CockpitData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [assistantQuestion, setAssistantQuestion] = useState("");
@@ -955,6 +958,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [gateState, setGateState] = useState<GatePanelState>({ status: "loading" });
   const [report, setReport] = useState<V2FinalReportResponse | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
   const normalizedJobId = jobId?.trim() ?? "";
   const approvalReviewOpen = gateState.status === "success" && gateState.openGate?.gate_phase === "approval_review";
 
@@ -1118,6 +1123,9 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       "model_invocation_completed",
       "model_invocation_failed",
       "result_contract_failed",
+      "migration_cancelling",
+      "stage_cancelled",
+      "migration_cancelled",
       // F14 POM change events
       "pom_change_proposed",
       "pom_change_applied",
@@ -1175,6 +1183,21 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       }
     } catch {
       setStreamState("reconnecting");
+    }
+  }
+
+  async function handleCancelMigration() {
+    if (!normalizedJobId || cancelBusy) return;
+    setCancelBusy(true);
+    setCancelError(null);
+    try {
+      await cancelV2MigrationJob(normalizedJobId);
+      setStreamState("reconnecting");
+      router.push("/migrations/new");
+    } catch (e) {
+      setCancelError(e instanceof Error ? e.message : "Cancel migration failed");
+    } finally {
+      setCancelBusy(false);
     }
   }
 
@@ -1349,6 +1372,22 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
 
   return (
     <div className="cockpit-layout">
+      <section className="panel cockpit-actions" data-testid="migration-cancel-panel">
+        <div>
+          <h2>Migration Controls</h2>
+          <p className="meta">Job: {data.job.job_id}</p>
+        </div>
+        <button
+          type="button"
+          className="cancel-button"
+          disabled={cancelBusy}
+          onClick={() => void handleCancelMigration()}
+        >
+          {cancelBusy ? "Cancelling..." : "Cancel Migration"}
+        </button>
+        {cancelError && <p className="cancel-error" role="alert">{cancelError}</p>}
+      </section>
+
       {/* Stage Timeline */}
       <section className="panel">
         <h2>Stage Timeline</h2>
@@ -1814,6 +1853,10 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
 
       <style>{`
         .cockpit-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+        .cockpit-actions { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+        .cancel-button { border: 1px solid #a40000; background: #a40000; color: #fff; border-radius: 4px; padding: 0.65rem 1rem; font-weight: 600; }
+        .cancel-button:disabled { background: #b66; border-color: #b66; cursor: not-allowed; }
+        .cancel-error { color: #a40000; margin: 0; }
         .panel { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; }
         .panel h2 { margin-top: 0; font-size: 1.1rem; }
         .stage-list { display: flex; flex-direction: column; gap: 0.5rem; }
@@ -1827,6 +1870,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .status-badge.completed { background: #e4f7e8; color: #146c2e; }
         .status-badge.pass { background: #e4f7e8; color: #146c2e; }
         .status-badge.failed { background: #ffe3e3; color: #a40000; }
+        .status-badge.cancelled { background: #f4d8d8; color: #7a0000; }
         .status-badge.blocked { background: #f5e8ff; color: #5a248a; }
         .status-badge.pending { background: #eee; color: #666; }
         .status-badge.skipped { background: #e8f4ff; color: #005599; }
@@ -1913,6 +1957,7 @@ function eventAppliesToStage(event: V2JobEvent, stageIndex: number): boolean {
  *  This is an *input* to the chronological reducer; the label alone does
  *  NOT determine the final stage status (see reduceStageStatus). */
 export function stageStatusFromEvent(event: V2JobEvent): string {
+  if (event.type === "stage_cancelled" || event.status === "cancelled") return "cancelled";
   if (event.type === "stage_failed" || event.status === "failed") return "failed";
   if (event.type === "stage_completed") return "completed";
   if (["stage_started", "command_started", "sandbox_transform_started",
@@ -1934,6 +1979,8 @@ export function stageStatusFromEvent(event: V2JobEvent): string {
  *  * queued       → applies only if not already past it
  *  * pending      → no change */
 export function transitionStageStatus(current: string, mapped: string): string {
+  if (current === "cancelled") return "cancelled";
+  if (mapped === "cancelled") return "cancelled";
   if (mapped === "failed") return "failed";
   if (mapped === "completed") return "completed";
   if (mapped === "running") return "running";

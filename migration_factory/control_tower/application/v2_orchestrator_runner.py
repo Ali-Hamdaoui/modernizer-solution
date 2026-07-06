@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -136,8 +137,44 @@ class V2OrchestratorRunner:
         self._popen_factory = popen_factory
         self._cwd = cwd or Path(__file__).resolve().parents[3]
         self._event_lock = threading.Lock()
+        self._process_lock = threading.Lock()
+        self._active_processes: dict[str, Any] = {}
         self._last_stdout_lines: list[str] = []
         self._diagnosis_callback = diagnosis_callback
+
+    def cancel_job(self, job_id: str, *, grace_period_seconds: float = 5.0) -> dict[str, Any]:
+        """Terminate the active orchestrator subprocess for a V2 job, if any."""
+        with self._process_lock:
+            processes = list(self._active_processes.get(job_id, {}).values())
+
+        terminated = False
+        for process in processes:
+            if process is None or process.poll() is not None:
+                continue
+            try:
+                process.terminate()
+                process.wait(timeout=grace_period_seconds)
+                terminated = True
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                    process.wait(timeout=grace_period_seconds)
+                    terminated = True
+                except Exception:
+                    pass
+            except Exception:
+                try:
+                    if os.name != "nt":
+                        os.kill(int(process.pid), signal.SIGTERM)
+                        terminated = True
+                except Exception:
+                    pass
+
+        return {
+            "process_found": bool(processes),
+            "terminated": terminated,
+            "process_count": len(processes),
+        }
 
     def start(self, *, job_id: str, command_id: str) -> V2OrchestratorStart:
         with self._unit_of_work_factory() as uow:
@@ -316,6 +353,9 @@ class V2OrchestratorRunner:
         stderr_lines: list[str] = []
 
         try:
+            if self._is_job_cancelled(job_id):
+                return
+
             process_env = _build_env(env_manifest)
 
             process = self._popen_factory(
@@ -329,6 +369,13 @@ class V2OrchestratorRunner:
                 errors="replace",
                 shell=False,
             )
+
+            with self._process_lock:
+                self._active_processes.setdefault(job_id, {})[command_id] = process
+
+            if self._is_job_cancelled(job_id):
+                self.cancel_job(job_id)
+                return
 
             self._event(
                 job_id=job_id,
@@ -384,14 +431,22 @@ class V2OrchestratorRunner:
                 command_phase=command_phase,
             )
         except Exception as exc:
-            self._event(
-                job_id=job_id,
-                stage=stage_index,
-                event_type="stage_failed",
-                status="failed",
-                message=f"Orchestrator launch failed: {exc}",
-                payload={"command_id": command_id},
-            )
+            if not self._is_job_cancelled(job_id):
+                self._event(
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="stage_failed",
+                    status="failed",
+                    message=f"Orchestrator launch failed: {exc}",
+                    payload={"command_id": command_id},
+                )
+        finally:
+            with self._process_lock:
+                processes = self._active_processes.get(job_id)
+                if processes is not None:
+                    processes.pop(command_id, None)
+                    if not processes:
+                        self._active_processes.pop(job_id, None)
 
     def _read_stream(
         self,
@@ -492,6 +547,9 @@ class V2OrchestratorRunner:
         resume: bool = False,
         command_phase: str | None = None,
     ) -> None:
+        if self._is_job_cancelled(job_id):
+            return
+
         stdout_tail = _bounded("\n".join(self._last_stdout_lines) if hasattr(self, "_last_stdout_lines") else "")
         stderr_tail = _bounded(stderr)
         parse_strategy = "sentinel" if result is not None and "CONTROL_TOWER_FINAL_JSON" in ("".join(getattr(self, "_last_stdout_lines", []))) else "generic_scan"
@@ -1664,6 +1722,12 @@ class V2OrchestratorRunner:
         message: str,
         payload: dict[str, Any] | None = None,
     ) -> None:
+        if (
+            event_type not in {"migration_cancelling", "stage_cancelled", "migration_cancelled"}
+            and self._is_job_cancelled(job_id)
+        ):
+            return
+
         with self._event_lock:
             with self._unit_of_work_factory() as uow:
                 redacted_payload = redact_public_value(payload or {})
@@ -1678,6 +1742,11 @@ class V2OrchestratorRunner:
 
         if self._notifier is not None:
             asyncio.run(self._notifier.notify())
+
+    def _is_job_cancelled(self, job_id: str) -> bool:
+        with self._unit_of_work_factory() as uow:
+            events = uow.v2_events.list_by_job(job_id)
+        return any(event.type == "migration_cancelled" for event in events)
 
     # ── planning phase completion ──────────────────────────────────
 

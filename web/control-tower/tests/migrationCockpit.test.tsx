@@ -1,6 +1,12 @@
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi, afterEach } from "vitest";
+
+const routerPushMock = vi.hoisted(() => vi.fn());
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: routerPushMock }),
+}));
+
 import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import {
   MigrationCockpit,
@@ -33,6 +39,27 @@ describe("V2 Migration Cockpit contract", () => {
 
     expect(cockpit.type).toBe(MigrationCockpit);
     expect(cockpit.props.jobId).toBe("429a9bb2154b4be7a99a32867780d744");
+  });
+
+
+  it("renders Cancel Migration controls in the cockpit source", () => {
+    const source = MigrationCockpit.toString();
+    expect(source).toContain("Cancel Migration");
+    expect(source).toContain("cancelV2MigrationJob");
+    expect(source).toContain("normalizedJobId");
+    expect(source).toContain('router.push("/migrations/new")');
+    expect(source).toContain("cancelBusy");
+    expect(source).toContain("Cancelling...");
+  });
+
+  it("cancelled stage events reduce to a terminal cancelled state", () => {
+    const reduced = reduceStageStatus([
+      { sequence: 1, type: "stage_started", status: "running", stage: 1 } as V2JobEvent,
+      { sequence: 2, type: "stage_cancelled", status: "cancelled", stage: 1 } as V2JobEvent,
+      { sequence: 3, type: "stdout", status: "running", stage: 1 } as V2JobEvent,
+    ]);
+    expect(reduced).toBe("cancelled");
+    expect(formatStageStatusLabel(reduced)).toBe("CANCELLED");
   });
 
   it("displays three stages in order", () => {
