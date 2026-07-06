@@ -125,7 +125,13 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
         if (cancelled) return;
         if (response.proposal) {
           setProposalState({ status: "available", proposal: response.proposal });
-          setDiffState({ status: "loading" });
+          // AMF-252: Seed diff preview from embedded safe_diff_preview if available
+          const hasEmbeddedPreview = !!response.proposal.safe_diff_preview;
+          if (hasEmbeddedPreview) {
+            setDiffState({ status: "available", diff: response.proposal.safe_diff_preview });
+          } else {
+            setDiffState({ status: "loading" });
+          }
           setAttemptsState({ status: "loading" });
           setActivityState({ status: "loading" });
           const [diffResponse, attemptsResponse, activityResponse] = await Promise.all([
@@ -136,7 +142,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
           if (cancelled) return;
           if (diffResponse?.safe_diff_preview) {
             setDiffState({ status: "available", diff: diffResponse.safe_diff_preview });
-          } else {
+          } else if (!hasEmbeddedPreview) {
             setDiffState({ status: "error", message: diffResponse?.reason ?? "Diff unavailable" });
           }
           if (attemptsResponse?.attempts) {
@@ -187,7 +193,13 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
       const response = await getCurrentRepairProposal(jobId);
       if (response.proposal) {
         setProposalState({ status: "available", proposal: response.proposal });
-        setDiffState({ status: "loading" });
+        // AMF-252: Seed diff preview from embedded safe_diff_preview if available
+        const hasEmbeddedPreview = !!response.proposal.safe_diff_preview;
+        if (hasEmbeddedPreview) {
+          setDiffState({ status: "available", diff: response.proposal.safe_diff_preview });
+        } else {
+          setDiffState({ status: "loading" });
+        }
         setAttemptsState({ status: "loading" });
         setActivityState({ status: "loading" });
         const [diffResponse, attemptsResponse, activityResponse] = await Promise.all([
@@ -197,7 +209,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
         ]);
         if (diffResponse?.safe_diff_preview) {
           setDiffState({ status: "available", diff: diffResponse.safe_diff_preview });
-        } else {
+        } else if (!hasEmbeddedPreview) {
           setDiffState({ status: "error", message: diffResponse?.reason ?? "Diff unavailable" });
         }
         if (attemptsResponse?.attempts) {
@@ -231,6 +243,14 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
   async function handleRequestRevision(instruction: string) {
     if (!jobId) return;
     setRevisionPending(true);
+    const state = proposalState;
+    if (state.status !== "available") { setRevisionPending(false); return; }
+    // AMF-252: Block revision for direct proposals
+    if (state.proposal.kind === "direct_reviewed_diff" || state.proposal.kind === "direct_candidate_diff" || state.proposal.gate_id == null) {
+      setErrorBanner("Revision is not available for direct reviewer diffs yet.");
+      setRevisionPending(false);
+      return;
+    }
     try {
       setErrorBanner(null);
       const state = proposalState;
@@ -376,16 +396,19 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
   const activityError = activityState.status === "error" ? activityState.message : null;
 
   // approve_failed is a terminal read-only state
-  const isDirectProposal = proposal.gate_id == null;
+  const isDirectProposal =
+    proposal.kind === "direct_reviewed_diff" ||
+    proposal.kind === "direct_candidate_diff" ||
+    (proposal.kind == null && proposal.gate_id == null);
+  const isCandidateDiff = proposal.kind === "direct_candidate_diff";
   const isApproveFailed = proposal.status === "approve_failed";
   const isApplyCheckFailed = proposal.reason_code === "PATCH_CHECK_FAILED";
 
   const approveAllowed = !isApproveFailed && proposal.allowed_actions.includes("approve_sandbox_apply");
-  const revisionAllowed = !isApproveFailed && proposal.allowed_actions.some((action) => (
-    action === "request_revision" ||
-    action === "request_repair_revision" ||
-    action === "revise_repair_proposal"
-  ));
+  const revisionAllowed =
+    !isDirectProposal &&
+    !isApproveFailed &&
+    proposal.allowed_actions.some((a) => ["request_revision", "request_repair_revision", "revise_repair_proposal"].includes(a));
   const latestMainSummary = [...llmInvocations]
     .filter((invocation) => (
       ["main", "proposer", "primary"].includes(invocation.role.toLowerCase()) ||
@@ -424,8 +447,8 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
     <section className="panel repair-proposal-panel" data-testid="repair-proposal-panel">
       <div className="repair-proposal-layout">
         <div className="repair-proposal-main">
-          <div className="repair-panel-kicker">{isDirectProposal ? "Direct Reviewer Diff" : "Backend-governed repair gate"}</div>
-          <h2>{isDirectProposal ? "Reviewer Diff Ready" : "Reviewed Repair Proposal"}</h2>
+          <div className="repair-panel-kicker">{isCandidateDiff ? "Candidate Diff" : isDirectProposal ? "Direct Reviewer Diff" : "Backend-governed repair gate"}</div>
+          <h2>{isCandidateDiff ? "Candidate Diff Ready" : isDirectProposal ? "Reviewer Diff Ready" : "Reviewed Repair Proposal"}</h2>
 
           {errorBanner && (
             <div className="error-banner" data-testid="approve-error-banner" role="alert">
@@ -460,13 +483,22 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
               banner={policyBanner}
             />
           )}
-          {isDirectProposal && (
+          {isDirectProposal && !isCandidateDiff && (
             <div className="reviewed-repair-banner reviewed-repair-banner-allowed" data-testid="direct-proposal-banner">
               <div className="reviewed-repair-banner-top">
                 <strong>Reviewer diff ready for apply</strong>
                 <span className="status-badge">DIRECT</span>
               </div>
               <p className="meta">Reviewer accepted this repair and produced the diff below. Backend will apply the exact reviewer diff shown above, then rerun validation.</p>
+            </div>
+          )}
+          {isCandidateDiff && (
+            <div className="reviewed-repair-banner reviewed-repair-banner-review" data-testid="candidate-diff-banner">
+              <div className="reviewed-repair-banner-top">
+                <strong>Candidate Diff Ready</strong>
+                <span className="status-badge">CANDIDATE</span>
+              </div>
+              <p className="meta">Reviewer requested revision, but a main candidate diff is available. Backend will apply the exact diff shown and rerun validation if you approve.</p>
             </div>
           )}
 
@@ -482,6 +514,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
             <div className="meta diagnosis-fields">
               <div><span className="diagnosis-label">Root cause:</span> {proposal.hypothesis || "N/A"}</div>
               <div><span className="diagnosis-label">Fix strategy:</span> {proposal.patch_summary || "N/A"}</div>
+              {proposal.kind && <div><span className="diagnosis-label">Kind:</span> {proposal.kind === "direct_reviewed_diff" ? "Direct reviewer diff" : proposal.kind === "direct_candidate_diff" ? "Direct candidate diff" : "Reviewed gate"}</div>}
               {proposal.files_changed.length > 0 && (
                 <div><span className="diagnosis-label">Changed files:</span> {proposal.files_changed.map((f) => formatSafeRelativePath(f.path)).join(", ")}</div>
               )}
@@ -496,7 +529,11 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
 
           <RepairProposalMetadata proposal={proposal} />
 
-          <ReviewedDiffTabs proposal={proposal} diff={diff} />
+          <ReviewedDiffTabs
+            proposal={proposal}
+            diff={diff}
+            diffMessage={diffState.status === "error" ? diffState.message : null}
+          />
 
           {showAttempts && (
             <RepairAttemptTimeline attempts={attempts} />
@@ -524,6 +561,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
             revisionEnabled={revisionAllowed}
             checksumMismatch={diff?.checksum_mismatch ?? false}
             directProposal={isDirectProposal}
+            candidateDiff={isCandidateDiff}
           />
         </div>
 

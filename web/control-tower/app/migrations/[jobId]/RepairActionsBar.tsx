@@ -16,6 +16,7 @@ export function RepairActionsBar({
   revisionEnabled = true,
   checksumMismatch,
   directProposal,
+  candidateDiff,
 }: {
   onViewDiff: () => void;
   onViewReviewerOpinion: () => void;
@@ -29,6 +30,7 @@ export function RepairActionsBar({
   revisionEnabled?: boolean;
   checksumMismatch?: boolean;
   directProposal?: boolean;
+  candidateDiff?: boolean;
 }) {
   const [showDialog, setShowDialog] = useState(false);
 
@@ -73,18 +75,22 @@ export function RepairActionsBar({
             checksumMismatch
               ? "Cannot approve: diff checksum mismatch detected"
               : approvePending
-                ? (directProposal ? "Applying reviewer diff..." : "Applying...")
-                : directProposal
-                  ? "Backend will apply the exact reviewer diff shown above, then rerun validation"
-                  : "Approve and apply reviewed repair to sandbox"
+                ? (candidateDiff ? "Applying candidate diff..." : directProposal ? "Applying reviewer diff..." : "Applying...")
+                : candidateDiff
+                  ? "Backend will apply the exact candidate diff shown above, then rerun validation"
+                  : directProposal
+                    ? "Backend will apply the exact reviewer diff shown above, then rerun validation"
+                    : "Approve and apply reviewed repair to sandbox"
           }
           data-testid="action-approve-sandbox-apply"
         >
           {approvePending
-            ? (directProposal ? "Applying reviewer diff..." : "Applying...")
-            : directProposal
-              ? "Apply reviewer diff"
-              : "Approve sandbox apply"}
+            ? (candidateDiff ? "Applying candidate diff..." : directProposal ? "Applying reviewer diff..." : "Applying...")
+            : candidateDiff
+              ? "Apply candidate diff"
+              : directProposal
+                ? "Apply reviewer diff"
+                : "Approve sandbox apply"}
         </button>
       </div>
       <RepairRevisionDialog

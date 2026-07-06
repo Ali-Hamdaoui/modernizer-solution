@@ -22,6 +22,7 @@ REASON_CODE_PATCH_APPLY_TIMEOUT = "PATCH_APPLY_TIMEOUT"
 REASON_CODE_PATCH_APPLY_UNSAFE_PATH = "PATCH_APPLY_UNSAFE_PATH"
 REASON_CODE_PATCH_APPLY_SANDBOX_MISSING = "PATCH_APPLY_SANDBOX_MISSING"
 REASON_CODE_PATCH_APPLY_TARGET_MISSING = "PATCH_APPLY_TARGET_MISSING"
+REASON_CODE_PATCH_ALREADY_APPLIED = "PATCH_ALREADY_APPLIED"
 
 
 @dataclass(frozen=True)
@@ -571,6 +572,28 @@ def apply_patch_to_sandbox_direct(
             reason_code = REASON_CODE_PATCH_APPLY_TIMEOUT
             reason = _stderr_reason(applied, "git apply timed out")
         else:
+            # Normal git apply failure — run post-failure reverse classifier.
+            # git apply --reverse --check is read-only (--check flag) and
+            # detects whether the patch changes are already present.
+            reverse_check = _git_apply(
+                [git_exe, "apply", "--reverse", "--check", str(patch_path)],
+                cwd=sandbox, run=run,
+            )
+            if reverse_check.returncode == 0:
+                return PatchApplyResult(
+                    status="ALREADY_APPLIED",
+                    reason="Patch changes are already present in sandbox; validation will run.",
+                    patch_path=patch_path,
+                    touched_paths=resolved_touched_paths,
+                    before_hashes=before_hashes,
+                    after_hashes=_hash_files(sandbox, resolved_touched_paths),
+                    snapshot_dir=snapshot_dir,
+                    created_paths=created_paths,
+                    errors=[],
+                    reason_code=REASON_CODE_PATCH_ALREADY_APPLIED,
+                    stdout=str(applied.stdout or ""),
+                    stderr=str(applied.stderr or ""),
+                )
             reason_code = REASON_CODE_PATCH_APPLY_FAILED
             reason = _stderr_reason(applied, "git apply failed")
         return PatchApplyResult(

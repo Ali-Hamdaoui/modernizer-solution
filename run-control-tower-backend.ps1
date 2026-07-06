@@ -1,9 +1,27 @@
 # =====================================================================
 # AI Migration Control Tower — Clean Backend Launcher
 # Windows / PowerShell
-# AMF-242 runtime profile:
+#
+# AMF-252 runtime profile:
+#   V1 Direct Reviewer-Diff Apply
+#
+# Product flow:
+#   LLM proposes.
+#   Reviewer finalizes strict JSON reviewer output + reviewed diff.
+#   User sees direct proposal.
+#   User clicks Apply reviewer diff.
+#   Backend applies exact persisted diff and reruns validation.
+#
+# Model profile:
 #   MAIN / PROPOSER = GPT-5 mini
 #   REVIEWER        = Llama-3.3-70B-Instruct
+#   FALLBACK        = GPT-5 mini
+#
+# Important:
+#   - Reviewer must pass strict json_schema smoke before backend starts.
+#   - No auto-apply.
+#   - Frontend remains human approval gate.
+#   - Backend remains the only repo mutator.
 # =====================================================================
 
 $ErrorActionPreference = "Stop"
@@ -224,17 +242,17 @@ function Invoke-ReviewerStrictSchemaSmoke {
             -Body $jsonBody
     } catch {
         "$Role strict json_schema smoke test FAILED: " + $_.Exception.Message
-        "Reviewer deployment is not schema-capable. Repair automation cannot create proposals."
+        "Reviewer deployment is not strict-schema capable. AMF-252 direct reviewer-diff proposals require reviewer structured output."
         throw
     }
 
     if ($null -eq $smoke -or $null -eq $smoke.choices -or $smoke.choices.Count -eq 0) {
-        throw "$Role strict json_schema smoke test returned no choices."
+        throw "$Role strict json_schema smoke test returned no choices. Refusing to start backend."
     }
 
     $content = $smoke.choices[0].message.content
     if ([string]::IsNullOrWhiteSpace($content)) {
-        throw "$Role strict json_schema smoke test returned empty content."
+        throw "$Role strict json_schema smoke test returned empty content. Refusing to start backend."
     }
 
     try {
@@ -242,11 +260,11 @@ function Invoke-ReviewerStrictSchemaSmoke {
     } catch {
         "$Role strict json_schema smoke raw content:"
         $content
-        throw "$Role strict json_schema smoke test did not return valid JSON."
+        throw "$Role strict json_schema smoke test did not return valid JSON. Refusing to start backend."
     }
 
     if ($parsedSmoke.ok -ne $true) {
-        throw "$Role strict json_schema smoke test JSON did not contain ok=true."
+        throw "$Role strict json_schema smoke test JSON did not contain ok=true. Refusing to start backend."
     }
 
     "$Role strict json_schema smoke OK: true"
@@ -350,26 +368,32 @@ Set-EnvValue "AI_MIGRATION_MAIN_MODEL_DISPLAY_NAME" "GPT-5 mini"
 Set-EnvValue "AI_MIGRATION_MAIN_ENDPOINT_TYPE" "chat_completions"
 Set-EnvValue "AI_MIGRATION_MAIN_RESPONSE_FORMAT" "json_object"
 Set-EnvValue "AI_MIGRATION_MAIN_SUPPORTS_JSON_OBJECT" "true"
+Set-EnvValue "AI_MIGRATION_MAIN_SUPPORTS_JSON_SCHEMA" "true"
+Set-EnvValue "AI_MIGRATION_MAIN_SUPPORTS_STRUCTURED_OUTPUTS" "true"
 Set-EnvValue "AI_MIGRATION_MAIN_SUPPORTS_REASONING_EFFORT" "true"
 Set-EnvValue "AI_MIGRATION_MAIN_SUPPORTS_TEMPERATURE" "false"
 Set-EnvValue "AI_MIGRATION_MAIN_MAX_INPUT_TOKENS" "50000"
 Set-EnvValue "AI_MIGRATION_MAIN_MAX_OUTPUT_TOKENS" "20000"
 Set-EnvValue "AI_MIGRATION_MAIN_REASONING_EFFORT" "medium"
-Set-EnvValue "AI_MIGRATION_MAIN_TIMEOUT_SECONDS" "120"
+Set-EnvValue "AI_MIGRATION_MAIN_TIMEOUT_SECONDS" "180"
 
 # REVIEWER
+# AMF-252 requires strict structured reviewer output for RepairReviewerOutput.
+# Keep this final config active before backend starts.
 Set-EnvValue "AI_MIGRATION_REVIEWER_PROVIDER" "azure_openai"
 Set-EnvValue "AI_MIGRATION_REVIEWER_MODEL" "Llama-3.3-70B-Instruct"
 Set-EnvValue "AI_MIGRATION_REVIEWER_MODEL_DISPLAY_NAME" "Llama 3.3 70B Instruct Reviewer"
 Set-EnvValue "AI_MIGRATION_REVIEWER_ENDPOINT_TYPE" "chat_completions"
-Set-EnvValue "AI_MIGRATION_REVIEWER_RESPONSE_FORMAT" "json_instruction_only"
+Set-EnvValue "AI_MIGRATION_REVIEWER_RESPONSE_FORMAT" "json_schema"
 Set-EnvValue "AI_MIGRATION_REVIEWER_SUPPORTS_JSON_OBJECT" "false"
+Set-EnvValue "AI_MIGRATION_REVIEWER_SUPPORTS_JSON_SCHEMA" "true"
+Set-EnvValue "AI_MIGRATION_REVIEWER_SUPPORTS_STRUCTURED_OUTPUTS" "true"
 Set-EnvValue "AI_MIGRATION_REVIEWER_SUPPORTS_REASONING_EFFORT" "false"
 Set-EnvValue "AI_MIGRATION_REVIEWER_SUPPORTS_TEMPERATURE" "false"
 Set-EnvValue "AI_MIGRATION_REVIEWER_MAX_INPUT_TOKENS" "50000"
 Set-EnvValue "AI_MIGRATION_REVIEWER_MAX_OUTPUT_TOKENS" "20000"
 Set-EnvValue "AI_MIGRATION_REVIEWER_REASONING_EFFORT" ""
-Set-EnvValue "AI_MIGRATION_REVIEWER_TIMEOUT_SECONDS" "180"
+Set-EnvValue "AI_MIGRATION_REVIEWER_TIMEOUT_SECONDS" "240"
 
 # FALLBACK
 Set-EnvValue "AI_MIGRATION_FALLBACK_PROVIDER" "azure_openai"
@@ -378,12 +402,14 @@ Set-EnvValue "AI_MIGRATION_FALLBACK_MODEL_DISPLAY_NAME" "GPT-5 mini Fallback"
 Set-EnvValue "AI_MIGRATION_FALLBACK_ENDPOINT_TYPE" "chat_completions"
 Set-EnvValue "AI_MIGRATION_FALLBACK_RESPONSE_FORMAT" "json_object"
 Set-EnvValue "AI_MIGRATION_FALLBACK_SUPPORTS_JSON_OBJECT" "true"
+Set-EnvValue "AI_MIGRATION_FALLBACK_SUPPORTS_JSON_SCHEMA" "true"
+Set-EnvValue "AI_MIGRATION_FALLBACK_SUPPORTS_STRUCTURED_OUTPUTS" "true"
 Set-EnvValue "AI_MIGRATION_FALLBACK_SUPPORTS_REASONING_EFFORT" "true"
 Set-EnvValue "AI_MIGRATION_FALLBACK_SUPPORTS_TEMPERATURE" "false"
 Set-EnvValue "AI_MIGRATION_FALLBACK_MAX_INPUT_TOKENS" "50000"
 Set-EnvValue "AI_MIGRATION_FALLBACK_MAX_OUTPUT_TOKENS" "20000"
 Set-EnvValue "AI_MIGRATION_FALLBACK_REASONING_EFFORT" "medium"
-Set-EnvValue "AI_MIGRATION_FALLBACK_TIMEOUT_SECONDS" "120"
+Set-EnvValue "AI_MIGRATION_FALLBACK_TIMEOUT_SECONDS" "180"
 
 # Backward-compatible Azure deployment vars.
 # Keep these aligned with the role model vars for old paths.
@@ -408,7 +434,7 @@ Set-EnvValue "MAVEN_CMD" "C:\Tools\apache-maven-3.9.15\bin\mvn.cmd"
 
 # ---------------------------------------------------------------------
 # Git / PATH
-# AMF-237/238 happy path requires Git visible to backend.
+# AMF-252 direct apply requires Git visible to backend.
 # Do NOT hide Git.
 # ---------------------------------------------------------------------
 $GitCmd = "C:\Users\abdelilah.mortaki\AppData\Local\Programs\Git\cmd"
@@ -422,8 +448,10 @@ Add-PathIfExists $GitCmd
 Add-PathIfExists $GitBin
 
 # ---------------------------------------------------------------------
-# Reviewed repair policy
+# AMF-252 Direct Reviewer-Diff Apply policy
 # ---------------------------------------------------------------------
+
+# Copilot must stay off. AMF-252 uses backend proposer/reviewer chain.
 Set-EnvValue "AI_MIGRATION_COPILOT_FAILURE_AGENT_ENABLED" "false"
 Set-EnvValue "AI_MIGRATION_COPILOT_REQUIRED" "false"
 Set-EnvValue "AI_MIGRATION_COPILOT_PROVIDER" ""
@@ -431,13 +459,18 @@ Set-EnvValue "AI_MIGRATION_COPILOT_MODEL" ""
 Set-EnvValue "AI_MIGRATION_COPILOT_ASSIST" "off"
 Set-EnvValue "AI_MIGRATION_ENABLE_COPILOT_REPORT" "false"
 
-# Human approval required. No auto-apply.
+# Human approval required. Direct proposal must wait for user Apply.
 Set-EnvValue "AI_MIGRATION_AUTO_APPLY_SAFE_REPAIRS" "false"
 
+# Current demo/runtime profile.
 Set-EnvValue "AI_MIGRATION_H2_STARTUP_REQUIRED" "false"
 Set-EnvValue "AI_MIGRATION_SKIP_ENDPOINT_SMOKE" "true"
 Set-EnvValue "AI_MIGRATION_PROOF_LEVEL" "build_test_verified"
 Set-EnvValue "AI_MIGRATION_ALLOW_GUARDED_SANDBOX_TRANSFORM" "true"
+
+# Repair trace / diagnostics.
+Set-EnvValue "AI_MIGRATION_LOG_LEVEL" "INFO"
+Set-EnvValue "AI_MIGRATION_REPAIR_TRACE" "1"
 
 # ---------------------------------------------------------------------
 # Safe verify
@@ -448,17 +481,20 @@ Set-EnvValue "AI_MIGRATION_ALLOW_GUARDED_SANDBOX_TRANSFORM" "true"
 "Endpoint host: " + $parsedEndpoint.Host
 "API key configured: " + [bool]$env:AZURE_OPENAI_API_KEY
 
-"`nInitial role config before strict schema promotion:"
+"`nAMF-252 role config:"
 "MAIN model: " + $env:AI_MIGRATION_MAIN_MODEL
 "MAIN response format: " + $env:AI_MIGRATION_MAIN_RESPONSE_FORMAT
 "MAIN supports json_object: " + $env:AI_MIGRATION_MAIN_SUPPORTS_JSON_OBJECT
 "MAIN supports json_schema: " + $env:AI_MIGRATION_MAIN_SUPPORTS_JSON_SCHEMA
 "MAIN reasoning effort support: " + $env:AI_MIGRATION_MAIN_SUPPORTS_REASONING_EFFORT
+
 "REVIEWER model: " + $env:AI_MIGRATION_REVIEWER_MODEL
 "REVIEWER response format: " + $env:AI_MIGRATION_REVIEWER_RESPONSE_FORMAT
 "REVIEWER supports json_object: " + $env:AI_MIGRATION_REVIEWER_SUPPORTS_JSON_OBJECT
 "REVIEWER supports json_schema: " + $env:AI_MIGRATION_REVIEWER_SUPPORTS_JSON_SCHEMA
+"REVIEWER supports structured outputs: " + $env:AI_MIGRATION_REVIEWER_SUPPORTS_STRUCTURED_OUTPUTS
 "REVIEWER reasoning effort support: " + $env:AI_MIGRATION_REVIEWER_SUPPORTS_REASONING_EFFORT
+
 "FALLBACK model: " + $env:AI_MIGRATION_FALLBACK_MODEL
 "FALLBACK response format: " + $env:AI_MIGRATION_FALLBACK_RESPONSE_FORMAT
 "FALLBACK supports json_object: " + $env:AI_MIGRATION_FALLBACK_SUPPORTS_JSON_OBJECT
@@ -480,7 +516,7 @@ py -3 -c "import subprocess; r=subprocess.run(['git','--version'],capture_output
 
 # ---------------------------------------------------------------------
 # Live Azure role smoke tests
-# If either fails, backend does NOT start.
+# If any required smoke fails, backend does NOT start.
 # ---------------------------------------------------------------------
 $script:SmokeHeaders = @{
     "api-key" = $env:AZURE_OPENAI_API_KEY
@@ -500,7 +536,7 @@ Invoke-RoleSmoke `
     -Role "REVIEWER" `
     -Model $env:AI_MIGRATION_REVIEWER_MODEL `
     -DisplayName $env:AI_MIGRATION_REVIEWER_MODEL_DISPLAY_NAME `
-    -SupportsJsonObject $env:AI_MIGRATION_REVIEWER_SUPPORTS_JSON_OBJECT `
+    -SupportsJsonObject "false" `
     -SupportsReasoningEffort $env:AI_MIGRATION_REVIEWER_SUPPORTS_REASONING_EFFORT `
     -ReasoningEffort $env:AI_MIGRATION_REVIEWER_REASONING_EFFORT `
     -MaxCompletionTokens 1000
@@ -511,27 +547,22 @@ Invoke-ReviewerStrictSchemaSmoke `
     -DisplayName $env:AI_MIGRATION_REVIEWER_MODEL_DISPLAY_NAME `
     -MaxCompletionTokens 1000
 
-# ---------------------------------------------------------------------
-# Product-success reviewer config — safe after strict schema smoke passed
-Set-EnvValue "AI_MIGRATION_REVIEWER_RESPONSE_FORMAT" "json_schema"
-Set-EnvValue "AI_MIGRATION_REVIEWER_SUPPORTS_JSON_SCHEMA" "true"
-Set-EnvValue "AI_MIGRATION_REVIEWER_SUPPORTS_STRUCTURED_OUTPUTS" "true"
-
 "`nReviewer strict schema final config:"
 "REVIEWER final response format: " + $env:AI_MIGRATION_REVIEWER_RESPONSE_FORMAT
 "REVIEWER final supports json_schema: " + $env:AI_MIGRATION_REVIEWER_SUPPORTS_JSON_SCHEMA
 "REVIEWER final supports structured outputs: " + $env:AI_MIGRATION_REVIEWER_SUPPORTS_STRUCTURED_OUTPUTS
-# ---------------------------------------------------------------------
 
 # ---------------------------------------------------------------------
-# Repair flight-recorder trace
+# AMF-252 direct apply sanity banner
 # ---------------------------------------------------------------------
-if (-not (Test-Path "Env:AI_MIGRATION_LOG_LEVEL")) {
-    Set-EnvValue "AI_MIGRATION_LOG_LEVEL" "INFO"
-}
-if (-not (Test-Path "Env:AI_MIGRATION_REPAIR_TRACE")) {
-    Set-EnvValue "AI_MIGRATION_REPAIR_TRACE" "1"
-}
+"`nAMF-252 V1 expected backend behavior:"
+"- reviewer accept + reviewed_diff => direct proposal"
+"- direct proposal status => user_review_required"
+"- direct proposal gate_id => null"
+"- frontend approval payload => proposal_id + diff_checksum + idempotency_key"
+"- backend applies persisted diff only"
+"- direct validation-red => no rollback"
+"- direct validation-green => auto-queue next stage with real ValidationResult"
 
 # ---------------------------------------------------------------------
 # Start backend

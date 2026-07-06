@@ -259,6 +259,10 @@ class ReviewedDiffProposal:
     rerun_status: str | None = None
     status_reason: str | None = None
     reason_code: str | None = None
+    kind: str = "reviewed_gate"
+    hypothesis: str | None = None
+    patch_summary: str | None = None
+
 
 
 
@@ -286,6 +290,7 @@ def build_reviewed_diff_proposal_projection(
     policy_reason_code: str | None = None,
     policy_validation_checksum: str | None = None,
     final_diff_text: str | None = None,
+    kind: str | None = None,
 ) -> ReviewedDiffProposal:
     chain = review_chain or {}
     diff_ref = _reviewed_diff_ref_from_chain(chain)
@@ -341,6 +346,14 @@ def build_reviewed_diff_proposal_projection(
         required_validation=required_validation,
         allowed_actions=allowed_actions,
         redactions=tuple(dict.fromkeys(redactions)),
+        kind=kind or (
+            "direct_candidate_diff"
+            if (gate_id or chain.get("gate_id")) is None
+               and chain.get("reviewer_decision")
+               and str(chain.get("reviewer_decision")) != "accept"
+            else "direct_reviewed_diff" if (gate_id or chain.get("gate_id")) is None
+            else "reviewed_gate"
+        ),
     )
 
 
@@ -380,6 +393,9 @@ def reviewed_diff_proposal_to_safe_dict(proposal: ReviewedDiffProposal) -> dict[
         "rerun_status": proposal.rerun_status,
         "status_reason": proposal.status_reason,
         "reason_code": proposal.reason_code,
+        "kind": proposal.kind,
+        "hypothesis": proposal.hypothesis,
+        "patch_summary": proposal.patch_summary,
     }
 
 
@@ -537,6 +553,9 @@ def build_reviewed_diff_proposal_from_record(
     apply_status: str | None = None,
     rerun_status: str | None = None,
     reason_code: str | None = None,
+    kind: str | None = None,
+    hypothesis: str | None = None,
+    patch_summary: str | None = None,
 ) -> ReviewedDiffProposal:
     """Build a ReviewedDiffProposal from persisted V2RepairProposalRecord fields.
 
@@ -573,8 +592,14 @@ def build_reviewed_diff_proposal_from_record(
 
     # Safe fallback for policy_status: if not set and proposal is user-reviewable,
     # default to HUMAN_REVIEW_REQUIRED so the UI never sees null when it needs a status.
+    # AMF-252: Direct proposals bypass policy/gate
     effective_policy_status = policy_status
-    if effective_policy_status is None and status == "user_review_required":
+    effective_gate_status = gate_status
+    if gate_id is None:
+        effective_policy_status = "bypassed"
+        effective_gate_status = "bypassed"
+        policy_reason = policy_reason or "Direct reviewed diff path: backend policy/materialization gate bypassed until user apply."
+    elif effective_policy_status is None and status == "user_review_required":
         effective_policy_status = "HUMAN_REVIEW_REQUIRED"
         if "policy metadata missing" not in " ".join(redactions).lower():
             redactions.append("policy metadata missing; human review required")
@@ -607,13 +632,21 @@ def build_reviewed_diff_proposal_from_record(
         redactions=tuple(dict.fromkeys(redactions)),
         stale_reason=stale_reason,
         current_gate_id=current_gate_id,
-        gate_status=gate_status,
+        gate_status=_maybe_str(effective_gate_status),
         gate_decision=gate_decision,
         evidence_sources=evidence_sources,
         apply_status=apply_status,
         rerun_status=rerun_status,
         status_reason=status_reason,
         reason_code=reason_code,
+        kind=kind or (
+            "direct_candidate_diff"
+            if gate_id is None and reviewer_decision and reviewer_decision != "accept"
+            else "direct_reviewed_diff" if gate_id is None
+            else "reviewed_gate"
+        ),
+        hypothesis=_maybe_str(hypothesis),
+        patch_summary=_maybe_str(patch_summary),
     )
 
 

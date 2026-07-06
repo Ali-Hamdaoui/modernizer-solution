@@ -376,10 +376,11 @@ class V2RepairGateService:
 
         # ── V1 direct proposal path ────────────────────────────────────────
         final_diff_exists = bool(review_chain.get("final_diff_exists"))
+        proposed_diff_exists = bool(review_chain.get("proposed_diff_exists"))
         reviewer_decision = str(review_chain.get("reviewer_decision") or "")
         if final_diff_exists and reviewer_decision == "accept":
             try:
-                proposal_id = self._persist_direct_reviewed_repair_proposal(
+                proposal_id, proposal_diff_checksum = self._persist_direct_reviewed_repair_proposal(
                     job_id=job_id,
                     stage_index=stage_index,
                     command_id=command_id,
@@ -411,6 +412,7 @@ class V2RepairGateService:
                 stage_index=stage_index,
                 context_checksum=str(payload["_repair_context_pack_checksum"]),
                 proposal_id=proposal_id,
+                proposal_diff_checksum=proposal_diff_checksum,
                 chain=review_chain,
             )
             logger.info(
@@ -423,6 +425,56 @@ class V2RepairGateService:
                 diagnosis=None,
                 status="created",
                 reason="direct reviewed repair proposal persisted for user review",
+            )
+
+        # ── V1 direct candidate path (reviewer did not accept, but main proposed diff exists) ──
+        if proposed_diff_exists and not final_diff_exists:
+            try:
+                proposal_id, proposal_diff_checksum = self._persist_direct_candidate_repair_proposal(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    failure_evidence=evidence,
+                    context_pack=context_pack,
+                    chain_result=chain_result,
+                    failure_evidence_ref=str(payload["_repair_failure_evidence_ref"]),
+                    repair_context_ref=str(payload["_repair_context_pack_ref"]),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "direct_candidate_proposal_persistence_failed job=%s stage=%d: %s",
+                    job_id, stage_index, exc,
+                )
+                return RepairGateCreationResult(
+                    gate_id="",
+                    gate_checksum="",
+                    diagnosis=None,
+                    status="skipped",
+                    reason="direct candidate repair proposal persistence failed",
+                )
+            self._bind_llm_invocations(
+                chain=review_chain,
+                proposal_id=proposal_id,
+                gate_id="",
+            )
+            self._emit_repair_candidate_diff_ready_for_user_apply(
+                job_id=job_id,
+                stage_index=stage_index,
+                context_checksum=str(payload["_repair_context_pack_checksum"]),
+                proposal_id=proposal_id,
+                proposal_diff_checksum=proposal_diff_checksum,
+                chain=review_chain,
+            )
+            logger.info(
+                "direct_candidate_proposal_created job=%s stage=%d proposal=%s reviewer_decision=%s",
+                job_id, stage_index, proposal_id, reviewer_decision,
+            )
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="created",
+                reason="direct candidate repair proposal persisted for user review; reviewer did not accept",
             )
 
         primary = _read_json_ref(chain_result["review_chain"].get("primary_output_ref"))
@@ -1120,11 +1172,13 @@ class V2RepairGateService:
         stage_index: int,
         context_checksum: str,
         proposal_id: str,
+        proposal_diff_checksum: str,
         chain: dict[str, Any] | None = None,
     ) -> None:
         if self._event_repo is None:
             return
         chain = chain or {}
+        final_diff_ref = str(chain.get("final_diff_ref") or "")
         main_invocation_id = str(chain.get("proposer_invocation_id") or "")
         reviewer_invocation_id = str(chain.get("reviewer_invocation_id") or "")
         payload: dict[str, Any] = {
@@ -1141,7 +1195,8 @@ class V2RepairGateService:
             "policy_status": "bypassed",
             "gate_status": "bypassed",
             "reviewer_decision": str(chain.get("reviewer_decision") or "accept"),
-            "diff_ref": str(chain.get("final_diff_ref") or ""),
+            "diff_ref": Path(final_diff_ref).name if final_diff_ref else "",
+            "diff_checksum": proposal_diff_checksum,
             "message": "Reviewer diff ready for direct apply.",
         }
         self._event_repo.save(
@@ -1150,6 +1205,48 @@ class V2RepairGateService:
             event_type="repair_diff_ready_for_user_apply",
             status="completed",
             message="Reviewer diff ready for direct user apply.",
+            payload=payload,
+        )
+
+    def _emit_repair_candidate_diff_ready_for_user_apply(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        context_checksum: str,
+        proposal_id: str,
+        proposal_diff_checksum: str,
+        chain: dict[str, Any] | None = None,
+    ) -> None:
+        if self._event_repo is None:
+            return
+        chain = chain or {}
+        main_invocation_id = str(chain.get("proposer_invocation_id") or "")
+        reviewer_invocation_id = str(chain.get("reviewer_invocation_id") or "")
+        payload: dict[str, Any] = {
+            "job_id": job_id,
+            "stage_index": stage_index,
+            "context_checksum": context_checksum,
+            "proposal_id": proposal_id,
+            "main_invocation_id": main_invocation_id,
+            "reviewer_invocation_id": reviewer_invocation_id,
+            "kind": "direct_candidate_diff",
+            "gate_id": None,
+            "reviewer_verdict_id": None,
+            "policy_validation_checksum": None,
+            "policy_status": "bypassed",
+            "gate_status": "bypassed",
+            "reviewer_decision": str(chain.get("reviewer_decision") or "needs_revision"),
+            "diff_ref": "",
+            "diff_checksum": proposal_diff_checksum,
+            "message": "Candidate diff ready for user decision.",
+        }
+        self._event_repo.save(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="repair_candidate_diff_ready_for_user_apply",
+            status="completed",
+            message="Candidate diff ready for user decision.",
             payload=payload,
         )
 
@@ -1479,7 +1576,90 @@ class V2RepairGateService:
                     reviewer_decision=str(chain.get("reviewer_decision") or "accept"),
                 )
             )
-        return proposal_id
+        return proposal_id, public_diff_checksum
+
+    def _persist_direct_candidate_repair_proposal(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        failure_evidence: FailureEvidence,
+        context_pack: RepairContextPack,
+        chain_result: dict[str, Any],
+        failure_evidence_ref: str,
+        repair_context_ref: str,
+    ) -> tuple[str, str]:
+        """Persist a direct candidate repair proposal when reviewer does
+        not accept but main proposed diff exists.
+
+        AMF-252 V1: The main proposed diff is persisted as a candidate
+        for user approval, bypassing gate/policy/validation. The user
+        decides whether to apply the candidate diff.
+        """
+        chain = dict(chain_result.get("review_chain") or {})
+        primary = _read_json_ref(chain.get("primary_output_ref"))
+        proposed_diff = str(primary.get("proposed_diff", ""))
+        if not proposed_diff:
+            raise ValueError("proposed_diff is empty in primary output")
+
+        output_dir = Path(str(chain.get("primary_output_ref") or "")).parent
+        candidate_diff_path = output_dir / "candidate_diff.diff"
+        candidate_diff_path.write_text(proposed_diff, encoding="utf-8")
+        public_diff_checksum = sha256_hex(proposed_diff.encode("utf-8"))
+
+        changed_files = tuple(
+            str(item)
+            for item in primary.get("changed_files", failure_evidence.changed_files)
+            if str(item).strip()
+        )
+        proposal_id = uuid4().hex
+        proposal_checksum = str(chain.get("final_artifact_checksum") or primary.get("primary_output_checksum") or "")
+        reviewer_notes = (
+            primary.get("reviewer_notes")
+            if isinstance(primary.get("reviewer_notes"), list)
+            else []
+        )
+        if not isinstance(reviewer_notes, list):
+            reviewer_notes = []
+        reasoning = "\n".join(str(note) for note in reviewer_notes if str(note).strip())
+        if not reasoning:
+            reasoning = "Reviewer requested revision but candidate diff is available for user decision."
+
+        if self._repair_repo is not None:
+            self._repair_repo.save_proposal(
+                V2RepairProposalRecord(
+                    proposal_id=proposal_id,
+                    command_id=command_id,
+                    failure_summary=failure_evidence.failure_summary,
+                    hypothesis=str(primary.get("root_cause") or ""),
+                    patch_summary=str(primary.get("fix_strategy") or ""),
+                    affected_paths_json=json.dumps(list(changed_files), separators=(",", ":")),
+                    status="user_review_required",
+                    approval_checksum=None,
+                    created_at=utc_now_text(),
+                    proposal_checksum=proposal_checksum,
+                    context_pack_checksum=context_pack.context_pack_checksum,
+                    job_id=job_id,
+                    route_step_index=stage_index,
+                    attempt_number=1,
+                    failure_evidence_ref=failure_evidence_ref,
+                    repair_context_ref=repair_context_ref,
+                    diagnosis_ref=f"repair_candidate:{failure_evidence.failure_source.value}",
+                    repair_plan_ref=str(chain.get("primary_output_ref") or ""),
+                    diff_ref=str(candidate_diff_path),
+                    diff_checksum=public_diff_checksum,
+                    safe_diff_preview_ref=candidate_diff_path.name,
+                    reviewer_verdict_id=None,
+                    reviewer_verdict_ref=None,
+                    reviewer_output_checksum=str(chain.get("reviewer_output_checksum") or ""),
+                    policy_validation_checksum=None,
+                    gate_id=None,
+                    status_reason="Reviewer requested revision but candidate diff is available for user decision",
+                    reviewer_decision=str(chain.get("reviewer_decision") or "needs_revision"),
+                )
+            )
+        return proposal_id, public_diff_checksum
 
     def _bind_llm_invocations(
         self,
@@ -2261,6 +2441,109 @@ class V2RepairGateService:
                 reason="reviewer did not accept repair chain on revision",
             )
 
+        review_chain = dict(chain_result.get("review_chain") or {})
+        final_diff_exists = bool(review_chain.get("final_diff_exists"))
+        proposed_diff_exists = bool(review_chain.get("proposed_diff_exists"))
+        reviewer_decision = str(review_chain.get("reviewer_decision") or "")
+        if final_diff_exists and reviewer_decision == "accept":
+            try:
+                proposal_id, proposal_diff_checksum = self._persist_direct_reviewed_repair_proposal(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    failure_evidence=evidence,
+                    context_pack=context_pack,
+                    chain_result=chain_result,
+                    failure_evidence_ref=str(getattr(evidence, "content_checksum", "") or f"evidence:{prior_evidence_checksum}"),
+                    repair_context_ref=str(getattr(context_pack, "context_pack_checksum", "") or f"context:{prior_context_checksum}"),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "direct_revision_proposal_failed job=%s stage=%d: %s",
+                    job_id, stage_index, exc,
+                )
+                return self.create_repair_gate_from_reviewed_chain(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    review_chain_result=chain_result,
+                    failure_evidence_checksum=evidence.content_checksum,
+                    context_pack_checksum=context_pack.context_pack_checksum,
+                    base_repo_state_checksum=context_pack.base_repo_state_checksum,
+                    sandbox_path=sandbox_path,
+                    run_dir=str(run_dir),
+                    legacy_path=legacy_path,
+                    deterministic_rule_id=deterministic_rule_id,
+                    h2_required=h2_required,
+                    context_pack=context_pack,
+                    model_client=model_client,
+                )
+            self._bind_llm_invocations(chain=review_chain, proposal_id=proposal_id, gate_id="")
+            self._emit_repair_diff_ready_for_user_apply(
+                job_id=job_id,
+                stage_index=stage_index,
+                context_checksum=str(context_pack.context_pack_checksum),
+                proposal_id=proposal_id,
+                proposal_diff_checksum=proposal_diff_checksum,
+                chain=review_chain,
+            )
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="created",
+                reason="direct reviewed repair proposal persisted for user review",
+            )
+        # ── V1 direct candidate path on revision ──
+        if proposed_diff_exists and not final_diff_exists:
+            try:
+                proposal_id, proposal_diff_checksum = self._persist_direct_candidate_repair_proposal(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    failure_evidence=evidence,
+                    context_pack=context_pack,
+                    chain_result=chain_result,
+                    failure_evidence_ref=str(getattr(evidence, "content_checksum", "") or f"evidence:{prior_evidence_checksum}"),
+                    repair_context_ref=str(getattr(context_pack, "context_pack_checksum", "") or f"context:{prior_context_checksum}"),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "direct_candidate_revision_proposal_failed job=%s stage=%d: %s",
+                    job_id, stage_index, exc,
+                )
+                return self.create_repair_gate_from_reviewed_chain(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    review_chain_result=chain_result,
+                    failure_evidence_checksum=evidence.content_checksum,
+                    context_pack_checksum=context_pack.context_pack_checksum,
+                    base_repo_state_checksum=context_pack.base_repo_state_checksum,
+                    sandbox_path=sandbox_path,
+                    run_dir=str(run_dir),
+                    legacy_path=legacy_path,
+                    deterministic_rule_id=deterministic_rule_id,
+                    h2_required=h2_required,
+                    context_pack=context_pack,
+                    model_client=model_client,
+                )
+            self._bind_llm_invocations(chain=review_chain, proposal_id=proposal_id, gate_id="")
+            self._emit_repair_candidate_diff_ready_for_user_apply(
+                job_id=job_id,
+                stage_index=stage_index,
+                context_checksum=str(context_pack.context_pack_checksum),
+                proposal_id=proposal_id,
+                proposal_diff_checksum=proposal_diff_checksum,
+                chain=review_chain,
+            )
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="created",
+                reason="direct candidate repair proposal persisted for user review on revision",
+            )
         return self.create_repair_gate_from_reviewed_chain(
             job_id=job_id,
             stage_index=stage_index,
@@ -2737,6 +3020,109 @@ class V2RepairGateService:
                 reason="Azure repair chain production failed on next cycle",
             )
 
+        review_chain = dict(chain_result.get("review_chain") or {})
+        final_diff_exists = bool(review_chain.get("final_diff_exists"))
+        proposed_diff_exists = bool(review_chain.get("proposed_diff_exists"))
+        reviewer_decision = str(review_chain.get("reviewer_decision") or "")
+        if final_diff_exists and reviewer_decision == "accept":
+            try:
+                proposal_id, proposal_diff_checksum = self._persist_direct_reviewed_repair_proposal(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    failure_evidence=evidence,
+                    context_pack=context_pack,
+                    chain_result=chain_result,
+                    failure_evidence_ref=str(getattr(evidence, "content_checksum", "") or f"evidence:{prior_evidence_checksum}"),
+                    repair_context_ref=str(getattr(context_pack, "context_pack_checksum", "") or f"context:{prior_context_checksum}"),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "direct_rerun_cycle_proposal_failed job=%s stage=%d: %s",
+                    job_id, stage_index, exc,
+                )
+                return self.create_repair_gate_from_reviewed_chain(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    review_chain_result=chain_result,
+                    failure_evidence_checksum=evidence.content_checksum,
+                    context_pack_checksum=context_pack.context_pack_checksum,
+                    base_repo_state_checksum=context_pack.base_repo_state_checksum,
+                    sandbox_path=sandbox_path,
+                    run_dir=str(run_dir),
+                    legacy_path=legacy_path,
+                    deterministic_rule_id=deterministic_rule_id,
+                    h2_required=h2_required,
+                    context_pack=context_pack,
+                    model_client=model_client,
+                )
+            self._bind_llm_invocations(chain=review_chain, proposal_id=proposal_id, gate_id="")
+            self._emit_repair_diff_ready_for_user_apply(
+                job_id=job_id,
+                stage_index=stage_index,
+                context_checksum=str(context_pack.context_pack_checksum),
+                proposal_id=proposal_id,
+                proposal_diff_checksum=proposal_diff_checksum,
+                chain=review_chain,
+            )
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="created",
+                reason="direct reviewed repair proposal persisted for user review",
+            )
+        # ── V1 direct candidate path on rerun cycle ──
+        if proposed_diff_exists and not final_diff_exists:
+            try:
+                proposal_id, proposal_diff_checksum = self._persist_direct_candidate_repair_proposal(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    failure_evidence=evidence,
+                    context_pack=context_pack,
+                    chain_result=chain_result,
+                    failure_evidence_ref=str(getattr(evidence, "content_checksum", "") or f"evidence:{prior_evidence_checksum}"),
+                    repair_context_ref=str(getattr(context_pack, "context_pack_checksum", "") or f"context:{prior_context_checksum}"),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "direct_candidate_rerun_cycle_proposal_failed job=%s stage=%d: %s",
+                    job_id, stage_index, exc,
+                )
+                return self.create_repair_gate_from_reviewed_chain(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    review_chain_result=chain_result,
+                    failure_evidence_checksum=evidence.content_checksum,
+                    context_pack_checksum=context_pack.context_pack_checksum,
+                    base_repo_state_checksum=context_pack.base_repo_state_checksum,
+                    sandbox_path=sandbox_path,
+                    run_dir=str(run_dir),
+                    legacy_path=legacy_path,
+                    deterministic_rule_id=deterministic_rule_id,
+                    h2_required=h2_required,
+                    context_pack=context_pack,
+                    model_client=model_client,
+                )
+            self._bind_llm_invocations(chain=review_chain, proposal_id=proposal_id, gate_id="")
+            self._emit_repair_candidate_diff_ready_for_user_apply(
+                job_id=job_id,
+                stage_index=stage_index,
+                context_checksum=str(context_pack.context_pack_checksum),
+                proposal_id=proposal_id,
+                proposal_diff_checksum=proposal_diff_checksum,
+                chain=review_chain,
+            )
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="created",
+                reason="direct candidate repair proposal persisted for user review on rerun cycle",
+            )
         return self.create_repair_gate_from_reviewed_chain(
             job_id=job_id,
             stage_index=stage_index,

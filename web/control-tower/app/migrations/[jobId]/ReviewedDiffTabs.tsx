@@ -18,10 +18,12 @@ const TABS: { id: TabId; label: string }[] = [
 export function ReviewedDiffTabs({
   proposal,
   diff,
+  diffMessage,
   onTabChange,
 }: {
   proposal: ReviewedDiffProposal;
   diff: SafeDiffPreviewType | null;
+  diffMessage?: string | null;
   onTabChange?: (tab: TabId) => void;
 }) {
   const [activeTab, setActiveTab] = useState<TabId>("diff");
@@ -56,6 +58,7 @@ export function ReviewedDiffTabs({
               <div className="safe-diff-missing" data-testid="safe-diff-missing">
                 <p className="meta">No diff preview available.</p>
                 {proposal.diff_ref && <p className="meta">Diff could not be loaded.</p>}
+                {diffMessage && <p className="meta warning-text">{diffMessage}</p>}
               </div>
             )}
           </div>

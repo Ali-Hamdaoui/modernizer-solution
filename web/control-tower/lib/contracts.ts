@@ -1183,6 +1183,7 @@ export type FilesChangedSummary = {
 
 export type ReviewedDiffProposal = {
   proposal_id: string;
+  kind?: "direct_reviewed_diff" | "reviewed_gate" | "direct_candidate_diff";
   job_id: string | null;
   command_id: string | null;
   gate_id: string | null;
