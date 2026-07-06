@@ -363,6 +363,74 @@ def test_create_job_persists_run_configuration_and_defaults_auto_on_green_policy
     )
 
 
+
+def test_cancel_v2_migration_job_endpoint_is_idempotent(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    _seed_exact_v2_dependencies(conn)
+    setup_repo = SqliteV2SetupRepository(conn)
+    setup_id, setup_checksum = _make_setup(setup_repo)
+    _save_ready_preflight(setup_repo, setup_id=setup_id, setup_checksum=setup_checksum)
+    job = _make_job_service(conn).create_job(setup_id)
+
+    response = client.post(
+        f"/v1/v2/migration-jobs/{job.job_id}/cancel",
+        json={},
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "cancelled"
+    assert payload["process"] == {
+        "process_found": False,
+        "terminated": False,
+        "process_count": 0,
+    }
+
+    second_response = client.post(
+        f"/v1/v2/migration-jobs/{job.job_id}/cancel",
+        json={},
+        headers=_mutation_headers(),
+    )
+    assert second_response.status_code == 200
+    assert second_response.json()["status"] == "already_cancelled"
+
+    with conn:
+        events = conn.execute(
+            "SELECT type, status FROM v2_job_events WHERE job_id = ? ORDER BY sequence",
+            (job.job_id,),
+        ).fetchall()
+    assert [(row["type"], row["status"]) for row in events][-3:] == [
+        ("migration_cancelling", "cancelling"),
+        ("stage_cancelled", "cancelled"),
+        ("migration_cancelled", "cancelled"),
+    ]
+
+
+def test_cancelled_v2_job_projects_cancelled_stage_and_allows_new_job(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    _seed_exact_v2_dependencies(conn)
+    setup_repo = SqliteV2SetupRepository(conn)
+    setup_id, setup_checksum = _make_setup(setup_repo)
+    _save_ready_preflight(setup_repo, setup_id=setup_id, setup_checksum=setup_checksum)
+    service = _make_job_service(conn)
+    job = service.create_job(setup_id)
+
+    response = client.post(
+        f"/v1/v2/migration-jobs/{job.job_id}/cancel",
+        json={},
+        headers=_mutation_headers(),
+    )
+    assert response.status_code == 200
+
+    stages_response = client.get(f"/v1/v2/migration-jobs/{job.job_id}/stages")
+    assert stages_response.status_code == 200
+    stages = stages_response.json()["stages"]
+    assert stages[0]["chain_status"] == "cancelled"
+
+    new_job = service.create_job(setup_id)
+    assert new_job.job_id != job.job_id
+
 def test_missing_exact_pipeline_seed_returns_clear_api_error(tmp_path: Path) -> None:
     client, conn = _api_client(tmp_path)
     _seed_exact_v2_dependencies(conn)
