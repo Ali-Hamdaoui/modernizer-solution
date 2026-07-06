@@ -510,7 +510,11 @@ def _has_concrete_post_repair_failure_evidence(candidate: dict[str, Any]) -> boo
     if str(candidate.get("next_repair_candidate_blocked_reason") or "").strip():
         return True
     classification = candidate.get("classification")
-    if isinstance(classification, dict) and str(classification.get("failure_type") or "").strip():
+    if (
+        isinstance(classification, dict)
+        and _classification_is_post_repair_scoped(classification)
+        and str(classification.get("failure_type") or "").strip()
+    ):
         return True
     nested = candidate.get("post_repair_verification")
     if isinstance(nested, dict):
@@ -524,6 +528,15 @@ def _has_concrete_post_repair_failure_evidence(candidate: dict[str, Any]) -> boo
         if isinstance(nested_classification, dict) and str(nested_classification.get("failure_type") or "").strip():
             return True
     return False
+
+
+def _classification_is_post_repair_scoped(classification: dict[str, Any]) -> bool:
+    markers = (
+        classification.get("source"),
+        classification.get("phase"),
+        classification.get("scope"),
+    )
+    return any(str(marker or "").strip() in {"post_repair", "post_repair_verification"} for marker in markers)
 
 
 def _compute_input_checksum(state: dict[str, Any]) -> str:

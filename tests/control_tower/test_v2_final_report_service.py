@@ -169,6 +169,7 @@ def test_evaluate_eligibility_accepts_contradictory_stale_post_repair_status() -
         "verification_status": "passed",
         "rollback_status": "not_needed",
         "proof_artifact": "proof.json",
+        "classification": {"failure_type": "SPRING_DATA_SORT_API_DRIFT"},
     }
     service = V2FinalReportService(MagicMock(return_value=uow))
 
@@ -207,7 +208,6 @@ def test_evaluate_eligibility_blocks_genuine_failed_post_repair_status() -> None
         "rollback_status": "not_needed",
         "proof_artifact": "proof.json",
         "stage_recovery_status": "still_failed",
-        "classification": {"failure_type": "JACKSON_VERSION_ALIGNMENT_DRIFT"},
         "next_repair_candidate": {"family": "JACKSON_VERSION_ALIGNMENT_DRIFT"},
     }
     service = V2FinalReportService(MagicMock(return_value=uow))
@@ -217,6 +217,85 @@ def test_evaluate_eligibility_blocks_genuine_failed_post_repair_status() -> None
     assert eligibility.eligible is False
     assert any("Stage 1 is not completed" in blocker for blocker in eligibility.blockers)
     assert any("No accepted Stage 1 output artifact revision or repair proof exists" in blocker for blocker in eligibility.blockers)
+
+
+def test_evaluate_eligibility_blocks_nested_post_repair_failed_classification() -> None:
+    command = MagicMock(
+        status="blocked",
+        result_json=json.dumps({"final_status": "BUILD_FAILED_IN_SANDBOX"}),
+    )
+    uow = _mock_uow()
+    uow.run_configurations.get_for_job.return_value = MagicMock(
+        payload_json=json.dumps({
+            "source_profile": "springboot-2.1-java11",
+            "target_profile": "springboot-2.7-java11",
+        })
+    )
+    uow.v2_commands.list_by_job.return_value = [command]
+    uow.v2_commands.list_by_job_and_stage.return_value = [command]
+    uow.phase_gates.list_open.return_value = []
+    uow.phase_gates.list_by_job_and_stage.return_value = [
+        MagicMock(gate_phase="repair_review", gate_status="resolved", gate_decision="continue")
+    ]
+    uow.artifact_revisions.find_accepted.return_value = None
+    uow.v2_repair_candidates.latest_public_for_job.return_value = {
+        "stage_index": 1,
+        "status": "verified",
+        "execution_status": "verified",
+        "post_repair_verification_status": "failed",
+        "verification_status": "passed",
+        "rollback_status": "not_needed",
+        "proof_artifact": "proof.json",
+        "post_repair_verification": {
+            "classification": {"failure_type": "JACKSON_VERSION_ALIGNMENT_DRIFT"},
+        },
+    }
+    service = V2FinalReportService(MagicMock(return_value=uow))
+
+    eligibility = service._evaluate_eligibility(uow, "job123")
+
+    assert eligibility.eligible is False
+    assert any("Stage 1 is not completed" in blocker for blocker in eligibility.blockers)
+
+
+def test_evaluate_eligibility_blocks_top_level_post_repair_scoped_classification() -> None:
+    command = MagicMock(
+        status="blocked",
+        result_json=json.dumps({"final_status": "BUILD_FAILED_IN_SANDBOX"}),
+    )
+    uow = _mock_uow()
+    uow.run_configurations.get_for_job.return_value = MagicMock(
+        payload_json=json.dumps({
+            "source_profile": "springboot-2.1-java11",
+            "target_profile": "springboot-2.7-java11",
+        })
+    )
+    uow.v2_commands.list_by_job.return_value = [command]
+    uow.v2_commands.list_by_job_and_stage.return_value = [command]
+    uow.phase_gates.list_open.return_value = []
+    uow.phase_gates.list_by_job_and_stage.return_value = [
+        MagicMock(gate_phase="repair_review", gate_status="resolved", gate_decision="continue")
+    ]
+    uow.artifact_revisions.find_accepted.return_value = None
+    uow.v2_repair_candidates.latest_public_for_job.return_value = {
+        "stage_index": 1,
+        "status": "verified",
+        "execution_status": "verified",
+        "post_repair_verification_status": "failed",
+        "verification_status": "passed",
+        "rollback_status": "not_needed",
+        "proof_artifact": "proof.json",
+        "classification": {
+            "source": "post_repair_verification",
+            "failure_type": "JACKSON_VERSION_ALIGNMENT_DRIFT",
+        },
+    }
+    service = V2FinalReportService(MagicMock(return_value=uow))
+
+    eligibility = service._evaluate_eligibility(uow, "job123")
+
+    assert eligibility.eligible is False
+    assert any("Stage 1 is not completed" in blocker for blocker in eligibility.blockers)
 
 
 def test_report_result_contains_no_path_fields() -> None:
