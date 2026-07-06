@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CONTROL_TOWER_API_BASE_URL,
   CONTROL_TOWER_FRONTEND_CLIENT_ID,
   DEFAULT_CONTROL_TOWER_API_BASE_URL,
   allowedStatusCopy,
+  cancelV2MigrationJob,
   createDiagnosticJobPayload,
   createIdempotencyKey,
   createV2JobPayload,
@@ -141,6 +143,34 @@ describe("M2-01 frontend diagnostic contracts", () => {
           "Idempotency-Key": "key-1"
         })
       })
+    );
+  });
+
+
+  it("posts V2 cancellation to the migration job cancel endpoint", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        job_id: "job-123",
+        status: "cancelled",
+        process: { process_found: false, terminated: false, process_count: 0 },
+      }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await cancelV2MigrationJob("job-123");
+
+    expect(result.status).toBe("cancelled");
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/job-123/cancel`,
+      expect.objectContaining({
+        method: "POST",
+        body: "{}",
+        headers: expect.objectContaining({
+          "Content-Type": "application/json",
+          "X-Control-Tower-Client": CONTROL_TOWER_FRONTEND_CLIENT_ID,
+        }),
+      }),
     );
   });
 
