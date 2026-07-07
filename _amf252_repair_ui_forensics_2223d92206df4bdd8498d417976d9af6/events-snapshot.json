@@ -1,0 +1,2352 @@
+﻿{
+    "job_id":  "2223d92206df4bdd8498d417976d9af6",
+    "after":  0,
+    "events":  [
+                   {
+                       "event_id":  "b46c216733b841eaa3b0a98d1dc0bb00",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  null,
+                       "type":  "job_created",
+                       "status":  "created",
+                       "message":  "V2 migration job created.",
+                       "payload":  {
+                                       "pipeline_id":  "springboot-216-to-400-java21-four-stage",
+                                       "setup_id":  "bda2d3335dca40b5be4a7f48035af184"
+                                   },
+                       "created_at":  "2026-07-07T14:20:46.053431Z",
+                       "sequence":  975
+                   },
+                   {
+                       "event_id":  "4e53db22906f4057b70b9cc348cb62b4",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stage_queued",
+                       "status":  "queued",
+                       "message":  "Stage 1 command manifest queued for real orchestrator execution.",
+                       "payload":  {
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031"
+                                   },
+                       "created_at":  "2026-07-07T14:20:46.085202Z",
+                       "sequence":  976
+                   },
+                   {
+                       "event_id":  "bcf06be619f1479f81b02428b6eff087",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stage_started",
+                       "status":  "running",
+                       "message":  "Stage 1 real orchestrator started.",
+                       "payload":  {
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031"
+                                   },
+                       "created_at":  "2026-07-07T14:20:46.125219Z",
+                       "sequence":  977
+                   },
+                   {
+                       "event_id":  "c589d5e64b924710b042dd57334800ed",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "command_started",
+                       "status":  "running",
+                       "message":  "Backend-owned orchestrator manifest launched.",
+                       "payload":  {
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "cwd":  "[redacted-windows-path]",
+                                       "shell":  false
+                                   },
+                       "created_at":  "2026-07-07T14:20:46.142153Z",
+                       "sequence":  978
+                   },
+                   {
+                       "event_id":  "5204319df7374aca91fc96fc9f4d4836",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "process_started",
+                       "status":  "running",
+                       "message":  "Orchestrator subprocess is running.",
+                       "payload":  {
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "pid":  "[redacted]"
+                                   },
+                       "created_at":  "2026-07-07T14:20:46.170964Z",
+                       "sequence":  979
+                   },
+                   {
+                       "event_id":  "d9ad670a22c046939b2f8c453c2e095f",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "analysis_started",
+                       "status":  "running",
+                       "message":  "analysis phase started.",
+                       "payload":  {
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "message":  "analysis phase started.",
+                                       "phase":  "analysis",
+                                       "status":  "running"
+                                   },
+                       "created_at":  "2026-07-07T14:20:47.822329Z",
+                       "sequence":  980
+                   },
+                   {
+                       "event_id":  "c0496ed2dc8340f5b4092447f6455925",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "analysis_completed",
+                       "status":  "completed",
+                       "message":  "analysis phase completed.",
+                       "payload":  {
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "message":  "analysis phase completed.",
+                                       "phase":  "analysis",
+                                       "status":  "completed"
+                                   },
+                       "created_at":  "2026-07-07T14:24:24.754782Z",
+                       "sequence":  981
+                   },
+                   {
+                       "event_id":  "f0aae1e4ab5643cfbeddc1b7e915647d",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "planning_started",
+                       "status":  "running",
+                       "message":  "planning phase started.",
+                       "payload":  {
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "message":  "planning phase started.",
+                                       "phase":  "planning",
+                                       "status":  "running"
+                                   },
+                       "created_at":  "2026-07-07T14:24:24.780212Z",
+                       "sequence":  982
+                   },
+                   {
+                       "event_id":  "eb2487eeafaf422396554d47ea9e8329",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "planning_completed",
+                       "status":  "completed",
+                       "message":  "planning phase completed.",
+                       "payload":  {
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "message":  "planning phase completed.",
+                                       "phase":  "planning",
+                                       "status":  "completed"
+                                   },
+                       "created_at":  "2026-07-07T14:24:24.857416Z",
+                       "sequence":  983
+                   },
+                   {
+                       "event_id":  "25b5007be4c04f80b3e6956439b90eb3",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "assessment_started",
+                       "status":  "running",
+                       "message":  "assessment phase started.",
+                       "payload":  {
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "message":  "assessment phase started.",
+                                       "phase":  "assessment",
+                                       "status":  "running"
+                                   },
+                       "created_at":  "2026-07-07T14:24:24.884654Z",
+                       "sequence":  984
+                   },
+                   {
+                       "event_id":  "a49bc783c86d4efe9c6baf9020ddbfee",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "assessment_completed",
+                       "status":  "completed",
+                       "message":  "assessment phase completed.",
+                       "payload":  {
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "message":  "assessment phase completed.",
+                                       "phase":  "assessment",
+                                       "status":  "completed"
+                                   },
+                       "created_at":  "2026-07-07T14:24:24.912168Z",
+                       "sequence":  985
+                   },
+                   {
+                       "event_id":  "1e3d2613c6b343fa8b6b9bf1646f9cd2",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "approval_blocked",
+                       "status":  "blocked",
+                       "message":  "Human approval required.",
+                       "payload":  {
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "message":  "Human approval required.",
+                                       "phase":  "approval",
+                                       "run_id":  "v2-2223d922",
+                                       "status":  "blocked"
+                                   },
+                       "created_at":  "2026-07-07T14:24:24.929316Z",
+                       "sequence":  986
+                   },
+                   {
+                       "event_id":  "7f6f680bd46d46c1a204143c3a94ac19",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stdout",
+                       "status":  "running",
+                       "message":  "CONTROL_TOWER_FINAL_JSON {\"approval_status\":\"INTERRUPTED\",\"artifact_refs\":{\"analysis_report\":\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:[],\"decision_options\":[\"approved\",\"rejected\",\"replan_required\"],\"run_id\":\"v2-2223d922\",\"status\":\"human_approval_required\",\"summary\":{\"analysis_status\":\"PASS\",\"assessment_status\":\"PASS\",\"orchestration_status\":\"PENDING\",\"planning_status\":\"PASS\"},\"warnings\":[\"OPENREWRITE_IMPACT_HIGH: OpenRewrite impact is high; manual review is required before execution.\",\"OPENREWRITE_HIGH_RISK_FILES: OpenRewrite reported high-risk files: 4.\",\"OPENREWRITE_SECURITY_CONFIG_TOUCHED: OpenRewrite migration signals indicate security configuration was touched.\"]}",
+                       "payload":  {
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031"
+                                   },
+                       "created_at":  "2026-07-07T14:24:24.990151Z",
+                       "sequence":  987
+                   },
+                   {
+                       "event_id":  "2b23497cbd2a45ec8964a46d46770832",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: analysis_report",
+                       "payload":  {
+                                       "artifact_kind":  "analysis_report",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\analysis_report.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.273028Z",
+                       "sequence":  988
+                   },
+                   {
+                       "event_id":  "824b715b57594a99b800d2b4cab63620",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: analysis_report.json",
+                       "payload":  {
+                                       "artifact_kind":  "analysis_report.json",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\analysis_report.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.292626Z",
+                       "sequence":  989
+                   },
+                   {
+                       "event_id":  "71a9ab7a769f4530b2776b032f5e2389",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: analysis_summary",
+                       "payload":  {
+                                       "artifact_kind":  "analysis_summary",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\analysis_summary.md"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.318177Z",
+                       "sequence":  990
+                   },
+                   {
+                       "event_id":  "16ccdb3df81843d489f6f4aa2e4cd2cb",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: analysis_summary.md",
+                       "payload":  {
+                                       "artifact_kind":  "analysis_summary.md",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\analysis_summary.md"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.338131Z",
+                       "sequence":  991
+                   },
+                   {
+                       "event_id":  "12396d6080b242d8b981084e0819c467",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: approval_request.json",
+                       "payload":  {
+                                       "artifact_kind":  "approval_request.json",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\approval_request.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.373815Z",
+                       "sequence":  992
+                   },
+                   {
+                       "event_id":  "5b040d5df1d04f32a251d2dc1f44a6e8",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: assessment_report",
+                       "payload":  {
+                                       "artifact_kind":  "assessment_report",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\assessment\\assessment_report.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.394011Z",
+                       "sequence":  993
+                   },
+                   {
+                       "event_id":  "42400b5942b9433899f4d889b3a49f53",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: assessment_report.json",
+                       "payload":  {
+                                       "artifact_kind":  "assessment_report.json",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\assessment\\assessment_report.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.415933Z",
+                       "sequence":  994
+                   },
+                   {
+                       "event_id":  "f493ce12e40548318d6bfe2d426764c0",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: assessment_summary",
+                       "payload":  {
+                                       "artifact_kind":  "assessment_summary",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\assessment\\assessment_summary.md"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.438741Z",
+                       "sequence":  995
+                   },
+                   {
+                       "event_id":  "890086a3994b481d9c4698b9d18e4ed6",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: assessment_summary.md",
+                       "payload":  {
+                                       "artifact_kind":  "assessment_summary.md",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\assessment\\assessment_summary.md"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.472434Z",
+                       "sequence":  996
+                   },
+                   {
+                       "event_id":  "8372a983171f48fab259830db0b5ca8a",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: config_inventory",
+                       "payload":  {
+                                       "artifact_kind":  "config_inventory",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\config_inventory.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.494820Z",
+                       "sequence":  997
+                   },
+                   {
+                       "event_id":  "06ab6b7e54ac4df5ae2637e4da2d9d7a",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: config_inventory.json",
+                       "payload":  {
+                                       "artifact_kind":  "config_inventory.json",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\config_inventory.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.513123Z",
+                       "sequence":  998
+                   },
+                   {
+                       "event_id":  "5fd3318454224a42a36ff907ec3a4316",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: copilot_assist",
+                       "payload":  {
+                                       "artifact_kind":  "copilot_assist",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\copilot_assist.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.523789Z",
+                       "sequence":  999
+                   },
+                   {
+                       "event_id":  "752f560228bb48bcac0aa2b13f6e0860",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: copilot_assist.json",
+                       "payload":  {
+                                       "artifact_kind":  "copilot_assist.json",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\copilot_assist.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.542483Z",
+                       "sequence":  1000
+                   },
+                   {
+                       "event_id":  "66896a5c7808425fa61a3dba0fda829e",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: dependency_graph",
+                       "payload":  {
+                                       "artifact_kind":  "dependency_graph",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\dependency_graph.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.560228Z",
+                       "sequence":  1001
+                   },
+                   {
+                       "event_id":  "ebd89d032bfb433fa69ac1e4c45a9346",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: dependency_graph.json",
+                       "payload":  {
+                                       "artifact_kind":  "dependency_graph.json",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\dependency_graph.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.581713Z",
+                       "sequence":  1002
+                   },
+                   {
+                       "event_id":  "2e10949eaaa44be6a79f5e385ff6d2ba",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: migration_plan.yaml",
+                       "payload":  {
+                                       "artifact_kind":  "migration_plan.yaml",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\migration_plan.yaml"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.603606Z",
+                       "sequence":  1003
+                   },
+                   {
+                       "event_id":  "4bb1129274b542bd864798fcd3d719bb",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: migration_units.yaml",
+                       "payload":  {
+                                       "artifact_kind":  "migration_units.yaml",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\migration_units.yaml"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.636429Z",
+                       "sequence":  1004
+                   },
+                   {
+                       "event_id":  "7da05d976da44dbd9abf02a023707908",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: plan_summary.md",
+                       "payload":  {
+                                       "artifact_kind":  "plan_summary.md",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\plan_summary.md"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.659050Z",
+                       "sequence":  1005
+                   },
+                   {
+                       "event_id":  "8ddab365fb5e4ad6a46a6e39b43e0557",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: plan_validation_report.json",
+                       "payload":  {
+                                       "artifact_kind":  "plan_validation_report.json",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\plan_validation_report.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.684398Z",
+                       "sequence":  1006
+                   },
+                   {
+                       "event_id":  "4d8e3dee38284ce2a198541293deffa9",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: read_only_verification",
+                       "payload":  {
+                                       "artifact_kind":  "read_only_verification",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\read_only_verification.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.703988Z",
+                       "sequence":  1007
+                   },
+                   {
+                       "event_id":  "6c2e1223daeb4484a7805a96e65e0e39",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: read_only_verification.json",
+                       "payload":  {
+                                       "artifact_kind":  "read_only_verification.json",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\read_only_verification.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.721759Z",
+                       "sequence":  1008
+                   },
+                   {
+                       "event_id":  "c71f1c03d16a40c889b5b5301cec64c4",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_dry_run.patch",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_dry_run.patch",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_dry_run.patch"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.744166Z",
+                       "sequence":  1009
+                   },
+                   {
+                       "event_id":  "ddc5f753348448ae99cd92f4a9d57926",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_impact_summary",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_impact_summary",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_impact_summary.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.753173Z",
+                       "sequence":  1010
+                   },
+                   {
+                       "event_id":  "4df4a6fc665641e68d61d8b4de414172",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_impact_summary.json",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_impact_summary.json",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_impact_summary.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.774702Z",
+                       "sequence":  1011
+                   },
+                   {
+                       "event_id":  "7e7195a65df94e5f85fd3e0574c85724",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_patch",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_patch",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_dry_run.patch"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.793282Z",
+                       "sequence":  1012
+                   },
+                   {
+                       "event_id":  "34ee117b6a0d4ed8b7790f7925ec6923",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_plugin_plan",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_plugin_plan",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_plugin_plan.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.813012Z",
+                       "sequence":  1013
+                   },
+                   {
+                       "event_id":  "2aac1d32d8be4f5e823244010f047e60",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_plugin_plan.json",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_plugin_plan.json",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_plugin_plan.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.840800Z",
+                       "sequence":  1014
+                   },
+                   {
+                       "event_id":  "9704df7ac1c54739bd936b6253d7246a",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_preview",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_preview",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_preview.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.876028Z",
+                       "sequence":  1015
+                   },
+                   {
+                       "event_id":  "9f5da1569ec349c5a0cb9fb5dcc118cb",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_preview.json",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_preview.json",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_preview.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.917886Z",
+                       "sequence":  1016
+                   },
+                   {
+                       "event_id":  "013234f9a81849c58942a19492140589",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: source_profile_detection",
+                       "payload":  {
+                                       "artifact_kind":  "source_profile_detection",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\source_profile_detection.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.934550Z",
+                       "sequence":  1017
+                   },
+                   {
+                       "event_id":  "13da3a126fe545ad8f61cb124d266c5a",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: target_dependency_plan",
+                       "payload":  {
+                                       "artifact_kind":  "target_dependency_plan",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\target_dependency_plan.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.950235Z",
+                       "sequence":  1018
+                   },
+                   {
+                       "event_id":  "22f307b823b44e4d89d444edf69c334e",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: target_dependency_plan.json",
+                       "payload":  {
+                                       "artifact_kind":  "target_dependency_plan.json",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\target_dependency_plan.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.969970Z",
+                       "sequence":  1019
+                   },
+                   {
+                       "event_id":  "854853f5515c458dacd3b604ec6a2f78",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: test_inventory",
+                       "payload":  {
+                                       "artifact_kind":  "test_inventory",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\test_inventory.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:25.989945Z",
+                       "sequence":  1020
+                   },
+                   {
+                       "event_id":  "f34fcf5526c54a7d87e0e846b4fce9df",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: test_inventory.json",
+                       "payload":  {
+                                       "artifact_kind":  "test_inventory.json",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\test_inventory.json"
+                                   },
+                       "created_at":  "2026-07-07T14:24:26.009021Z",
+                       "sequence":  1021
+                   },
+                   {
+                       "event_id":  "8cf44a45176e42c3b548aa1ae1927b77",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "approval_required",
+                       "status":  "blocked",
+                       "message":  "Orchestrator paused for human approval review.",
+                       "payload":  {
+                                       "card_id":  "6b33edc8a3904dd0b8bcca8981f21150",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "gate_checksum":  "c841fcc5ba3e96fc453106aca8b6a38d66e3a2f8d6d7ee34afb3f71805150508",
+                                       "gate_created":  true,
+                                       "gate_id":  "400cba8a86fa41eaae6c472afd683c5c",
+                                       "request_checksum":  "c841fcc5ba3e96fc453106aca8b6a38d66e3a2f8d6d7ee34afb3f71805150508"
+                                   },
+                       "created_at":  "2026-07-07T14:24:26.039569Z",
+                       "sequence":  1022
+                   },
+                   {
+                       "event_id":  "d805a93c8b4b425ea852635a609a9c61",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stage_blocked_for_approval",
+                       "status":  "blocked",
+                       "message":  "Stage is blocked until exact checksum approval-review confirmation.",
+                       "payload":  {
+                                       "card_id":  "6b33edc8a3904dd0b8bcca8981f21150",
+                                       "command_id":  "7deba2f5ea7a40ddacec4cbd7f9e8031",
+                                       "gate_checksum":  "c841fcc5ba3e96fc453106aca8b6a38d66e3a2f8d6d7ee34afb3f71805150508",
+                                       "gate_id":  "400cba8a86fa41eaae6c472afd683c5c"
+                                   },
+                       "created_at":  "2026-07-07T14:24:26.053728Z",
+                       "sequence":  1023
+                   },
+                   {
+                       "event_id":  "0436b45afb134058a03f84e77148841f",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "approval_resume_queued",
+                       "status":  "started",
+                       "message":  "Approval accepted; backend-owned resume command started.",
+                       "payload":  {
+                                       "card_id":  "6b33edc8a3904dd0b8bcca8981f21150",
+                                       "resume_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "resume_status":  "started"
+                                   },
+                       "created_at":  "2026-07-07T14:24:37.978617Z",
+                       "sequence":  1024
+                   },
+                   {
+                       "event_id":  "0b4583fdbf6d4e1bb21f85a8776721a0",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "approval_started",
+                       "status":  "running",
+                       "message":  "Approval accepted; orchestrator resume process starting.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:24:37.993967Z",
+                       "sequence":  1025
+                   },
+                   {
+                       "event_id":  "7ec88064ef0c4095bbcebcbb362217ea",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "resume_started",
+                       "status":  "running",
+                       "message":  "Stage 1 real orchestrator resume started.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:24:38.010674Z",
+                       "sequence":  1026
+                   },
+                   {
+                       "event_id":  "e26691cdae164542b1847d87a5cd534f",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "command_started",
+                       "status":  "running",
+                       "message":  "Backend-owned approval resume command launched.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "cwd":  "[redacted-windows-path]",
+                                       "shell":  false
+                                   },
+                       "created_at":  "2026-07-07T14:24:38.028427Z",
+                       "sequence":  1027
+                   },
+                   {
+                       "event_id":  "e5b098c266494d639509be4f4142f7d3",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "process_started",
+                       "status":  "running",
+                       "message":  "Orchestrator subprocess is running.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "pid":  "[redacted]"
+                                   },
+                       "created_at":  "2026-07-07T14:24:38.054000Z",
+                       "sequence":  1028
+                   },
+                   {
+                       "event_id":  "f2675fdb7cca4793aeed5ae181172142",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "approval_started",
+                       "status":  "running",
+                       "message":  "Recording approval decision.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "message":  "Recording approval decision.",
+                                       "phase":  "approval",
+                                       "status":  "running"
+                                   },
+                       "created_at":  "2026-07-07T14:24:38.984950Z",
+                       "sequence":  1029
+                   },
+                   {
+                       "event_id":  "4854177fdde84e61bf3480e18aaad7c6",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "approval_completed",
+                       "status":  "completed",
+                       "message":  "Approval decision recorded.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "message":  "Approval decision recorded.",
+                                       "phase":  "approval",
+                                       "status":  "completed"
+                                   },
+                       "created_at":  "2026-07-07T14:24:39.004532Z",
+                       "sequence":  1030
+                   },
+                   {
+                       "event_id":  "485e36c24bcb41f6a6f9651d11055394",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "approval_blocked",
+                       "status":  "blocked",
+                       "message":  "Human approval required.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "message":  "Human approval required.",
+                                       "phase":  "approval",
+                                       "run_id":  "v2-2223d922",
+                                       "status":  "blocked"
+                                   },
+                       "created_at":  "2026-07-07T14:24:39.037369Z",
+                       "sequence":  1031
+                   },
+                   {
+                       "event_id":  "a4c04728524c409687d50336ac739c48",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "approval_started",
+                       "status":  "running",
+                       "message":  "Recording approval decision.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "message":  "Recording approval decision.",
+                                       "phase":  "approval",
+                                       "status":  "running"
+                                   },
+                       "created_at":  "2026-07-07T14:24:39.048179Z",
+                       "sequence":  1032
+                   },
+                   {
+                       "event_id":  "fe3bcf4f3b054439975bf5cf85faa45e",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "approval_completed",
+                       "status":  "completed",
+                       "message":  "Approval decision recorded.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "message":  "Approval decision recorded.",
+                                       "phase":  "approval",
+                                       "status":  "completed"
+                                   },
+                       "created_at":  "2026-07-07T14:24:39.063231Z",
+                       "sequence":  1033
+                   },
+                   {
+                       "event_id":  "769e9ee0d20b4cc0939fa2ad4318cabe",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "approval_completed",
+                       "status":  "completed",
+                       "message":  "Human approval phase complete; sandbox transform has started.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:24:39.341492Z",
+                       "sequence":  1034
+                   },
+                   {
+                       "event_id":  "aedeeba784f94bd7bc68b8046c3b4a53",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "sandbox_transform_started",
+                       "status":  "running",
+                       "message":  "Sandbox transform started.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "message":  "Sandbox transform started.",
+                                       "phase":  "sandbox_transform",
+                                       "status":  "running"
+                                   },
+                       "created_at":  "2026-07-07T14:24:39.361351Z",
+                       "sequence":  1035
+                   },
+                   {
+                       "event_id":  "3cf76d6760844335a7bd53610f97b5e4",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "ERROR: Build result kind: compilation_error; Build message: Java application failed to compile; Build error contract: [redacted-windows-path]",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.290611Z",
+                       "sequence":  1036
+                   },
+                   {
+                       "event_id":  "68037a542dcf47a6bc5b8e542b77292f",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "sandbox_transform_failed",
+                       "status":  "failed",
+                       "message":  "Build result kind: compilation_error; Build message: Java application failed to compile; Build error contract: [redacted-windows-path]",
+                       "payload":  {
+                                       "build_status":  "BUILD_FAILED_IN_SANDBOX",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "message":  "Build result kind: compilation_error; Build message: Java application failed to compile; Build error contract: [redacted-windows-path]",
+                                       "phase":  "sandbox_transform",
+                                       "status":  "failed",
+                                       "test_status":  ""
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.335918Z",
+                       "sequence":  1037
+                   },
+                   {
+                       "event_id":  "29d3053c830a4bd69e1b698225ce78f7",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "log_file: [redacted-windows-path]",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.364518Z",
+                       "sequence":  1038
+                   },
+                   {
+                       "event_id":  "5b2692f187d24ffd92dc9ea18a910d99",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stage_report_started",
+                       "status":  "running",
+                       "message":  "Final report generation started.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "message":  "Final report generation started.",
+                                       "phase":  "final_report",
+                                       "status":  "running"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.395877Z",
+                       "sequence":  1039
+                   },
+                   {
+                       "event_id":  "c6605fe92dde492b870470a613b845ad",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "--- Last 30 log lines ---",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.420898Z",
+                       "sequence":  1040
+                   },
+                   {
+                       "event_id":  "29a40b043fce4bc5bf643bb84fb99cb1",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stage_report_completed",
+                       "status":  "completed",
+                       "message":  "Final report written.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "message":  "Final report written.",
+                                       "phase":  "final_report",
+                                       "status":  "completed"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.442690Z",
+                       "sequence":  1041
+                   },
+                   {
+                       "event_id":  "a938dfeb38244966a726e4e14f148ab2",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "WARNING: Use --illegal-access=warn to enable warnings of further illegal reflective access operations",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.466707Z",
+                       "sequence":  1042
+                   },
+                   {
+                       "event_id":  "9dbb6029c59c49a8980b9c0e74ec20aa",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stdout",
+                       "status":  "running",
+                       "message":  "CONTROL_TOWER_FINAL_JSON {\"ai_hub_path\":\"[redacted-windows-path]:true,\"analysis_dir\":\"[redacted-windows-path]:\"PASS\",\"approval_comments\":\"\",\"approval_decision\":\"approved\",\"approval_status\":\"COMPLETED\",\"approved_by\":\"human\",\"artifact_refs\":{\"analysis_report\":\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:\"[redacted-windows-path]:true,\"assessment_dir\":\"[redacted-windows-path]:\"PASS\",\"auto_apply_safe_repairs\":false,\"blockers\":[\"Build result kind: compilation_error; Build message: Java application failed to compile; Build error contract: [redacted-windows-path]:\"BUILD_FAILED_IN_SANDBOX\",\"copilot_artifact_refs\":{},\"copilot_assist_mode\":\"off\",\"copilot_assist_phase\":\"assessment\",\"copilot_availability_status\":\"SKIPPED\",\"copilot_dependency_advisory_status\":\"SKIPPED\",\"copilot_enabled\":false,\"copilot_errors\":[],\"copilot_failure_agent_enabled\":false,\"copilot_fallback_used\":false,\"copilot_feature_probe\":{},\"copilot_invocation_status\":\"SKIPPED\",\"copilot_model\":\"gpt-5-mini\",\"copilot_phase_statuses\":{},\"copilot_provider\":\"copilot_cli\",\"copilot_repair_strict_containment\":true,\"copilot_report_enabled\":false,\"copilot_required\":false,\"copilot_route_after_assist\":\"approval\",\"copilot_timeout_seconds\":300,\"copilot_validation_had_warnings\":false,\"copilot_warnings\":[],\"current_unit\":\"sandbox_transform\",\"dependency_policy_blockers_count\":0,\"dependency_policy_risks_count\":0,\"dependency_policy_status\":\"\",\"errors\":[\"Build result kind: compilation_error; Build message: Java application failed to compile; Build error contract: [redacted-windows-path]:\"PENDING\",\"final_proof_level\":\"not_verified\",\"final_status\":\"REPAIR_REVIEW_REQUIRED\",\"h2_startup_required\":false,\"h2_startup_status\":\"H2_STARTUP_SKIPPED\",\"legacy_app_path\":\"[redacted-windows-path]:\"full_sandbox_migration\",\"modernized_app_path\":\"[redacted-windows-path]:\"UNKNOWN\",\"orchestration_artifacts_valid\":false,\"orchestration_dir\":\"[redacted-windows-path]:\"FAIL\",\"planning_artifacts_valid\":true,\"planning_dir\":\"[redacted-windows-path]:\"PASS\",\"policy_patch_applied\":false,\"profile_id\":\"springboot-2.1.6-to-2.7-java11\",\"repair_attempts_count\":0,\"repair_fallback_generated\":false,\"repair_human_review_required\":false,\"repair_loop_enabled\":false,\"repair_loop_status\":\"REPAIR_REVIEW_REQUIRED\",\"repair_max_attempts\":3,\"repair_mode\":\"proposal_only\",\"repair_safe_patch_applied\":false,\"run_dir\":\"[redacted-windows-path]:\"v2-2223d922\",\"runtime_security_warnings\":[],\"sandbox_path\":\"[redacted-windows-path]:\"Build/test failure requires F5 reviewed Azure repair chain and checksum-bound human approval.\",\"test_log_path\":\"\",\"test_phase\":\"\",\"test_report_path\":\"\",\"test_status\":\"\",\"test_summary_path\":\"\",\"test_totals\":{},\"thread_id\":\"v2-2223d922\",\"timing\":{\"commands\":[{\"command\":[\"[redacted-windows-path]:\"[redacted-windows-path]:77.895514,\"label\":\"build_validation:baseline\"},{\"command\":[\"[redacted-windows-path] org.openrewrite.maven:rewrite-maven-plugin:6.40.0:runNoFork -Drewrite.activeRecipes=org.openrewrite.java.spring.boot2.UpgradeSpringBoot_2_7 -Drewrite.recipeArtifactCoordinates=org.openrewrite.recipe:rewrite-spring:6....[truncated]",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.495529Z",
+                       "sequence":  1043
+                   },
+                   {
+                       "event_id":  "af2fcf4c79c14c269ac18944067ce602",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "WARNING: All illegal access operations will be denied in a future release",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.524120Z",
+                       "sequence":  1044
+                   },
+                   {
+                       "event_id":  "6d9a93403a794c7889d993fb1e98b5f8",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[INFO] [redacted-path] [redacted-windows-path] uses or overrides a deprecated API.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.551637Z",
+                       "sequence":  1045
+                   },
+                   {
+                       "event_id":  "fbcd4ad181144543a8ad1648b9fb29ff",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[INFO] [redacted-path] Recompile with -Xlint:deprecation for details.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.574460Z",
+                       "sequence":  1046
+                   },
+                   {
+                       "event_id":  "c706ac3c7303425088d208c33909c4e8",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[INFO] [redacted-path] [redacted-windows-path] uses unchecked or unsafe operations.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.605437Z",
+                       "sequence":  1047
+                   },
+                   {
+                       "event_id":  "f27efb091195411fa39d75550bf84fa2",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[INFO] [redacted-path] Recompile with -Xlint:unchecked for details.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.631058Z",
+                       "sequence":  1048
+                   },
+                   {
+                       "event_id":  "2c8914cce9b94a0bb4e9adf4f64be51b",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[INFO] Some messages have been simplified; recompile with -Xdiags:verbose to get full output",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.667472Z",
+                       "sequence":  1049
+                   },
+                   {
+                       "event_id":  "ccbaab74af3e4358adbcdf4794e5064c",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[INFO] -------------------------------------------------------------",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.687771Z",
+                       "sequence":  1050
+                   },
+                   {
+                       "event_id":  "8327a7bbb6a046d1957e621485158cae",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[ERROR] COMPILATION ERROR : ",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.719045Z",
+                       "sequence":  1051
+                   },
+                   {
+                       "event_id":  "ce438228b8dc46e5ae6ad0cb75017fa4",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[INFO] -------------------------------------------------------------",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.743625Z",
+                       "sequence":  1052
+                   },
+                   {
+                       "event_id":  "3fff684a888b49e8be36088082388076",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[ERROR] [redacted-path] incompatible types: java.lang.String cannot be converted to java.util.List\u003cjava.lang.String\u003e",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.765102Z",
+                       "sequence":  1053
+                   },
+                   {
+                       "event_id":  "c9b9c58d8a634e77b35f95f5b15373d7",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[ERROR] [redacted-path] incompatible types: java.lang.String cannot be converted to java.util.List\u003cjava.lang.String\u003e",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.784552Z",
+                       "sequence":  1054
+                   },
+                   {
+                       "event_id":  "e80e2777d93442cda6dca2babb63d67e",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[INFO] 2 errors ",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.808831Z",
+                       "sequence":  1055
+                   },
+                   {
+                       "event_id":  "890b805be30f4657ae86427f33a84d2d",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[INFO] -------------------------------------------------------------",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.830569Z",
+                       "sequence":  1056
+                   },
+                   {
+                       "event_id":  "1b974c02e4dc4abfb04f0ed463e57caa",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[INFO] ------------------------------------------------------------------------",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.865965Z",
+                       "sequence":  1057
+                   },
+                   {
+                       "event_id":  "27617c6f0e594a24ac419657a6c46b35",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[INFO] BUILD FAILURE",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.891602Z",
+                       "sequence":  1058
+                   },
+                   {
+                       "event_id":  "fb60384960b9461ab8cad306afca1653",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[INFO] ------------------------------------------------------------------------",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.916729Z",
+                       "sequence":  1059
+                   },
+                   {
+                       "event_id":  "f5f5b946f6db4f87a59ca9585232f107",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[INFO] Total time:  12.453 s",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.947805Z",
+                       "sequence":  1060
+                   },
+                   {
+                       "event_id":  "fd24097629074dfdb878251c7c777f12",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[INFO] Finished at: 2026-07-07T15:27:39+01:00",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:39.981187Z",
+                       "sequence":  1061
+                   },
+                   {
+                       "event_id":  "b156e723d4b142d98e165a8455892488",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[INFO] ------------------------------------------------------------------------",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.007537Z",
+                       "sequence":  1062
+                   },
+                   {
+                       "event_id":  "53ca0ac5aa084d4cbf675336f7bffac9",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:3.8.1:compile (default-compile) on project common-utils: Compilation failure: Compilation failure: ",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.027897Z",
+                       "sequence":  1063
+                   },
+                   {
+                       "event_id":  "65483ee30c43491ba98fde1dedf4dd53",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[ERROR] [redacted-path] incompatible types: java.lang.String cannot be converted to java.util.List\u003cjava.lang.String\u003e",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.049141Z",
+                       "sequence":  1064
+                   },
+                   {
+                       "event_id":  "cb0baa1e745444f1bab402267aa0715e",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[ERROR] [redacted-path] incompatible types: java.lang.String cannot be converted to java.util.List\u003cjava.lang.String\u003e",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.070495Z",
+                       "sequence":  1065
+                   },
+                   {
+                       "event_id":  "5f5d2a76fa8840d1910bc0aad1b9645b",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[ERROR] -\u003e [Help 1]",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.080195Z",
+                       "sequence":  1066
+                   },
+                   {
+                       "event_id":  "cebcaf7094ac42fea7b2f9245f534603",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[ERROR] ",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.091787Z",
+                       "sequence":  1067
+                   },
+                   {
+                       "event_id":  "98ff51433bfd46fe81b666e31a33263e",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[ERROR] To see the full stack trace of the errors, re-run Maven with the -e switch.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.104366Z",
+                       "sequence":  1068
+                   },
+                   {
+                       "event_id":  "5105572c0e26446db453802dd0f6bcce",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[ERROR] Re-run Maven using the -X switch to enable full debug logging.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.131536Z",
+                       "sequence":  1069
+                   },
+                   {
+                       "event_id":  "6dd14ae811274650900ed50dce30c0bb",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[ERROR] ",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.163487Z",
+                       "sequence":  1070
+                   },
+                   {
+                       "event_id":  "7d8f6dd890a2407cb042ec24462556e4",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[ERROR] For more information about the errors and possible solutions, please read the following articles:",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.193858Z",
+                       "sequence":  1071
+                   },
+                   {
+                       "event_id":  "7fd03c79ef664da7842b6b7be503ee49",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stderr",
+                       "status":  "running",
+                       "message":  "[ERROR] [Help 1] http:[redacted-path]/cwiki.apache.org/confluence/display/MAVEN/MojoFailureException",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.231735Z",
+                       "sequence":  1072
+                   },
+                   {
+                       "event_id":  "2591f83d26274600a401d957b44aeac6",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "repair_failure_evidence_written",
+                       "status":  "completed",
+                       "message":  "Repair failure evidence artifact written.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "failure_evidence_artifact_checksum":  "10a2f6993a495956fc5b30df7bfa736a44c1f6efc0fe96dea180b8d2cf5ac92d",
+                                       "failure_evidence_checksum":  "4c58a2fafa3cc1c6b961d96cd2988085d22b11eeabc262310aff78b817eb8c52",
+                                       "failure_evidence_ref":  ".migration\\runs\\v2-2223d922\\repairs\\repair_failure_evidence.json",
+                                       "failure_source":  "build"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.419172Z",
+                       "sequence":  1073
+                   },
+                   {
+                       "event_id":  "ce378d9011ac41a68cb729b111c621d5",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "repair_context_pack_written",
+                       "status":  "completed",
+                       "message":  "Repair context pack artifact written.",
+                       "payload":  {
+                                       "base_repo_state_checksum":  "96052b640f6d182ecdc60ec9633e655273ff9338318bb14baa39a692e1395337",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "context_pack_checksum":  "c8d34a2e0625a0da5c6100134515c6079226638ab4e866ccc023f1a28a36c479",
+                                       "context_pack_ref":  ".migration\\runs\\v2-2223d922\\repairs\\repair_context_pack.json",
+                                       "failure_evidence_checksum":  "4c58a2fafa3cc1c6b961d96cd2988085d22b11eeabc262310aff78b817eb8c52"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.442908Z",
+                       "sequence":  1074
+                   },
+                   {
+                       "event_id":  "a840aa8a4cd04834bbed9bd2c6f467dd",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: analysis_report",
+                       "payload":  {
+                                       "artifact_kind":  "analysis_report",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\analysis_report.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.470761Z",
+                       "sequence":  1075
+                   },
+                   {
+                       "event_id":  "bedcde320c5c4513b4f888b9d59e4193",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: analysis_report.json",
+                       "payload":  {
+                                       "artifact_kind":  "analysis_report.json",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\analysis_report.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.500576Z",
+                       "sequence":  1076
+                   },
+                   {
+                       "event_id":  "ca11c323cd1640f18867d14b2fdc4a34",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: analysis_summary",
+                       "payload":  {
+                                       "artifact_kind":  "analysis_summary",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\analysis_summary.md"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.536926Z",
+                       "sequence":  1077
+                   },
+                   {
+                       "event_id":  "2181385c62b64d0e87e0ce39f44fbb6b",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: analysis_summary.md",
+                       "payload":  {
+                                       "artifact_kind":  "analysis_summary.md",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\analysis_summary.md"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.566156Z",
+                       "sequence":  1078
+                   },
+                   {
+                       "event_id":  "1b7ca1471c114901955fafda1b195e4e",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: approval_decision",
+                       "payload":  {
+                                       "artifact_kind":  "approval_decision",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\approval\\approval_decision.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.593310Z",
+                       "sequence":  1079
+                   },
+                   {
+                       "event_id":  "f6d9c622215147c1a11f7e40f10a2fa7",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: approval_request.json",
+                       "payload":  {
+                                       "artifact_kind":  "approval_request.json",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\approval_request.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.614265Z",
+                       "sequence":  1080
+                   },
+                   {
+                       "event_id":  "b5254f595ab84fa589b45778f1586d88",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: approved_plan_lock",
+                       "payload":  {
+                                       "artifact_kind":  "approved_plan_lock",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\approval\\approved_plan_lock.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.639141Z",
+                       "sequence":  1081
+                   },
+                   {
+                       "event_id":  "3a7ec68c32f2416f941d3be24c3d82d7",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: assessment_report",
+                       "payload":  {
+                                       "artifact_kind":  "assessment_report",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\assessment\\assessment_report.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.659201Z",
+                       "sequence":  1082
+                   },
+                   {
+                       "event_id":  "31cebc66838d4e43af9d595ebe845333",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: assessment_report.json",
+                       "payload":  {
+                                       "artifact_kind":  "assessment_report.json",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\assessment\\assessment_report.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.678031Z",
+                       "sequence":  1083
+                   },
+                   {
+                       "event_id":  "894be5d6659e4f5e8909ffcfbb89ebdc",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: assessment_summary",
+                       "payload":  {
+                                       "artifact_kind":  "assessment_summary",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\assessment\\assessment_summary.md"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.721447Z",
+                       "sequence":  1084
+                   },
+                   {
+                       "event_id":  "50b712a1d1754169ab54e43399bdb3f9",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: assessment_summary.md",
+                       "payload":  {
+                                       "artifact_kind":  "assessment_summary.md",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\assessment\\assessment_summary.md"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.744524Z",
+                       "sequence":  1085
+                   },
+                   {
+                       "event_id":  "41dff5395676405e9b45dee3adba7019",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: config_inventory",
+                       "payload":  {
+                                       "artifact_kind":  "config_inventory",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\config_inventory.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.766229Z",
+                       "sequence":  1086
+                   },
+                   {
+                       "event_id":  "7e81453ebe514fc3be1d3e8d2ed808d7",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: config_inventory.json",
+                       "payload":  {
+                                       "artifact_kind":  "config_inventory.json",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\config_inventory.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.787365Z",
+                       "sequence":  1087
+                   },
+                   {
+                       "event_id":  "a8e1ba86657e44abb664799d9976155a",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: copilot_assist",
+                       "payload":  {
+                                       "artifact_kind":  "copilot_assist",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\copilot_assist.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.807137Z",
+                       "sequence":  1088
+                   },
+                   {
+                       "event_id":  "b37300c911fb49e88aa9a61c5c96e935",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: copilot_assist.json",
+                       "payload":  {
+                                       "artifact_kind":  "copilot_assist.json",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\copilot_assist.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.826304Z",
+                       "sequence":  1089
+                   },
+                   {
+                       "event_id":  "32502fa8b3de4368baacd9f6d6ef4dbb",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: dependency_graph",
+                       "payload":  {
+                                       "artifact_kind":  "dependency_graph",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\dependency_graph.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.846450Z",
+                       "sequence":  1090
+                   },
+                   {
+                       "event_id":  "e2886eeca5104b8bbea67be157eaeb8b",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: dependency_graph.json",
+                       "payload":  {
+                                       "artifact_kind":  "dependency_graph.json",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\dependency_graph.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.864903Z",
+                       "sequence":  1091
+                   },
+                   {
+                       "event_id":  "9391f43fd3e0413297579dc8eec1b355",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: migration_ledger",
+                       "payload":  {
+                                       "artifact_kind":  "migration_ledger",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\workspaces\\sandbox\\.migration\\ledger.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.891663Z",
+                       "sequence":  1092
+                   },
+                   {
+                       "event_id":  "12a629769715467999b3acadf13dd85c",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: migration_plan.yaml",
+                       "payload":  {
+                                       "artifact_kind":  "migration_plan.yaml",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\migration_plan.yaml"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.910129Z",
+                       "sequence":  1093
+                   },
+                   {
+                       "event_id":  "6d11cab683704ad890e4ee5a54baa44c",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: migration_units.yaml",
+                       "payload":  {
+                                       "artifact_kind":  "migration_units.yaml",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\migration_units.yaml"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.932775Z",
+                       "sequence":  1094
+                   },
+                   {
+                       "event_id":  "3ac6a01b153f4eb69383f28aab21b5a4",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: openrewrite_plugin_xml",
+                       "payload":  {
+                                       "artifact_kind":  "openrewrite_plugin_xml",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\transformation\\openrewrite-plugin.xml"
+                                   },
+                       "created_at":  "2026-07-07T14:27:40.974715Z",
+                       "sequence":  1095
+                   },
+                   {
+                       "event_id":  "969428a6fd1b466dac3314240728761f",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: orchestration_summary",
+                       "payload":  {
+                                       "artifact_kind":  "orchestration_summary",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\orchestration\\orchestration_summary.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.008446Z",
+                       "sequence":  1096
+                   },
+                   {
+                       "event_id":  "3e31ca058d724f399ff7dc19ec4f9dc6",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: phase2_log",
+                       "payload":  {
+                                       "artifact_kind":  "phase2_log",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\logs\\phase2_transform.log"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.031621Z",
+                       "sequence":  1097
+                   },
+                   {
+                       "event_id":  "811716231c5741a2b8033184553a4278",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: plan_summary.md",
+                       "payload":  {
+                                       "artifact_kind":  "plan_summary.md",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\plan_summary.md"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.051514Z",
+                       "sequence":  1098
+                   },
+                   {
+                       "event_id":  "d1f47e33bdcd4e3fb08c56bf1d8c47c1",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: plan_validation_report.json",
+                       "payload":  {
+                                       "artifact_kind":  "plan_validation_report.json",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\plan_validation_report.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.074491Z",
+                       "sequence":  1099
+                   },
+                   {
+                       "event_id":  "8a6eb42bc56d44a09c5599a5bbfdf969",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: read_only_verification",
+                       "payload":  {
+                                       "artifact_kind":  "read_only_verification",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\read_only_verification.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.101965Z",
+                       "sequence":  1100
+                   },
+                   {
+                       "event_id":  "b21f95d99091430999b1ce6ba61e70db",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: read_only_verification.json",
+                       "payload":  {
+                                       "artifact_kind":  "read_only_verification.json",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\read_only_verification.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.128563Z",
+                       "sequence":  1101
+                   },
+                   {
+                       "event_id":  "6eaf9726638f4f328c4a106f44fe13b3",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_dry_run.patch",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_dry_run.patch",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_dry_run.patch"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.144792Z",
+                       "sequence":  1102
+                   },
+                   {
+                       "event_id":  "b578e2a94e704d6395be360e507b330e",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_impact_summary",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_impact_summary",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_impact_summary.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.174544Z",
+                       "sequence":  1103
+                   },
+                   {
+                       "event_id":  "8da196d9c16241c4b122ea02a278141c",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_impact_summary.json",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_impact_summary.json",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_impact_summary.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.202949Z",
+                       "sequence":  1104
+                   },
+                   {
+                       "event_id":  "c9a1706ea3e94065b40b12fa70c4c0dc",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_patch",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_patch",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_dry_run.patch"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.228842Z",
+                       "sequence":  1105
+                   },
+                   {
+                       "event_id":  "2198487e195b49fea3f228987092e53c",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_plugin_plan",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_plugin_plan",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_plugin_plan.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.266718Z",
+                       "sequence":  1106
+                   },
+                   {
+                       "event_id":  "0ca92e00c72647a0a1f48f86397932b5",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_plugin_plan.json",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_plugin_plan.json",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_plugin_plan.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.291653Z",
+                       "sequence":  1107
+                   },
+                   {
+                       "event_id":  "7539ab1b05ad4a7ebffec6af4cfbdbb6",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_preview",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_preview",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_preview.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.316382Z",
+                       "sequence":  1108
+                   },
+                   {
+                       "event_id":  "5298541ba27a40319d2e7ad2be25102a",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: rewrite_preview.json",
+                       "payload":  {
+                                       "artifact_kind":  "rewrite_preview.json",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\rewrite_preview.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.341012Z",
+                       "sequence":  1109
+                   },
+                   {
+                       "event_id":  "b86ad79c848e481db96c97874531b757",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: sandbox",
+                       "payload":  {
+                                       "artifact_kind":  "sandbox",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\workspaces\\sandbox"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.378557Z",
+                       "sequence":  1110
+                   },
+                   {
+                       "event_id":  "337d10a1fe4b4f62abd9069e9d429a17",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: source_profile_detection",
+                       "payload":  {
+                                       "artifact_kind":  "source_profile_detection",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\source_profile_detection.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.399327Z",
+                       "sequence":  1111
+                   },
+                   {
+                       "event_id":  "a68b0a9c3cad49e09df656bacd9e8ed5",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: target_dependency_plan",
+                       "payload":  {
+                                       "artifact_kind":  "target_dependency_plan",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\target_dependency_plan.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.417394Z",
+                       "sequence":  1112
+                   },
+                   {
+                       "event_id":  "e3ceef00dcc3437d9b3b38d3d4184ad1",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: target_dependency_plan.json",
+                       "payload":  {
+                                       "artifact_kind":  "target_dependency_plan.json",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\planning\\target_dependency_plan.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.434546Z",
+                       "sequence":  1113
+                   },
+                   {
+                       "event_id":  "9bd6e6cb7ca2486a8fd7c4b9e094181d",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: test_inventory",
+                       "payload":  {
+                                       "artifact_kind":  "test_inventory",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\test_inventory.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.454607Z",
+                       "sequence":  1114
+                   },
+                   {
+                       "event_id":  "2f00f953ca974dbd8f17a048e942b7c3",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: test_inventory.json",
+                       "payload":  {
+                                       "artifact_kind":  "test_inventory.json",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\analysis\\test_inventory.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.471773Z",
+                       "sequence":  1115
+                   },
+                   {
+                       "event_id":  "2beeb53a1b33437d86aa33929fc83746",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: timing_report",
+                       "payload":  {
+                                       "artifact_kind":  "timing_report",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\performance\\timing_report.json"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.490084Z",
+                       "sequence":  1116
+                   },
+                   {
+                       "event_id":  "a1d70cf847154e3db58e5a76e2b08ff7",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: timing_summary",
+                       "payload":  {
+                                       "artifact_kind":  "timing_summary",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\performance\\timing_summary.md"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.512952Z",
+                       "sequence":  1117
+                   },
+                   {
+                       "event_id":  "07d75fb62c9c437ea230f4648b531274",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Artifact written: transformation_execution_plan",
+                       "payload":  {
+                                       "artifact_kind":  "transformation_execution_plan",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\transformation\\transformation_execution_plan.yaml"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.542009Z",
+                       "sequence":  1118
+                   },
+                   {
+                       "event_id":  "9609184f3fa74873b7d137686f5e8494",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "artifact_written",
+                       "status":  "completed",
+                       "message":  "Stage sandbox output registered.",
+                       "payload":  {
+                                       "artifact_kind":  "sandbox",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "relative_path":  ".migration\\runs\\v2-2223d922\\workspaces\\sandbox"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.562678Z",
+                       "sequence":  1119
+                   },
+                   {
+                       "event_id":  "22f7104a3c924ae2add502c68240c652",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "sandbox_transform_failed",
+                       "status":  "failed",
+                       "message":  "Sandbox transform failed: BUILD_FAILED_IN_SANDBOX",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "transform_status":  "BUILD_FAILED_IN_SANDBOX"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.586247Z",
+                       "sequence":  1120
+                   },
+                   {
+                       "event_id":  "bb032f7da4754e9b9bad08bb930e44f9",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "build_failed",
+                       "status":  "failed",
+                       "message":  "Sandbox build failed: BUILD_FAILED_IN_SANDBOX",
+                       "payload":  {
+                                       "build_status":  "BUILD_FAILED_IN_SANDBOX",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.605954Z",
+                       "sequence":  1121
+                   },
+                   {
+                       "event_id":  "0c1143a056e14ce99bcd50645c8a1c8a",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "repair_started",
+                       "status":  "running",
+                       "message":  "Repair loop status: REPAIR_REVIEW_REQUIRED",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "repair_loop_status":  "REPAIR_REVIEW_REQUIRED"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.637016Z",
+                       "sequence":  1122
+                   },
+                   {
+                       "event_id":  "efdee0d718084bc0b530f981a769e8eb",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "build_failed",
+                       "status":  "failed",
+                       "message":  "Build result: BUILD_FAILED_IN_SANDBOX",
+                       "payload":  {
+                                       "build_status":  "BUILD_FAILED_IN_SANDBOX",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "test_status":  ""
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.659016Z",
+                       "sequence":  1123
+                   },
+                   {
+                       "event_id":  "843aa62aaf5e40ceaca085d3e57a1349",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "ai_diagnosis_created",
+                       "status":  "completed",
+                       "message":  "AI diagnosis created for build_failed (command 4ed7eaf015414ee4bc25283b63a3e3cb)",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "context_pack_checksum":  "cp-e4f33845",
+                                       "context_pack_id":  "e4f3384545c14386a9ede8d86decb7b7",
+                                       "diagnosis_id":  "96e2c256e86a4820b19d09bb87627000",
+                                       "event_type":  "build_failed",
+                                       "failure_type":  "UNKNOWN",
+                                       "model_invocation_id":  "model-8d38e0f33a2a",
+                                       "redaction_status":  "evidence_collector_unavailable",
+                                       "repair_proposal_id":  "b600c3dd217d4956873d7daaaaa2d102"
+                                   },
+                       "created_at":  "2026-07-07T14:27:41.679172Z",
+                       "sequence":  1124
+                   },
+                   {
+                       "event_id":  "0239000585cf4ccd8b6042b7608648f3",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "repair_chain_started",
+                       "status":  "started",
+                       "message":  "Reviewed repair chain started.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "context_checksum":  "c8d34a2e0625a0da5c6100134515c6079226638ab4e866ccc023f1a28a36c479",
+                                       "context_pack_checksum":  "c8d34a2e0625a0da5c6100134515c6079226638ab4e866ccc023f1a28a36c479",
+                                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                                       "reason":  "build_failed",
+                                       "stage_index":  1
+                                   },
+                       "created_at":  "2026-07-07T14:27:43.088840Z",
+                       "sequence":  1125
+                   },
+                   {
+                       "event_id":  "807c31071d73470ab6923b3f61653cdd",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "reviewed_repair_materialization_failed",
+                       "status":  "failed",
+                       "message":  "Reviewer requested a revision of the repair proposal.",
+                       "payload":  {
+                                       "applicability_checked_at":  "",
+                                       "applicability_reason_code":  "",
+                                       "applicability_status":  "",
+                                       "apply_check_stderr_summary":  "",
+                                       "changed_files":  [
+
+                                                         ],
+                                       "context_checksum":  "c8d34a2e0625a0da5c6100134515c6079226638ab4e866ccc023f1a28a36c479",
+                                       "deployment_alias_hash":  "97d06434c085ed09",
+                                       "detail":  "decision=needs_revision",
+                                       "final_diff_checksum":  "",
+                                       "final_diff_exists":  false,
+                                       "gate_created":  false,
+                                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                                       "main_invocation_id":  "8874a3fd10514ebc85b53e77f27626eb",
+                                       "message":  "Reviewer requested a revision of the repair proposal.",
+                                       "policy_ran":  false,
+                                       "policy_reason_code":  "",
+                                       "proposal_created":  false,
+                                       "proposed_diff_checksum":  "e5913e04d50ca4b95f3edcfc65d08e666687bc31bd3a78db8c42dc2172ee90ef",
+                                       "provider_alias":  "azure_openai",
+                                       "reason_code":  "REVIEWER_REQUESTED_REVISION",
+                                       "retry_reason":  "",
+                                       "retry_status":  "",
+                                       "reviewed_diff_checksum":  "",
+                                       "reviewer_applicability_repair_attempted":  false,
+                                       "reviewer_applicability_repair_succeeded":  false,
+                                       "reviewer_decision":  "needs_revision",
+                                       "reviewer_invocation_id":  "a444ede1922840fbb1f5387ab162058c",
+                                       "reviewer_mechanical_validation_issue":  "",
+                                       "reviewer_output_checksum":  "a11f61b3520dd1f30933fb00f6ced8c7f85b3f32badb6fd003be08dc5ae4edce",
+                                       "reviewer_schema_failure_ref":  "",
+                                       "reviewer_self_repair_attempted":  false,
+                                       "reviewer_self_repair_schema_repair_attempted":  false,
+                                       "reviewer_self_repair_schema_repair_failure_reason":  "",
+                                       "reviewer_self_repair_schema_repair_parse_failure_category":  "",
+                                       "reviewer_self_repair_schema_repair_succeeded":  false,
+                                       "reviewer_self_repair_succeeded":  false,
+                                       "schema_name":  "RepairReviewerOutput",
+                                       "stage_index":  1,
+                                       "struct_issue":  ""
+                                   },
+                       "created_at":  "2026-07-07T14:28:22.486179Z",
+                       "sequence":  1126
+                   },
+                   {
+                       "event_id":  "f44c1318d1a242d2a2cd433bb3bfab6f",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "transform_failed",
+                       "status":  "failed",
+                       "message":  "Transform/build failed: REPAIR_REVIEW_REQUIRED",
+                       "payload":  {
+                                       "build_status":  "BUILD_FAILED_IN_SANDBOX",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "final_proof_level":  "not_verified",
+                                       "final_status":  "REPAIR_REVIEW_REQUIRED",
+                                       "repair_fallback_generated":  false,
+                                       "transform_status":  "BUILD_FAILED_IN_SANDBOX"
+                                   },
+                       "created_at":  "2026-07-07T14:28:22.505314Z",
+                       "sequence":  1127
+                   },
+                   {
+                       "event_id":  "ce4596384cd641eb83937a4c6cad5452",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "ai_diagnosis_created",
+                       "status":  "completed",
+                       "message":  "AI diagnosis created for transform_failed (command 4ed7eaf015414ee4bc25283b63a3e3cb)",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "context_pack_checksum":  "cp-51b9896e",
+                                       "context_pack_id":  "51b9896ebe7648659b242992e2e7f2db",
+                                       "diagnosis_id":  "d70d40a51f5a40558303bc8162e04b02",
+                                       "event_type":  "transform_failed",
+                                       "failure_type":  "UNKNOWN",
+                                       "model_invocation_id":  "model-50c21eac28f2",
+                                       "redaction_status":  "evidence_collector_unavailable",
+                                       "repair_proposal_id":  "9fffe5701aa649d58033d977d8f7ac16"
+                                   },
+                       "created_at":  "2026-07-07T14:28:22.515745Z",
+                       "sequence":  1128
+                   },
+                   {
+                       "event_id":  "2cebd9df1290458db8595f2a9ec8fe13",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "repair_chain_started",
+                       "status":  "started",
+                       "message":  "Reviewed repair chain started.",
+                       "payload":  {
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "context_checksum":  "c8d34a2e0625a0da5c6100134515c6079226638ab4e866ccc023f1a28a36c479",
+                                       "context_pack_checksum":  "c8d34a2e0625a0da5c6100134515c6079226638ab4e866ccc023f1a28a36c479",
+                                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                                       "reason":  "transform_failed",
+                                       "stage_index":  1
+                                   },
+                       "created_at":  "2026-07-07T14:28:22.537345Z",
+                       "sequence":  1129
+                   },
+                   {
+                       "event_id":  "244e1891dbde4b12b66c04dde851c7ac",
+                       "job_id":  "2223d92206df4bdd8498d417976d9af6",
+                       "stage":  1,
+                       "type":  "stage_failed",
+                       "status":  "failed",
+                       "message":  "Stage 1 real orchestrator completed with terminal failure: REPAIR_REVIEW_REQUIRED.",
+                       "payload":  {
+                                       "build_status":  "BUILD_FAILED_IN_SANDBOX",
+                                       "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                       "final_status":  "REPAIR_REVIEW_REQUIRED",
+                                       "orchestration_status":  "FAIL",
+                                       "repair_loop_status":  "REPAIR_REVIEW_REQUIRED",
+                                       "test_status":  "",
+                                       "transform_status":  "BUILD_FAILED_IN_SANDBOX"
+                                   },
+                       "created_at":  "2026-07-07T14:28:22.549052Z",
+                       "sequence":  1130
+                   }
+               ],
+    "latest_sequence":  1130
+}

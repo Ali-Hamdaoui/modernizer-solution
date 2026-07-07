@@ -386,41 +386,50 @@ class V2RepairGateService:
         context_checksum = str(payload["_repair_context_pack_checksum"])
         direct_sandbox = str(payload.get("_repair_sandbox_path", "")).strip() or sandbox_path_for_chain or ""
 
+        def _fail_direct_materialization(reason_code: str) -> RepairGateCreationResult:
+            self._emit_reviewed_repair_materialization_failed(
+                job_id=job_id,
+                stage_index=stage_index,
+                context_checksum=context_checksum,
+                reason_code=reason_code,
+                chain=review_chain,
+                detail=reason_code,
+            )
+            self._emit_reviewed_repair_unavailable(
+                job_id=job_id,
+                stage_index=stage_index,
+                context_checksum=context_checksum,
+                reason_code=reason_code,
+            )
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="skipped",
+                reason=f"direct proposal diff validation failed: {reason_code}",
+            )
+
         if final_diff_exists and reviewer_decision == "accept":
-            if direct_sandbox:
-                resolved_diff, resolved_checksum, diff_valid, diff_gate_reason = (
-                    self._validate_direct_proposal_diff(
-                        chain_result=chain_result,
-                        sandbox_path=direct_sandbox,
-                        output_dir=output_dir,
-                    )
+            if not direct_sandbox:
+                logger.warning(
+                    "direct_proposal_missing_sandbox job=%s stage=%d",
+                    job_id,
+                    stage_index,
                 )
-                if not diff_valid:
-                    self._emit_reviewed_repair_materialization_failed(
-                        job_id=job_id,
-                        stage_index=stage_index,
-                        context_checksum=context_checksum,
-                        reason_code=_materialization_reason_code(diff_gate_reason),
-                        chain=review_chain,
-                        detail=diff_gate_reason,
-                    )
-                    logger.warning(
-                        "direct_proposal_diff_gate_failed job=%s stage=%d reason=%s",
-                        job_id, stage_index, diff_gate_reason,
-                    )
-                    self._emit_reviewed_repair_unavailable(
-                        job_id=job_id,
-                        stage_index=stage_index,
-                        context_checksum=context_checksum,
-                        reason_code=_materialization_reason_code(diff_gate_reason),
-                    )
-                    return RepairGateCreationResult(
-                        gate_id="",
-                        gate_checksum="",
-                        diagnosis=None,
-                        status="skipped",
-                        reason=f"direct proposal diff validation failed: {diff_gate_reason}",
-                    )
+                return _fail_direct_materialization("direct_sandbox_missing")
+            resolved_diff, resolved_checksum, diff_valid, diff_gate_reason = (
+                self._validate_direct_proposal_diff(
+                    chain_result=chain_result,
+                    sandbox_path=direct_sandbox,
+                    output_dir=output_dir,
+                )
+            )
+            if not diff_valid:
+                logger.warning(
+                    "direct_proposal_diff_gate_failed job=%s stage=%d reason=%s",
+                    job_id, stage_index, diff_gate_reason,
+                )
+                return _fail_direct_materialization(diff_gate_reason)
             try:
                 proposal_id, proposal_diff_checksum = self._persist_direct_reviewed_repair_proposal(
                     job_id=job_id,
@@ -471,38 +480,24 @@ class V2RepairGateService:
 
         # ── V1 direct candidate path (reviewer did not accept, but main proposed diff exists) ──
         if proposed_diff_exists and not final_diff_exists:
-            if direct_sandbox:
-                _cand_valid, _cand_reason = self._validate_direct_candidate_diff(
-                    chain_result=chain_result,
-                    sandbox_path=direct_sandbox,
-                    output_dir=output_dir,
+            if not direct_sandbox:
+                logger.warning(
+                    "direct_candidate_missing_sandbox job=%s stage=%d",
+                    job_id,
+                    stage_index,
                 )
-                if not _cand_valid:
-                    self._emit_reviewed_repair_materialization_failed(
-                        job_id=job_id,
-                        stage_index=stage_index,
-                        context_checksum=context_checksum,
-                        reason_code=_materialization_reason_code(_cand_reason),
-                        chain=review_chain,
-                        detail=_cand_reason,
-                    )
-                    logger.warning(
-                        "direct_candidate_diff_gate_failed job=%s stage=%d reason=%s",
-                        job_id, stage_index, _cand_reason,
-                    )
-                    self._emit_reviewed_repair_unavailable(
-                        job_id=job_id,
-                        stage_index=stage_index,
-                        context_checksum=context_checksum,
-                        reason_code=_materialization_reason_code(_cand_reason),
-                    )
-                    return RepairGateCreationResult(
-                        gate_id="",
-                        gate_checksum="",
-                        diagnosis=None,
-                        status="skipped",
-                        reason=f"direct candidate diff validation failed: {_cand_reason}",
-                    )
+                return _fail_direct_materialization("direct_sandbox_missing")
+            _cand_valid, _cand_reason = self._validate_direct_candidate_diff(
+                chain_result=chain_result,
+                sandbox_path=direct_sandbox,
+                output_dir=output_dir,
+            )
+            if not _cand_valid:
+                logger.warning(
+                    "direct_candidate_diff_gate_failed job=%s stage=%d reason=%s",
+                    job_id, stage_index, _cand_reason,
+                )
+                return _fail_direct_materialization(_cand_reason)
             try:
                 proposal_id, proposal_diff_checksum = self._persist_direct_candidate_repair_proposal(
                     job_id=job_id,

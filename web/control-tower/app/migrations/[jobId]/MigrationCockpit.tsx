@@ -1433,7 +1433,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         <details className="failure-evidence-advanced" data-testid="failure-evidence-advanced">
         <summary>Failure Evidence</summary>
         <section className="panel failure-panel">
-          {data.failureSummary.failures.map((f, i) => (
+          {data.failureSummary.failures.filter((f) => !["reviewed_repair_materialization_failed", "reviewed_repair_unavailable", "retry_required"].includes(f.type)).map((f, i) => (
             <div key={i} className={`failure-card ${f.type === "result_contract_failed" ? "contract-failure-card" : ""}`}>
               <div className="stage-header">
                 <strong>{f.type === "result_contract_failed" ? "Control Tower Contract Failure" : f.type}</strong>
@@ -1606,9 +1606,55 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
               )}
             </div>
           ))}
-          {data.failureSummary.repair_loop_active && (
+          {data.failureSummary.failures.some((f) => ["reviewed_repair_materialization_failed", "reviewed_repair_unavailable", "retry_required"].includes(f.type)) && (
             <div className="repair-card">
-              <strong>Repair Active</strong>
+              <strong>Repair materialization blocker</strong>
+              {data.failureSummary.failures.filter((f) => ["reviewed_repair_materialization_failed", "reviewed_repair_unavailable", "retry_required"].includes(f.type)).map((f, i) => (
+                <div key={i} className="failure-card blocker-failure-card">
+                  <div className="stage-header">
+                    <strong>{f.title || "Reviewed Repair Blocker"}</strong>
+                    <span className="meta">Stage {f.stage ?? "?"}</span>
+                    <span className="status-badge blocked">BLOCKED</span>
+                  </div>
+                  <p>{f.message}</p>
+                  {f.reason_code && (
+                    <p className="meta warning-text">Reason code: {f.reason_code}</p>
+                  )}
+                  {f.detail && (
+                    <p className="meta">{f.detail}</p>
+                  )}
+                  {f.next_operator_action && (
+                    <div className="operator-action">
+                      <strong>Next action:</strong>
+                      <p className="meta">{f.next_operator_action}</p>
+                    </div>
+                  )}
+                  {f.supervision_trace && (
+                    <div className="supervision-trace">
+                      <h3>AI Supervision</h3>
+                      {f.supervision_trace.ai_diagnosis ? (
+                        <div className="trace-section">
+                          <strong>AI Diagnosis</strong>
+                          <p className="meta">Diagnosis: {f.supervision_trace.ai_diagnosis.diagnosis_id}</p>
+                          <p className="meta">Failure: {f.supervision_trace.ai_diagnosis.failure_type}</p>
+                          <p className="checksum">Context pack: {f.supervision_trace.ai_diagnosis.context_pack_checksum}</p>
+                          {f.supervision_trace.ai_diagnosis.repair_proposal_id && (
+                            <p className="meta">Proposal: {f.supervision_trace.ai_diagnosis.repair_proposal_id}</p>
+                          )}
+                          <p className="meta">Redaction: {f.supervision_trace.ai_diagnosis.redaction_status || "unknown"}</p>
+                        </div>
+                      ) : (
+                        <p className="meta">No backend AI diagnosis record.</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {data.failureSummary.repair_events.length > 0 && (
+            <div className="repair-card">
+              <strong>Repair History</strong>
               {data.failureSummary.repair_events.map((r, i) => (
                 <p key={i} className="meta">{r.type}: {r.message}</p>
               ))}

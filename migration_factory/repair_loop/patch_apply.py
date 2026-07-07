@@ -506,11 +506,11 @@ def apply_patch_to_sandbox_direct(
     touched_paths: list[str] | None = None,
     run: RunCallable = subprocess.run,
 ) -> PatchApplyResult:
-    """Apply patch to sandbox without structural validation or git apply --check.
+    """Apply patch to sandbox with direct-apply precheck and reverse classification.
 
-    AMF-252: Direct apply for reviewer-accepted diffs. Skips
-    validate_unified_diff_structure and git apply --check.
-    The patch is persisted from the reviewer's reviewed_diff as-is.
+    AMF-252: Direct apply for reviewer-accepted diffs. Reuses the same
+    applicability precheck semantics as the gated path, then preserves the
+    direct reverse-check classification for already-applied patches.
     Uses shell=False and argument list style for all command execution.
     """
     run_path = Path(run_dir)
@@ -529,35 +529,65 @@ def apply_patch_to_sandbox_direct(
     snapshot_dir = repairs_dir / "snapshots" / f"attempt_{attempt}_direct"
     snapshot_dir.mkdir(parents=True, exist_ok=True)
     before_hashes, created_paths = _snapshot_files(sandbox, snapshot_dir, resolved_touched_paths)
-
     git_exe = _resolve_git_executable()
-    if git_exe is None:
-        return PatchApplyResult(
-            status="REJECTED",
-            reason="Git executable not found on this system",
-            patch_path=patch_path,
-            touched_paths=resolved_touched_paths,
-            before_hashes=before_hashes,
-            after_hashes={},
-            snapshot_dir=snapshot_dir,
-            created_paths=created_paths,
-            errors=["Git not found: PATCH_ENGINE_UNAVAILABLE"],
-            reason_code=REASON_CODE_PATCH_ENGINE_UNAVAILABLE,
-        )
 
-    preflight_issue = _check_sandbox_preflight(sandbox, patch_path, resolved_touched_paths, patch_text)
-    if preflight_issue is not None:
+    applicability_check = check_patch_applicability(
+        sandbox_path=sandbox,
+        unified_diff=patch_text,
+        touched_paths=resolved_touched_paths,
+        run_dir=run_path,
+        attempt=f"direct_precheck_{attempt}",
+        run=run,
+    )
+    if applicability_check.status != "CHECKED":
+        if git_exe is None:
+            return PatchApplyResult(
+                status="REJECTED",
+                reason=applicability_check.reason or "git apply --check failed",
+                patch_path=patch_path,
+                touched_paths=resolved_touched_paths,
+                before_hashes=before_hashes,
+                after_hashes={},
+                snapshot_dir=snapshot_dir,
+                created_paths=created_paths,
+                errors=list(applicability_check.errors or [applicability_check.reason or "git apply --check failed"]),
+                reason_code=applicability_check.reason_code or REASON_CODE_PATCH_CHECK_FAILED,
+                stdout=str(applicability_check.stdout or ""),
+                stderr=str(applicability_check.stderr or ""),
+            )
+        reverse_check = _git_apply(
+            [git_exe, "apply", "--reverse", "--check", str(patch_path)],
+            cwd=sandbox,
+            run=run,
+        )
+        if reverse_check.returncode == 0:
+            return PatchApplyResult(
+                status="ALREADY_APPLIED",
+                reason="Patch changes are already present in sandbox; validation will run.",
+                patch_path=patch_path,
+                touched_paths=resolved_touched_paths,
+                before_hashes=before_hashes,
+                after_hashes=_hash_files(sandbox, resolved_touched_paths),
+                snapshot_dir=snapshot_dir,
+                created_paths=created_paths,
+                errors=[],
+                reason_code=REASON_CODE_PATCH_ALREADY_APPLIED,
+                stdout=str(reverse_check.stdout or ""),
+                stderr=str(reverse_check.stderr or ""),
+            )
         return PatchApplyResult(
             status="REJECTED",
-            reason=f"Sandbox preflight check failed: {preflight_issue}",
+            reason=applicability_check.reason or "git apply --check failed",
             patch_path=patch_path,
             touched_paths=resolved_touched_paths,
             before_hashes=before_hashes,
             after_hashes={},
             snapshot_dir=snapshot_dir,
             created_paths=created_paths,
-            errors=[f"Sandbox preflight: {preflight_issue}"],
-            reason_code=preflight_issue,
+            errors=list(applicability_check.errors or [applicability_check.reason or "git apply --check failed"]),
+            reason_code=applicability_check.reason_code or REASON_CODE_PATCH_CHECK_FAILED,
+            stdout=str(applicability_check.stdout or ""),
+            stderr=str(applicability_check.stderr or ""),
         )
 
     applied = _git_apply([git_exe, "apply", str(patch_path)], cwd=sandbox, run=run)

@@ -14,6 +14,7 @@ import type {
   ReviewedDiffProposal,
   SafeDiffPreview as SafeDiffPreviewType,
   RepairAttemptSummary,
+  RepairProposalApproveRequest,
   RepairMaterializationUnavailable,
   V2LlmInvocationEntry,
 } from "../../../lib/contracts";
@@ -126,9 +127,9 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
         if (response.proposal) {
           setProposalState({ status: "available", proposal: response.proposal });
           // AMF-252: Seed diff preview from embedded safe_diff_preview if available
-          const hasEmbeddedPreview = !!response.proposal.safe_diff_preview;
-          if (hasEmbeddedPreview) {
-            setDiffState({ status: "available", diff: response.proposal.safe_diff_preview });
+          const embeddedPreview = response.proposal.safe_diff_preview;
+          if (embeddedPreview) {
+            setDiffState({ status: "available", diff: embeddedPreview });
           } else {
             setDiffState({ status: "loading" });
           }
@@ -142,7 +143,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
           if (cancelled) return;
           if (diffResponse?.safe_diff_preview) {
             setDiffState({ status: "available", diff: diffResponse.safe_diff_preview });
-          } else if (!hasEmbeddedPreview) {
+          } else if (!embeddedPreview) {
             setDiffState({ status: "error", message: diffResponse?.reason ?? "Diff unavailable" });
           }
           if (attemptsResponse?.attempts) {
@@ -194,9 +195,9 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
       if (response.proposal) {
         setProposalState({ status: "available", proposal: response.proposal });
         // AMF-252: Seed diff preview from embedded safe_diff_preview if available
-        const hasEmbeddedPreview = !!response.proposal.safe_diff_preview;
-        if (hasEmbeddedPreview) {
-          setDiffState({ status: "available", diff: response.proposal.safe_diff_preview });
+        const embeddedPreview = response.proposal.safe_diff_preview;
+        if (embeddedPreview) {
+          setDiffState({ status: "available", diff: embeddedPreview });
         } else {
           setDiffState({ status: "loading" });
         }
@@ -209,7 +210,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
         ]);
         if (diffResponse?.safe_diff_preview) {
           setDiffState({ status: "available", diff: diffResponse.safe_diff_preview });
-        } else if (!hasEmbeddedPreview) {
+        } else if (!embeddedPreview) {
           setDiffState({ status: "error", message: diffResponse?.reason ?? "Diff unavailable" });
         }
         if (attemptsResponse?.attempts) {
@@ -280,13 +281,13 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
       const reviewerVerdictId = state.proposal.reviewer_verdict?.reviewer_verdict_id;
       const gateId = state.proposal.gate_id;
       // AMF-252: Direct proposals may have null reviewer_verdict_id and gate_id
-      const body: Record<string, string | undefined> = {
+      const body: RepairProposalApproveRequest = {
         proposal_id: state.proposal.proposal_id,
         diff_checksum: state.proposal.diff_checksum,
         idempotency_key: createIdempotencyKey(),
+        reviewer_verdict_id: reviewerVerdictId ?? null,
+        gate_id: gateId ?? null,
       };
-      if (reviewerVerdictId) body.reviewer_verdict_id = reviewerVerdictId;
-      if (gateId) body.gate_id = gateId;
       await approveRepairProposal(jobId, state.proposal.proposal_id, body);
       await refreshProposalData();
     } catch (e: unknown) {
@@ -544,11 +545,12 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
             diffMessage={diffState.status === "error" ? diffState.message : null}
           />
 
-          {showAttempts && (
+          {showAttempts && attempts.length > 0 && (
             <RepairAttemptTimeline attempts={attempts} />
           )}
 
           <RepairActionsBar
+            allowedActions={proposal.allowed_actions}
             onViewDiff={() => {
               const tabEl = document.querySelector('[data-testid="tab-diff"]') as HTMLButtonElement | null;
               tabEl?.click();
@@ -566,11 +568,10 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
             onApproveSandboxApply={handleApproveSandboxApply}
             revisionPending={revisionPending}
             approvePending={approvePending}
-            approveEnabled={approveAllowed}
-            revisionEnabled={revisionAllowed}
             checksumMismatch={diff?.checksum_mismatch ?? false}
             directProposal={isDirectProposal}
             candidateDiff={isCandidateDiff}
+            hasAttemptHistory={attempts.length > 0}
           />
         </div>
 
@@ -580,7 +581,13 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
             loading={activityState.status === "loading"}
             error={activityError}
           />
-          <ValidationProgressPanel attempts={attempts} proposalStatus={proposal.status} />
+          {attempts.length > 0 && (
+            <ValidationProgressPanel
+              attempts={attempts}
+              proposalStatus={proposal.status}
+              reasonCode={proposal.reason_code}
+            />
+          )}
         </div>
       </div>
     </section>
@@ -711,7 +718,6 @@ export function ReviewedRepairUnavailable({
         </div>
         <div className="repair-proposal-side">
           <ModelRoleActivity invocations={invocations} loading={loading} error={error} />
-          <ValidationProgressPanel attempts={[]} unavailableSummary={summary} />
         </div>
       </div>
     </section>
@@ -893,9 +899,9 @@ export function ReviewedRepairMaterializationFailed({
     ? "Latest reviewed diff failed structural validation"
     : isPatchCheckFailed
       ? "Backend apply-check failed; new proposal required."
-    : hasBlockedBy
-      ? "Backend encountered a secondary blocking condition after the primary diagnostic was raised."
-      : summary;
+      : hasBlockedBy
+        ? "Backend encountered a secondary blocking condition after the primary diagnostic was raised."
+        : summary;
   const malformedExplainer = (isMalformedDiff || isReviewedDiffStructuralInvalid)
     ? "Reviewer accepted the repair, but backend structural validation rejected the reviewed diff before user approval."
     : null;
@@ -935,6 +941,12 @@ export function ReviewedRepairMaterializationFailed({
                 Backend reason: {displayReason}
               </p>
             )}
+            {diagnostic?.allowed_actions?.length ? (
+              <div className="table-row">
+                <span className="meta">Allowed actions</span>
+                <strong>{diagnostic.allowed_actions.join(", ")}</strong>
+              </div>
+            ) : null}
           </div>
           <div className="table-list repair-metadata-grid">
             <div className="table-row">
@@ -1131,7 +1143,6 @@ export function ReviewedRepairMaterializationFailed({
         </div>
         <div className="repair-proposal-side">
           <ModelRoleActivity invocations={invocations} loading={loading} error={error} />
-          <ValidationProgressPanel attempts={[]} unavailableSummary={summary} />
         </div>
       </div>
     </section>

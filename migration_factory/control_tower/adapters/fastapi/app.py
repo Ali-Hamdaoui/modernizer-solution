@@ -13448,6 +13448,11 @@ _PIPELINE_PHASES = (
         "stage_report_started", "stage_report_completed", "stage_report_failed",
     }),
 )
+_REPAIR_MATERIALIZATION_BLOCKER_EVENTS = {
+    "reviewed_repair_materialization_failed",
+    "reviewed_repair_unavailable",
+    "retry_required",
+}
 _RAW_EVENT_TYPES = {"stdout", "stderr"}
 _IMPORTANT_EVENT_TYPES = {
     "approval_required",
@@ -13515,6 +13520,18 @@ def _active_stage_index(events: tuple[Any, ...]) -> int:
     return 1
 
 
+def _latest_repair_materialization_blocker(events: tuple[Any, ...]) -> tuple[Any, dict[str, Any]] | None:
+    for event in reversed(events):
+        event_type = str(getattr(event, "type", "") or getattr(event, "event_type", "") or "")
+        if event_type not in _REPAIR_MATERIALIZATION_BLOCKER_EVENTS:
+            continue
+        payload = _event_payload_dict(event)
+        if not isinstance(payload, dict):
+            payload = {}
+        return event, payload
+    return None
+
+
 def _v2_pipeline_projection(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
     active_stage = _active_stage_index(events)
 
@@ -13542,6 +13559,13 @@ def _v2_pipeline_projection(job_id: str, events: tuple[Any, ...]) -> dict[str, A
         latest = matching[-1] if matching else None
         row_status = _pipeline_row_status(key, matching)
         latest_message = latest.message if latest is not None else "Waiting for backend-owned evidence."
+        if key == "failure_repair":
+            blocker = _latest_repair_materialization_blocker(events)
+            if blocker is not None:
+                blocker_event, blocker_payload = blocker
+                blocker_message = _bounded_event_text(getattr(blocker_event, "message", "") or "")
+                row_status = "blocked"
+                latest_message = blocker_message or blocker_payload.get("message") or "Reviewed repair diff invalid; backend retry required."
         if key == "test_validation" and not matching:
             active_build_failed = any(
                 event.stage == active_stage
@@ -13799,12 +13823,14 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
         event for event in events
         if (event.status == "failed" or event.type.endswith("_failed") or event.type == "result_contract_failed")
         and event.type not in _REPAIR_EVENT_TYPES
+        and event.type not in _REPAIR_MATERIALIZATION_BLOCKER_EVENTS
         and not _is_fallback_model_event(event)
     ]
     repair_events_typed = [
         event for event in events
         if event.type in _REPAIR_EVENT_TYPES
     ]
+    materialization_blocker = _latest_repair_materialization_blocker(events)
     supervision_by_stage = _v2_supervision_traces(events)
 
     # Group by (stage_index, primary_key)
@@ -13863,6 +13889,7 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
 
         failures.append({
             "type": primary.type,
+            "scope": "original_stage_failure",
             "stage": primary.stage,
             "title": title,
             "message": _bounded_event_text(primary.message),
@@ -13897,6 +13924,50 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
             "supervision_trace": supervision_by_stage.get(primary.stage, _empty_supervision_trace()),
         })
 
+    if materialization_blocker is not None:
+        blocker_event, blocker_payload = materialization_blocker
+        blocker_reason_code = _stable_materialization_reason_code(
+            blocker_payload.get("reason_code")
+            or (blocker_payload.get("schema_diagnostics") or {}).get("reason_code")
+        )
+        blocker_stage = getattr(blocker_event, "stage", None)
+        blocker_detail = _safe_struct_issue(blocker_payload.get("struct_issue") or blocker_payload.get("detail"))
+        failures.append({
+            "type": str(getattr(blocker_event, "type", "") or getattr(blocker_event, "event_type", "") or "reviewed_repair_materialization_failed"),
+            "scope": "repair_materialization_failure",
+            "stage": blocker_stage,
+            "title": _materialization_title(blocker_reason_code),
+            "message": _bounded_event_text(getattr(blocker_event, "message", "") or _materialization_message(blocker_reason_code)),
+            "build_status": str(blocker_payload.get("build_status", "")),
+            "test_status": str(blocker_payload.get("test_status", "")),
+            "final_status": str(blocker_payload.get("final_status", "")),
+            "final_proof_level": str(blocker_payload.get("final_proof_level", "")),
+            "repair_loop_status": "blocked",
+            "repair_fallback": str(blocker_payload.get("repair_fallback_generated", "")),
+            "matched_line": _safe_failure_str(blocker_payload.get("matched_line")),
+            "command": _safe_failure_list(blocker_payload.get("command") or blocker_payload.get("resolved_command")),
+            "requested_command": _safe_failure_list(blocker_payload.get("requested_command")),
+            "build_tool": _safe_failure_str(blocker_payload.get("build_tool")),
+            "module": _safe_failure_str(blocker_payload.get("module")),
+            "main_class": _safe_failure_str(blocker_payload.get("main_class")),
+            "unit_id": _safe_failure_str(blocker_payload.get("unit_id")),
+            "result_kind": "reviewed_repair_materialization_failed",
+            "java_home": _safe_failure_str(blocker_payload.get("java_home")),
+            "detected_version": _safe_failure_str(blocker_payload.get("detected_version")),
+            "required_minimum": _safe_failure_str(blocker_payload.get("required_minimum")),
+            "exit_code": blocker_payload.get("exit_code"),
+            "final_json_found": blocker_payload.get("final_json_found"),
+            "parse_strategy": str(blocker_payload.get("parse_strategy", "")),
+            "stdout_tail": _safe_failure_str(blocker_payload.get("stdout_tail")),
+            "stderr_tail": _safe_failure_str(blocker_payload.get("stderr_tail")),
+            "event_types": [str(getattr(blocker_event, "type", "") or getattr(blocker_event, "event_type", "") or "")],
+            "repair_events": [],
+            "next_operator_action": _next_action_for_unavailable(blocker_reason_code, blocker_payload),
+            "supervision_trace": supervision_by_stage.get(blocker_stage, _empty_supervision_trace()),
+            "reason_code": blocker_reason_code,
+            "detail": blocker_detail,
+        })
+
     # Collect repair events not already attached to a failure group
     ungrouped_repair = [
         {"type": e.type, "message": _bounded_event_text(e.message)}
@@ -13918,7 +13989,7 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
         "job_id": job_id,
         "has_failures": len(failures) > 0,
         "failures": failures,
-        "repair_loop_active": len(repair_events_typed) > 0,
+        "repair_loop_active": len(repair_events_typed) > 0 and materialization_blocker is None,
         "repair_events": ungrouped_repair,
         "artifact_kinds": artifact_kinds,
     }

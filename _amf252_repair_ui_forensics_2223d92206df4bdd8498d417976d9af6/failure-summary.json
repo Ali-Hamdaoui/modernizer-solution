@@ -1,0 +1,192 @@
+﻿{
+    "job_id":  "2223d92206df4bdd8498d417976d9af6",
+    "has_failures":  true,
+    "failures":  [
+                     {
+                         "type":  "build_failed",
+                         "scope":  "original_stage_failure",
+                         "stage":  1,
+                         "title":  "Stage 1 Build/Transform Failure",
+                         "message":  "Sandbox build failed: BUILD_FAILED_IN_SANDBOX",
+                         "build_status":  "BUILD_FAILED_IN_SANDBOX",
+                         "test_status":  "",
+                         "final_status":  "REPAIR_REVIEW_REQUIRED",
+                         "final_proof_level":  "not_verified",
+                         "repair_loop_status":  "REPAIR_REVIEW_REQUIRED",
+                         "repair_fallback":  "False",
+                         "matched_line":  "",
+                         "command":  [
+
+                                     ],
+                         "requested_command":  [
+
+                                               ],
+                         "build_tool":  "",
+                         "module":  "",
+                         "main_class":  "",
+                         "unit_id":  "",
+                         "result_kind":  "",
+                         "java_home":  "",
+                         "detected_version":  "",
+                         "required_minimum":  "",
+                         "exit_code":  null,
+                         "final_json_found":  null,
+                         "parse_strategy":  "",
+                         "stdout_tail":  "",
+                         "stderr_tail":  "",
+                         "event_types":  [
+                                             "build_failed",
+                                             "sandbox_transform_failed",
+                                             "transform_failed",
+                                             "stage_failed"
+                                         ],
+                         "repair_events":  [
+                                               {
+                                                   "type":  "repair_started",
+                                                   "message":  "Repair loop status: REPAIR_REVIEW_REQUIRED"
+                                               }
+                                           ],
+                         "next_operator_action":  "Review build failure details and logs. If the issue persists, check preflight configuration.",
+                         "supervision_trace":  {
+                                                   "ai_diagnosis":  {
+                                                                        "diagnosis_id":  "d70d40a51f5a40558303bc8162e04b02",
+                                                                        "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                                                        "trigger_event_type":  "transform_failed",
+                                                                        "failure_type":  "UNKNOWN",
+                                                                        "context_pack_id":  "51b9896ebe7648659b242992e2e7f2db",
+                                                                        "context_pack_checksum":  "cp-51b9896e",
+                                                                        "repair_proposal_id":  "9fffe5701aa649d58033d977d8f7ac16",
+                                                                        "model_invocation_id":  "model-50c21eac28f2",
+                                                                        "redaction_status":  "evidence_collector_unavailable",
+                                                                        "created_at":  "2026-07-07T14:28:22.515745Z"
+                                                                    },
+                                                   "evidence_used":  [
+                                                                         "e4f3384545c14386a9ede8d86decb7b7",
+                                                                         "cp-e4f33845",
+                                                                         "51b9896ebe7648659b242992e2e7f2db",
+                                                                         "cp-51b9896e"
+                                                                     ],
+                                                   "pom_analysis":  null,
+                                                   "repair_proposal":  null,
+                                                   "reviewer_verdict":  null,
+                                                   "validation_result":  null
+                                               }
+                     },
+                     {
+                         "type":  "reviewed_repair_materialization_failed",
+                         "scope":  "repair_materialization_failure",
+                         "stage":  1,
+                         "title":  "Reviewed Repair Materialization Failed",
+                         "message":  "Reviewer requested a revision of the repair proposal.",
+                         "build_status":  "",
+                         "test_status":  "",
+                         "final_status":  "",
+                         "final_proof_level":  "",
+                         "repair_loop_status":  "blocked",
+                         "repair_fallback":  "",
+                         "matched_line":  "",
+                         "command":  [
+
+                                     ],
+                         "requested_command":  [
+
+                                               ],
+                         "build_tool":  "",
+                         "module":  "",
+                         "main_class":  "",
+                         "unit_id":  "",
+                         "result_kind":  "reviewed_repair_materialization_failed",
+                         "java_home":  "",
+                         "detected_version":  "",
+                         "required_minimum":  "",
+                         "exit_code":  null,
+                         "final_json_found":  null,
+                         "parse_strategy":  "",
+                         "stdout_tail":  "",
+                         "stderr_tail":  "",
+                         "event_types":  [
+                                             "reviewed_repair_materialization_failed"
+                                         ],
+                         "repair_events":  [
+
+                                           ],
+                         "next_operator_action":  "No repair proposal available.",
+                         "supervision_trace":  {
+                                                   "ai_diagnosis":  {
+                                                                        "diagnosis_id":  "d70d40a51f5a40558303bc8162e04b02",
+                                                                        "command_id":  "4ed7eaf015414ee4bc25283b63a3e3cb",
+                                                                        "trigger_event_type":  "transform_failed",
+                                                                        "failure_type":  "UNKNOWN",
+                                                                        "context_pack_id":  "51b9896ebe7648659b242992e2e7f2db",
+                                                                        "context_pack_checksum":  "cp-51b9896e",
+                                                                        "repair_proposal_id":  "9fffe5701aa649d58033d977d8f7ac16",
+                                                                        "model_invocation_id":  "model-50c21eac28f2",
+                                                                        "redaction_status":  "evidence_collector_unavailable",
+                                                                        "created_at":  "2026-07-07T14:28:22.515745Z"
+                                                                    },
+                                                   "evidence_used":  [
+                                                                         "e4f3384545c14386a9ede8d86decb7b7",
+                                                                         "cp-e4f33845",
+                                                                         "51b9896ebe7648659b242992e2e7f2db",
+                                                                         "cp-51b9896e"
+                                                                     ],
+                                                   "pom_analysis":  null,
+                                                   "repair_proposal":  null,
+                                                   "reviewer_verdict":  null,
+                                                   "validation_result":  null
+                                               },
+                         "reason_code":  "REVIEWER_REQUESTED_REVISION",
+                         "detail":  "decision=needs_revision"
+                     }
+                 ],
+    "repair_loop_active":  false,
+    "repair_events":  [
+
+                      ],
+    "artifact_kinds":  [
+                           "analysis_report",
+                           "analysis_report.json",
+                           "analysis_summary",
+                           "analysis_summary.md",
+                           "approval_request.json",
+                           "assessment_report",
+                           "assessment_report.json",
+                           "assessment_summary",
+                           "assessment_summary.md",
+                           "config_inventory",
+                           "config_inventory.json",
+                           "copilot_assist",
+                           "copilot_assist.json",
+                           "dependency_graph",
+                           "dependency_graph.json",
+                           "migration_plan.yaml",
+                           "migration_units.yaml",
+                           "plan_summary.md",
+                           "plan_validation_report.json",
+                           "read_only_verification",
+                           "read_only_verification.json",
+                           "rewrite_dry_run.patch",
+                           "rewrite_impact_summary",
+                           "rewrite_impact_summary.json",
+                           "rewrite_patch",
+                           "rewrite_plugin_plan",
+                           "rewrite_plugin_plan.json",
+                           "rewrite_preview",
+                           "rewrite_preview.json",
+                           "source_profile_detection",
+                           "target_dependency_plan",
+                           "target_dependency_plan.json",
+                           "test_inventory",
+                           "test_inventory.json",
+                           "approval_decision",
+                           "approved_plan_lock",
+                           "migration_ledger",
+                           "openrewrite_plugin_xml",
+                           "orchestration_summary",
+                           "phase2_log",
+                           "sandbox",
+                           "timing_report",
+                           "timing_summary",
+                           "transformation_execution_plan"
+                       ]
+}

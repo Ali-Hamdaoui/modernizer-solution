@@ -674,6 +674,8 @@ export type V2FailureSummaryItem = {
   stderr_tail?: string;
   event_types: string[];
   repair_events: { type: string; message: string }[];
+  reason_code?: string | null;
+  detail?: string | null;
   next_operator_action: string;
   supervision_trace: V2SupervisionTrace;
 };
