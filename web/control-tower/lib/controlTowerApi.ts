@@ -18,6 +18,7 @@ import type {
   V2ApprovalResponse,
   V2ResumeCommandResponse,
   V2StageContinuationResponse,
+  V2ApprovalModeResponse,
   V2AssistantAskResponse,
   V2AssistantMessagesListResponse,
   V2AssistantMessageResponse,
@@ -517,6 +518,17 @@ export async function rejectV2Card(
   );
 }
 
+export async function updateV2ApprovalMode(
+  jobId: string,
+  autoApprovalEnabled: boolean
+): Promise<V2ApprovalModeResponse> {
+  const safeJobId = requireJobId(jobId);
+  return patchJson<V2ApprovalModeResponse>(
+    `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/approval-mode`,
+    { auto_approval_enabled: autoApprovalEnabled }
+  );
+}
+
 export async function progressV2Stage(
   jobId: string,
   setupId: string,
@@ -641,6 +653,28 @@ export async function generateV2FinalReport(
     `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/report`,
     {},
   );
+}
+
+export async function patchJson<TResponse>(
+  path: string,
+  body: unknown,
+  headers: HeadersInit = {}
+): Promise<TResponse> {
+  const response = await fetch(`${CONTROL_TOWER_API_BASE_URL}${path}`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+    headers: {
+      "Content-Type": "application/json",
+      "X-Control-Tower-Client": CONTROL_TOWER_FRONTEND_CLIENT_ID,
+      ...headers
+    }
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Control Tower mutation failed for ${path}: ${response.status} ${response.statusText || "HTTP error"}.`
+    );
+  }
+  return (await response.json()) as TResponse;
 }
 
 export function resolveReportDownloadUrl(downloadUrl: string): string {

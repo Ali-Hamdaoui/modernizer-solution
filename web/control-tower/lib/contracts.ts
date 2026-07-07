@@ -411,6 +411,7 @@ export type V2MigrationJobResponse = {
   skipped_stages?: string[];
   stage_continuation_policy?: string;
   run_configuration_id?: string;
+  auto_approval_enabled?: boolean;
 };
 
 export type V2RouteStepEntry = {
@@ -569,6 +570,12 @@ export type V2DraftActionResponse = {
   allowed_scope?: string | null;
   // F05 revision binding result when revise_repair_proposal is resolved
   revision_binding?: Record<string, unknown>;
+};
+
+export type V2ApprovalModeResponse = {
+  job_id: string;
+  auto_approval_enabled: boolean;
+  job: V2MigrationJobResponse | null;
 };
 
 export type V2StageContinuationResponse = {
