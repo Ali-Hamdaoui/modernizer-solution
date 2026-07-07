@@ -8030,8 +8030,66 @@ def _maybe_auto_approve_open_approval_gate(
             )
             continue
 
-        # Resume creation and success event are added in the next commit.
-        _ = (approval_service, commands, gate_result, safe_to_approve)
+        try:
+            run_dir = _v2_resume_run_dir_from_commands(commands, stage_index, card.interrupt_id)
+        except HTTPException:
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=stage_index,
+                event_type="approval_auto_approved_skipped",
+                status="blocked",
+                message="Auto Approval skipped: resume run directory could not be derived.",
+                payload={
+                    "gate_id": gate.gate_id,
+                    "card_id": card.card_id,
+                    "gate_checksum": gate_checksum_value,
+                    "decision_source": "auto_approval",
+                    "reason": "resume_run_dir_unavailable",
+                },
+            )
+            continue
+
+        resume = approval_service.approve(
+            card.card_id,
+            gate_checksum_value,
+            job_id,
+            run_dir=run_dir,
+        )
+        uow.v2_approvals.update_card_status(card.card_id, "auto_approved")
+        print("[auto-approval-applied]", {
+            "job_id": job_id,
+            "gate_id": gate.gate_id,
+            "stage_id": stage_index,
+            "card_id": card.card_id,
+            "decision_source": "auto_approval",
+        })
+        _append_v2_event(
+            uow,
+            job_id=job_id,
+            stage=stage_index,
+            event_type="approval_auto_approved",
+            status="completed",
+            message="Approval gate auto-approved because Auto Approval is enabled.",
+            payload={
+                "card_id": card.card_id,
+                "gate_id": gate.gate_id,
+                "gate_checksum": gate_checksum_value,
+                "decision_id": gate_result.decision_id,
+                "resume_id": resume.resume_id,
+                "approval_mode": "auto",
+                "decision_source": "auto_approval",
+                "reason": "Auto approval enabled for this migration job",
+            },
+        )
+        return {
+            "resume_id": resume.resume_id,
+            "stage_index": stage_index,
+            "card_id": card.card_id,
+            "gate_id": gate.gate_id,
+            "checksum": gate_checksum_value,
+            "decision_id": gate_result.decision_id,
+        }
 
     return None
 
