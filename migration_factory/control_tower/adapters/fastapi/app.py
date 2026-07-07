@@ -1406,6 +1406,42 @@ def create_app(
                 pipeline_repo=uow.pipeline_definitions,
             )
             result = service.get_job(job.job_id)
+        # Launch the resume command outside the UoW so the auto-approved
+        # decision is committed before the runner reads it. This mirrors the
+        # manual approve endpoint's launch ordering.
+        if auto_approval_outcome is not None and auto_approval_outcome.get("resume_id"):
+            launch_result = _start_resume_command(
+                app,
+                job_id=job_id,
+                resume_id=auto_approval_outcome["resume_id"],
+                stage_index=auto_approval_outcome["stage_index"],
+            )
+            with unit_of_work_factory() as event_uow:
+                message = "Auto Approval accepted; backend-owned resume command queued."
+                if launch_result.status == "retrying":
+                    message = "Auto Approval accepted; backend-owned resume command is retrying."
+                elif launch_result.status == "started":
+                    message = "Auto Approval accepted; backend-owned resume command started."
+                _append_v2_event(
+                    event_uow,
+                    job_id=job_id,
+                    stage=auto_approval_outcome["stage_index"],
+                    event_type="approval_resume_queued",
+                    status=launch_result.status,
+                    message=message,
+                    payload={
+                        "card_id": auto_approval_outcome.get("card_id"),
+                        "resume_id": auto_approval_outcome["resume_id"],
+                        "resume_status": launch_result.status,
+                        "decision_source": "auto_approval",
+                    },
+                )
+            print("[workflow-resumed-after-auto-approval]", {
+                "job_id": job_id,
+                "next_phase": "transform",
+                "resume_id": auto_approval_outcome["resume_id"],
+                "resume_status": launch_result.status,
+            })
         asyncio.run(app.state.public_event_notifier.notify())
         return {
             "job_id": job_id,
