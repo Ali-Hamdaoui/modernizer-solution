@@ -1965,7 +1965,24 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .cancel-button { border: 1px solid #a40000; background: #a40000; color: #fff; border-radius: 4px; padding: 0.65rem 1rem; font-weight: 600; }
         .cancel-button:disabled { background: #b66; border-color: #b66; cursor: not-allowed; }
         .cancel-error { color: #a40000; margin: 0; }
-        .panel { border: 1px solid #ccc; border-radius: 6px; padding: 1rem; }
+        .panel {
+          border: 1px solid #ccc;
+          border-radius: 6px;
+          padding: 1rem;
+          min-height: 0;
+        }
+        .cockpit-layout > .panel:not(.cockpit-actions) {
+          height: clamp(20rem, 42vh, 30rem);
+          overflow-y: auto;
+          overflow-x: hidden;
+          scrollbar-gutter: stable;
+        }
+        .cockpit-layout > section:not(.panel) {
+          max-height: clamp(20rem, 42vh, 30rem);
+          overflow-y: auto;
+          overflow-x: hidden;
+          scrollbar-gutter: stable;
+        }
         .panel h2 { margin-top: 0; font-size: 1.1rem; }
         .stage-list { display: flex; flex-direction: column; gap: 0.5rem; }
         .stage-card { border: 1px solid #ddd; border-radius: 4px; padding: 0.75rem; }
@@ -2030,6 +2047,14 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .artifact-preview-content { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow-y: auto; background: #fff; padding: 0.5rem; border: 1px solid #ddd; font-size: 0.8rem; }
         .report-artifact-row { display: flex; gap: 0.5rem; align-items: center; padding: 0.35rem 0; border-bottom: 1px solid #eee; }
         .report-artifact-row a { color: #0066cc; text-decoration: underline; font-size: 0.85rem; }
+        @media (max-width: 900px) {
+          .cockpit-layout { grid-template-columns: 1fr; }
+          .cockpit-layout > .panel:not(.cockpit-actions),
+          .cockpit-layout > section:not(.panel) {
+            height: min(28rem, 70vh);
+            max-height: min(28rem, 70vh);
+          }
+        }
       `}</style>
     </div>
   );
