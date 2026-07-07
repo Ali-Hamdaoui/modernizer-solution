@@ -1374,6 +1374,7 @@ def create_app(
         job_id: str,
         payload: ApprovalModeRequest,
     ) -> dict[str, Any]:
+        auto_approval_outcome: dict[str, Any] | None = None
         with unit_of_work_factory() as uow:
             job = _require_v2_job(uow, job_id)
             enabled = uow.v2_jobs.set_auto_approval_enabled(
@@ -1393,6 +1394,10 @@ def create_app(
                 ),
                 payload={"job_id": job_id, "auto_approval_enabled": enabled},
             )
+            if enabled:
+                auto_approval_outcome = _maybe_auto_approve_open_approval_gate(
+                    uow, job_id=job_id,
+                )
             service = V2MigrationJobService(
                 setup_repo=uow.v2_setups,
                 job_repo=uow.v2_jobs,
@@ -1406,6 +1411,7 @@ def create_app(
             "job_id": job_id,
             "auto_approval_enabled": enabled,
             "autoApprovalEnabled": enabled,
+            "auto_approved": auto_approval_outcome,
             "job": service.result_to_dict(result) if result is not None else None,
         }
 
