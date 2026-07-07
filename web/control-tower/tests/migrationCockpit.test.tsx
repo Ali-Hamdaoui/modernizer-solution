@@ -461,13 +461,14 @@ describe("V2 Migration Cockpit contract", () => {
     expect(source).toContain("window.confirm");
     expect(source).toContain("Auto Approval will automatically approve future successful");
     expect(source).toContain("setApprovalModeBusy(true)");
+    expect(source).toContain("Could not update approval mode. Please check backend connection or CORS configuration.");
   });
 
   it("updateV2ApprovalMode sends PATCH with the correct job id and value", async () => {
     const originalFetch = global.fetch;
-    const calls: { url: string; method?: string; body: string | null }[] = [];
+    const calls: { url: string; method?: string; body: string | null; headers?: HeadersInit }[] = [];
     global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      calls.push({ url: String(input), method: init?.method, body: typeof init?.body === "string" ? init.body : null });
+      calls.push({ url: String(input), method: init?.method, body: typeof init?.body === "string" ? init.body : null, headers: init?.headers });
       return new Response(JSON.stringify({
         job_id: "job-123",
         auto_approval_enabled: true,
@@ -478,7 +479,8 @@ describe("V2 Migration Cockpit contract", () => {
       await updateV2ApprovalMode("job-123", true);
       expect(calls[0].url).toBe(`${CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/job-123/approval-mode`);
       expect(calls[0].method).toBe("PATCH");
-      expect(JSON.parse(calls[0].body ?? "{}")).toEqual({ auto_approval_enabled: true });
+      expect(JSON.parse(calls[0].body ?? "{}")).toEqual({ autoApprovalEnabled: true });
+      expect(calls[0].headers).toMatchObject({ "Content-Type": "application/json" });
     } finally {
       global.fetch = originalFetch;
     }
