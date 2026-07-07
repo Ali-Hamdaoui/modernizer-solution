@@ -523,9 +523,10 @@ export async function updateV2ApprovalMode(
   autoApprovalEnabled: boolean
 ): Promise<V2ApprovalModeResponse> {
   const safeJobId = requireJobId(jobId);
+  const path = `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/approval-mode`;
   return patchJson<V2ApprovalModeResponse>(
-    `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/approval-mode`,
-    { auto_approval_enabled: autoApprovalEnabled }
+    path,
+    { autoApprovalEnabled }
   );
 }
 
@@ -660,14 +661,24 @@ export async function patchJson<TResponse>(
   body: unknown,
   headers: HeadersInit = {}
 ): Promise<TResponse> {
-  const response = await fetch(`${CONTROL_TOWER_API_BASE_URL}${path}`, {
+  const url = `${CONTROL_TOWER_API_BASE_URL}${path}`;
+  const requestHeaders = {
+    "Content-Type": "application/json",
+    "X-Control-Tower-Client": CONTROL_TOWER_FRONTEND_CLIENT_ID,
+    ...headers
+  };
+  if (process.env.NODE_ENV !== "production" && typeof window !== "undefined" && path.includes("/approval-mode")) {
+    console.log("[approval-mode-request]", {
+      url,
+      method: "PATCH",
+      body,
+      headers: requestHeaders
+    });
+  }
+  const response = await fetch(url, {
     method: "PATCH",
     body: JSON.stringify(body),
-    headers: {
-      "Content-Type": "application/json",
-      "X-Control-Tower-Client": CONTROL_TOWER_FRONTEND_CLIENT_ID,
-      ...headers
-    }
+    headers: requestHeaders
   });
   if (!response.ok) {
     throw new Error(
