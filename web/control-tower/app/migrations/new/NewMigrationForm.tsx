@@ -230,7 +230,7 @@ const EMPTY_FIELDS: FormFields = {
   proof_level: "build_test_verified",
   skip_endpoint_smoke: false,
   stageContinuationPolicy: DEFAULT_V2_STAGE_CONTINUATION_POLICY,
-  sourceProfile: "springboot-2.7-java11",
+  sourceProfile: "springboot-2.1-java11",
   targetProfile: "springboot-4.0-java21",
 };
 
