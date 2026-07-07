@@ -22,6 +22,7 @@ import {
   generateV2FinalReport,
   resolveReportDownloadUrl,
   rejectV2Card,
+  updateV2ApprovalMode,
   postV2GateAction,
   requireJobId,
   v2EventStreamUrl,
@@ -876,6 +877,40 @@ export function SourceProfileOverrideForm({
   );
 }
 
+export function ApprovalModePanel({
+  enabled,
+  busy,
+  error,
+  onToggle,
+}: {
+  enabled: boolean;
+  busy: boolean;
+  error: string | null;
+  onToggle: (enabled: boolean) => void;
+}) {
+  return (
+    <section className="panel" aria-label="Approval mode">
+      <h2>Approval Mode</h2>
+      <div className="approval-mode-row">
+        <div>
+          <strong>{enabled ? "Auto Approval ON" : "Manual"}</strong>
+          <p className="meta">{enabled ? "Successful approval gates are approved automatically." : "Approval gates wait for manual Approve or Reject."}</p>
+        </div>
+        <label className="toggle-control">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={busy}
+            onChange={(event) => onToggle(event.target.checked)}
+          />
+          <span>{busy ? "Updating..." : enabled ? "On" : "Off"}</span>
+        </label>
+      </div>
+      {error && <p className="warning-text" role="alert">{error}</p>}
+    </section>
+  );
+}
+
 export function ApprovalDecisionsPanel({
   approvals,
   approvalReviewOpen,
@@ -908,10 +943,11 @@ export function ApprovalDecisionsPanel({
           <div key={a.card_id} className="approval-card">
             <div className="stage-header">
               <strong>Stage {a.stage_index}</strong>
-              <span className={`status-badge ${a.status}`}>{a.status.toUpperCase()}</span>
+              <span className={`status-badge ${a.status}`}>{a.status.replace(/_/g, " ").toUpperCase()}</span>
             </div>
             <p>{a.summary}</p>
             <p className="checksum">Checksum: {a.request_checksum}</p>
+            {a.status === "auto_approved" && <p className="meta">Mode: Auto Approval | Timestamp: {a.created_at}</p>}
             {a.reviewer_decision && (
               <p className="meta">
                 Reviewer: {a.reviewer_decision}
@@ -919,22 +955,26 @@ export function ApprovalDecisionsPanel({
               </p>
             )}
             {a.reviewed_checksum && <p className="checksum">Reviewed checksum: {a.reviewed_checksum}</p>}
-            <div className="approval-actions">
-              <button
-                type="button"
-                disabled={a.status !== "pending" || approvalBusy === a.card_id}
-                onClick={() => onApprove(a)}
-              >
-                Approve
-              </button>
-              <button
-                type="button"
-                disabled={a.status !== "pending" || approvalBusy === a.card_id}
-                onClick={() => onReject(a)}
-              >
-                Reject
-              </button>
-            </div>
+            {a.status === "pending" ? (
+              <div className="approval-actions">
+                <button
+                  type="button"
+                  disabled={approvalBusy === a.card_id}
+                  onClick={() => onApprove(a)}
+                >
+                  Approve
+                </button>
+                <button
+                  type="button"
+                  disabled={approvalBusy === a.card_id}
+                  onClick={() => onReject(a)}
+                >
+                  Reject
+                </button>
+              </div>
+            ) : (
+              <p className="meta">Decision recorded.</p>
+            )}
           </div>
         ))
       )}
@@ -951,6 +991,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantError, setAssistantError] = useState<string | null>(null);
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
+  const [approvalModeBusy, setApprovalModeBusy] = useState(false);
+  const [approvalModeError, setApprovalModeError] = useState<string | null>(null);
   const [artifactPreview, setArtifactPreview] = useState<V2ArtifactPreviewResponse | null>(null);
   const [artifactPreviewBusy, setArtifactPreviewBusy] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
@@ -1096,7 +1138,9 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       "assessment_started",
       "assessment_completed",
       "approval_blocked",
+      "approval_mode_updated",
       "approval_required",
+      "approval_auto_approved",
       "stage_blocked_for_approval",
       "sandbox_transform_started",
       "sandbox_transform_completed",
@@ -1149,6 +1193,13 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     try {
       const event = JSON.parse(dataText) as V2JobEvent;
       logApprovalEvent(event);
+      if (event.type === "approval_mode_updated") {
+        const enabled = Boolean(event.payload?.auto_approval_enabled);
+        setData((current) => current ? {
+          ...current,
+          job: { ...current.job, auto_approval_enabled: enabled },
+        } : current);
+      }
       console.log("[migration-event]", {
         type: event.type,
         stage: event.stage,
@@ -1198,6 +1249,35 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       setCancelError(e instanceof Error ? e.message : "Cancel migration failed");
     } finally {
       setCancelBusy(false);
+    }
+  }
+
+  async function updateApprovalMode(nextEnabled: boolean) {
+    if (!normalizedJobId || approvalModeBusy) return;
+    if (nextEnabled) {
+      const confirmed = window.confirm(
+        "Auto Approval will automatically approve future successful analysis/planning/assessment gates for this migration job. You can turn it off at any time. Failed or unsafe gates will not be auto-approved. Do you want to enable it?"
+      );
+      if (!confirmed) return;
+    }
+    setApprovalModeBusy(true);
+    setApprovalModeError(null);
+    try {
+      const response = await updateV2ApprovalMode(normalizedJobId, nextEnabled);
+      setData((current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          job: response.job ?? {
+            ...current.job,
+            auto_approval_enabled: response.auto_approval_enabled,
+          },
+        };
+      });
+    } catch (e) {
+      setApprovalModeError(e instanceof Error ? e.message : "Approval mode update failed");
+    } finally {
+      setApprovalModeBusy(false);
     }
   }
 
@@ -1530,6 +1610,12 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       </section>
 
       {/* Decisions Panel */}
+      <ApprovalModePanel
+        enabled={Boolean(data.job.auto_approval_enabled)}
+        busy={approvalModeBusy}
+        error={approvalModeError}
+        onToggle={(enabled) => void updateApprovalMode(enabled)}
+      />
       <ApprovalDecisionsPanel
         approvals={data.approvals}
         approvalReviewOpen={approvalReviewOpen}
@@ -1868,6 +1954,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .status-badge.queued { background: #e0f0ff; color: #0066cc; }
         .status-badge.running { background: #fff4cc; color: #886600; }
         .status-badge.completed { background: #e4f7e8; color: #146c2e; }
+        .status-badge.auto_approved { background: #e4f7e8; color: #146c2e; }
         .status-badge.pass { background: #e4f7e8; color: #146c2e; }
         .status-badge.failed { background: #ffe3e3; color: #a40000; }
         .status-badge.cancelled { background: #f4d8d8; color: #7a0000; }
@@ -1885,6 +1972,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .pipeline-list { display: flex; flex-direction: column; gap: 0.45rem; }
         .pipeline-row { display: grid; grid-template-columns: 6rem 10rem 1fr 5rem; gap: 0.5rem; align-items: center; border-bottom: 1px solid #eee; padding: 0.45rem 0; }
         .approval-card { border: 1px solid #eee; padding: 0.5rem; margin: 0.25rem 0; }
+        .approval-mode-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+        .toggle-control { display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 600; }
         .approval-actions { display: flex; gap: 0.5rem; }
         .approval-actions button { padding: 0.45rem 0.7rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
         .approval-actions button:disabled { color: #777; border-color: #bbb; }
@@ -1965,6 +2054,7 @@ export function stageStatusFromEvent(event: V2JobEvent): string {
        "approval_completed", "build_started", "test_started"].includes(event.type) || event.status === "running") {
     return "running";
   }
+  if (event.type === "approval_auto_approved") return "completed";
   if (event.type === "approval_required" || event.type === "stage_blocked_for_approval" || event.status === "blocked") return "blocked";
   if (["stage_queued", "next_stage_queued"].includes(event.type) || event.status === "queued") return "queued";
   return "pending";
@@ -2022,7 +2112,9 @@ export function reduceStageStatus(events: V2JobEvent[], stageIndex?: number): st
 }
 
 const IMPORTANT_SSE_TYPES = new Set([
+  "approval_mode_updated",
   "approval_required",
+  "approval_auto_approved",
   "stage_blocked_for_approval",
   "approval_resume_queued",
   "approval_started",
