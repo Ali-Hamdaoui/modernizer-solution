@@ -324,13 +324,20 @@ def _seed_stage_pipeline(conn: sqlite3.Connection, *, job_id: str = "job-1", see
 
 def _wait_for_event(conn: sqlite3.Connection, job_id: str, event_type: str) -> None:
     deadline = time.monotonic() + 3
+    last_error: Exception | None = None
     while time.monotonic() < deadline:
-        events = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
+        try:
+            events = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
+        except (sqlite3.Error, IndexError) as exc:
+            last_error = exc
+            time.sleep(0.02)
+            continue
         if any(event.type == event_type for event in events):
             return
         time.sleep(0.02)
+    if last_error is not None:
+        raise AssertionError(f"event {event_type!r} not persisted after transient read error: {last_error}") from last_error
     raise AssertionError(f"event {event_type!r} not persisted")
-
 
 def _success_result(**overrides: Any) -> dict[str, Any]:
     result = {
@@ -536,6 +543,78 @@ def test_v2_runner_maps_approval_interrupt_to_card_and_blocked_events(tmp_path: 
     assert len(uow2.v2_approvals.list_cards_by_status("pending")) == 1
 
 
+def test_v2_runner_auto_approves_human_approval_when_enabled(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn)
+    now = utc_now_text()
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_jobs.set_auto_approval_enabled(
+            "job-1",
+            True,
+            updated_at=now,
+            updated_by="test",
+        )
+        for revision_kind in ("analysis", "planning"):
+            uow.artifact_revisions.save(
+                ArtifactRevisionRecord(
+                    revision_id=f"accepted-{revision_kind}",
+                    job_id="job-1",
+                    stage_index=1,
+                    revision_kind=revision_kind,
+                    revision_status="accepted",
+                    revision_order=1,
+                    evidence_checksum=f"sha256:{revision_kind}",
+                    prior_revision_checksum=None,
+                    artifact_refs_json="[]",
+                    prior_revision_id=None,
+                    superseded_by_revision_id=None,
+                    accepted_at_gate_id=f"gate-{revision_kind}",
+                    created_at=now,
+                    created_by="test",
+                    accepted_at=now,
+                    accepted_by="test",
+                )
+            )
+
+    approval_required = {
+        "status": "human_approval_required",
+        "run_id": "run-1",
+        "summary": {"analysis_status": "PASS"},
+        "artifact_refs": {
+            "analysis_report": "C:/out/.migration/runs/run-1/analysis/report.json",
+            "migration_plan.yaml": "C:/out/.migration/runs/run-1/planning/migration-plan.yaml",
+            "assessment_report": "C:/out/.migration/runs/run-1/assessment/report.json",
+            "approval_request.json": "C:/out/.migration/runs/run-1/planning/approval-request.json",
+        },
+        "decision_options": ["approved", "rejected", "replan_required"],
+    }
+    popen = _SequentialFakePopen([
+        ([json.dumps(approval_required) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/sandbox/s1")) + "\n"], [], 0),
+    ])
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "approval_auto_approved")
+    _wait_for_event(conn, "job-1", "resume_started")
+    _wait_for_event(conn, "job-1", "stage_completed")
+
+    uow = SqliteUnitOfWork(conn)
+    cards = uow.v2_approvals.list_cards_by_job("job-1")
+    assert len(cards) == 1
+    assert cards[0].status == "auto_approved"
+    decisions = uow.gate_decisions.list_by_job("job-1")
+    assert len(decisions) == 1
+    assert decisions[0].actor_type == "system"
+    assert decisions[0].decided_by == "system:auto-approval"
+    event_types = [event.type for event in uow.v2_events.list_by_job("job-1")]
+    assert "approval_required" not in event_types
+    assert "stage_blocked_for_approval" not in event_types
+    assert len(popen.calls) == 2
 def test_v2_runner_does_not_forward_copilot_env_to_product_subprocess(monkeypatch, tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _save_command(conn)
