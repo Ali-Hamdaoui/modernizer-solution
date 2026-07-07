@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -63,6 +64,14 @@ class _FakeClient:
                 failure_reason="",
             )
         else:
+            checksums = {
+                key: re.search(pattern, prompt).group(1)  # type: ignore[union-attr]
+                for key, pattern in {
+                    "context": r"Context pack checksum: ([0-9a-f]+)",
+                    "primary": r"Primary output checksum: ([0-9a-f]+)",
+                    "diff": r"Proposed diff checksum: ([0-9a-f]+)",
+                }.items()
+            }
             return V2AssistantModelResult(
                 content=json.dumps({
                     "decision": self._reviewer_decision,
@@ -70,6 +79,9 @@ class _FakeClient:
                     "confidence": 0.9,
                     "risks": [],
                     "policy_concerns": [],
+                    "reviewed_context_checksum": checksums["context"],
+                    "reviewed_primary_output_checksum": checksums["primary"],
+                    "reviewed_diff_checksum": checksums["diff"],
                 }),
                 source="fake",
                 model_status="ok",

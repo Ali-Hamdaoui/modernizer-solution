@@ -764,11 +764,11 @@ class SchemaValidator:
             raise SchemaValidationError(
                 f"Expected string at {'.'.join(path)!r}, got {type(value).__name__}"
             )
-        if "integer" in schema_types and not isinstance(value, int):
+        if "integer" in schema_types and (not isinstance(value, int) or isinstance(value, bool)):
             raise SchemaValidationError(
                 f"Expected integer at {'.'.join(path)!r}, got {type(value).__name__}"
             )
-        if "number" in schema_types and not isinstance(value, (int, float)):
+        if "number" in schema_types and (not isinstance(value, (int, float)) or isinstance(value, bool)):
             raise SchemaValidationError(
                 f"Expected number at {'.'.join(path)!r}, got {type(value).__name__}"
             )
@@ -790,7 +790,7 @@ class SchemaValidator:
             )
 
         # Check numeric constraints
-        if isinstance(value, (int, float)):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
             minimum = schema.get("minimum")
             maximum = schema.get("maximum")
             if minimum is not None and value < minimum:

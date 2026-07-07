@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 
 import pytest
@@ -22,6 +24,27 @@ from migration_factory.repair_loop.repair_context import (
     compute_context_pack_checksum,
     is_context_pack_stale,
 )
+
+
+def _reviewer_json_from_prompt(prompt: str) -> str:
+    checksums = {
+        key: re.search(pattern, prompt).group(1)  # type: ignore[union-attr]
+        for key, pattern in {
+            "context": r"Context pack checksum: ([0-9a-f]+)",
+            "primary": r"Primary output checksum: ([0-9a-f]+)",
+            "diff": r"Proposed diff checksum: ([0-9a-f]+)",
+        }.items()
+    }
+    return json.dumps({
+        "decision": "accept",
+        "notes": [],
+        "confidence": 0.95,
+        "risks": [],
+        "policy_concerns": [],
+        "reviewed_context_checksum": checksums["context"],
+        "reviewed_primary_output_checksum": checksums["primary"],
+        "reviewed_diff_checksum": checksums["diff"],
+    }, sort_keys=True)
 
 
 # ── F5-T11-1: FailureSource enum values are correct ────────────────────
@@ -269,7 +292,7 @@ class TestBoundedNextRepairCycle:
                 if role == V2ModelRole.PROPOSER:
                     c = json.dumps({"root_cause":"fix","fix_strategy":"patch","changed_files":["pom.xml"],"proposed_diff":"diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@\n+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n","risk":"LOW","confidence":0.9,"rationale":"fix","deterministic_rule_id":"DEPENDENCY_ADD_H2_RUNTIME"},sort_keys=True)
                 else:
-                    c = json.dumps({"decision":"accept","notes":[],"confidence":0.95,"risks":[],"policy_concerns":[],"reviewed_context_checksum":"","reviewed_primary_output_checksum":"","reviewed_diff_checksum":""},sort_keys=True)
+                    c = _reviewer_json_from_prompt(prompt)
                 return V2AssistantModelResult(content=c,source="azure",model_status="live_ok",provider="azure",role=role.value,success=True,redacted_summary="ok",failure_reason="")
 
         gate_repo = SqlitePhaseGateRepository(conn)
@@ -371,7 +394,7 @@ class TestBoundedNextRepairCycle:
                 if role == V2ModelRole.PROPOSER:
                     c = json.dumps({"root_cause":"fix","fix_strategy":"patch","changed_files":["pom.xml"],"proposed_diff":"diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@\n+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n","risk":"LOW","confidence":0.9,"rationale":"fix","deterministic_rule_id":"DEPENDENCY_ADD_H2_RUNTIME"},sort_keys=True)
                 else:
-                    c = json.dumps({"decision":"accept","notes":[],"confidence":0.95,"risks":[],"policy_concerns":[],"reviewed_context_checksum":"","reviewed_primary_output_checksum":"","reviewed_diff_checksum":""},sort_keys=True)
+                    c = _reviewer_json_from_prompt(prompt)
                 return V2AssistantModelResult(content=c,source="azure",model_status="live_ok",provider="azure",role=role.value,success=True,redacted_summary="ok",failure_reason="")
 
         gate_repo = SqlitePhaseGateRepository(conn)
@@ -432,7 +455,7 @@ class TestBoundedNextRepairCycle:
                 if role == V2ModelRole.PROPOSER:
                     c = json.dumps({"root_cause":"fix","fix_strategy":"patch","changed_files":["pom.xml"],"proposed_diff":"diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@\n+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n","risk":"LOW","confidence":0.9,"rationale":"fix","deterministic_rule_id":"DEPENDENCY_ADD_H2_RUNTIME"},sort_keys=True)
                 else:
-                    c = json.dumps({"decision":"accept","notes":[],"confidence":0.95,"risks":[],"policy_concerns":[],"reviewed_context_checksum":"","reviewed_primary_output_checksum":"","reviewed_diff_checksum":""},sort_keys=True)
+                    c = _reviewer_json_from_prompt(prompt)
                 return V2AssistantModelResult(content=c,source="azure",model_status="live_ok",provider="azure",role=role.value,success=True,redacted_summary="ok",failure_reason="")
 
         gate_repo = SqlitePhaseGateRepository(conn)

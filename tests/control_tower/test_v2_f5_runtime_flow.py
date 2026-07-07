@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -27,7 +28,7 @@ from migration_factory.control_tower.application.v2_repair_gate_service import (
 from migration_factory.control_tower.application.v2_reviewer_service import (
     V2ReviewerService,
 )
-from migration_factory.control_tower.domain.checksums import sha256_canonical_json
+from migration_factory.control_tower.domain.checksums import sha256_canonical_json, sha256_unified_diff_text
 from migration_factory.control_tower.infrastructure.sqlite.migrations import (
     apply_pending_migrations,
 )
@@ -79,6 +80,14 @@ class FakeAzureRepairClient:
                 sort_keys=True,
             )
         else:
+            checksums = {
+                key: re.search(pattern, prompt).group(1)  # type: ignore[union-attr]
+                for key, pattern in {
+                    "context": r"Context pack checksum: ([0-9a-f]+)",
+                    "primary": r"Primary output checksum: ([0-9a-f]+)",
+                    "diff": r"Proposed diff checksum: ([0-9a-f]+)",
+                }.items()
+            }
             content = json.dumps(
                 {
                     "decision": "accept",
@@ -86,9 +95,9 @@ class FakeAzureRepairClient:
                     "confidence": 0.95,
                     "risks": [],
                     "policy_concerns": [],
-                    "reviewed_context_checksum": "",
-                    "reviewed_primary_output_checksum": "",
-                    "reviewed_diff_checksum": "",
+                    "reviewed_context_checksum": checksums["context"],
+                    "reviewed_primary_output_checksum": checksums["primary"],
+                    "reviewed_diff_checksum": checksums["diff"],
                 },
                 sort_keys=True,
             )
@@ -274,7 +283,7 @@ def test_f5_failure_to_reviewed_diff_apply_and_proof(
     proof = json.loads(proof_path.read_text(encoding="utf-8"))
     assert proof["status"] == "REPAIR_VALIDATED"
     assert proof["repair_rerun_result_checksum"]
-    assert sha256_canonical_json({"unified_diff": REVIEWED_DIFF}) == chain["proposed_diff_checksum"]
+    assert sha256_unified_diff_text(REVIEWED_DIFF) == chain["proposed_diff_checksum"]
 
 
 # ── F5 TASK 4: End-to-end proof and red-team tests ────────────────────

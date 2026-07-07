@@ -9,6 +9,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -66,17 +67,30 @@ def _valid_primary_json() -> str:
     )
 
 
-def _accept_reviewer_json() -> str:
+def _checksums_from_prompt(prompt: str) -> dict[str, str]:
+    patterns = {
+        "context": r"Context pack checksum: ([0-9a-f]+)",
+        "primary": r"Primary output checksum: ([0-9a-f]+)",
+        "diff": r"Proposed diff checksum: ([0-9a-f]+)",
+    }
+    return {
+        key: re.search(pattern, prompt).group(1)  # type: ignore[union-attr]
+        for key, pattern in patterns.items()
+    }
+
+
+def _accept_reviewer_json(prompt: str, *, decision: str = "accept", context_checksum: str | None = None) -> str:
+    checksums = _checksums_from_prompt(prompt)
     return json.dumps(
         {
-            "decision": "accept",
+            "decision": decision,
             "notes": ["Looks correct"],
             "confidence": 0.95,
             "risks": [],
             "policy_concerns": [],
-            "reviewed_context_checksum": "",
-            "reviewed_primary_output_checksum": "",
-            "reviewed_diff_checksum": "",
+            "reviewed_context_checksum": context_checksum if context_checksum is not None else checksums["context"],
+            "reviewed_primary_output_checksum": checksums["primary"],
+            "reviewed_diff_checksum": checksums["diff"],
         },
         sort_keys=True,
     )
@@ -116,11 +130,13 @@ class FakeRepairClient:
         self,
         primary_response: str = "",
         reviewer_response: str = "",
+        reviewer_decision: str = "accept",
         primary_success: bool = True,
         reviewer_success: bool = True,
     ) -> None:
         self._primary = primary_response or _valid_primary_json()
-        self._reviewer = reviewer_response or _accept_reviewer_json()
+        self._reviewer = reviewer_response
+        self._reviewer_decision = reviewer_decision
         self._primary_success = primary_success
         self._reviewer_success = reviewer_success
         self.calls: list[V2ModelRole] = []
@@ -143,8 +159,13 @@ class FakeRepairClient:
                 failure_reason="" if self._primary_success else "primary_model_failed",
             )
         else:
+            reviewer_content = self._reviewer
+            if not reviewer_content:
+                reviewer_content = _accept_reviewer_json(prompt, decision=self._reviewer_decision)
+            if reviewer_content == "__MISMATCH_CONTEXT__":
+                reviewer_content = _accept_reviewer_json(prompt, context_checksum="mismatched-checksum")
             return V2AssistantModelResult(
-                content=self._reviewer,
+                content=reviewer_content,
                 source="fake",
                 model_status="live_ok" if self._reviewer_success else "fallback",
                 provider="fake",
@@ -242,6 +263,7 @@ def test_validate_primary_rejects_empty_root_cause() -> None:
         "changed_files": ["App.java"],
         "risk": "LOW",
         "confidence": 0.8,
+        "rationale": "safe fix",
     })
     assert any("root_cause" in f for f in failures)
 
@@ -254,6 +276,7 @@ def test_validate_primary_rejects_missing_fix_strategy() -> None:
         "changed_files": ["App.java"],
         "risk": "LOW",
         "confidence": 0.8,
+        "rationale": "safe fix",
     })
     assert any("fix_strategy" in f for f in failures)
 
@@ -302,6 +325,7 @@ def test_validate_primary_accepts_valid_output() -> None:
         "changed_files": ["App.java"],
         "risk": "LOW",
         "confidence": 0.8,
+        "rationale": "safe fix",
     })
     assert failures == []
 
@@ -361,15 +385,13 @@ def test_produce_raises_on_invalid_primary_json(tmp_path: Path) -> None:
             output_dir=tmp_path / "output",
             model_client=client,
         )
-    assert "missing required fields" in str(exc_info.value)
+    assert "schema invalid" in str(exc_info.value)
 
 
 def test_produce_raises_on_reviewer_reject_decision(tmp_path: Path) -> None:
     evidence = _make_evidence()
     context_pack = _make_context(evidence)
-    client = FakeRepairClient(
-        reviewer_response=json.dumps({"decision": "reject"}),
-    )
+    client = FakeRepairClient(reviewer_decision="reject")
     with pytest.raises(RepairReviewChainProductionError) as exc_info:
         produce_repair_review_chain(
             failure_evidence=evidence,
@@ -383,12 +405,7 @@ def test_produce_raises_on_reviewer_reject_decision(tmp_path: Path) -> None:
 def test_produce_raises_on_reviewer_checksum_mismatch(tmp_path: Path) -> None:
     evidence = _make_evidence()
     context_pack = _make_context(evidence)
-    client = FakeRepairClient(
-        reviewer_response=json.dumps({
-            "decision": "accept",
-            "reviewed_context_checksum": "mismatched-checksum",
-        }),
-    )
+    client = FakeRepairClient(reviewer_response="__MISMATCH_CONTEXT__")
     with pytest.raises(RepairReviewChainProductionError) as exc_info:
         produce_repair_review_chain(
             failure_evidence=evidence,

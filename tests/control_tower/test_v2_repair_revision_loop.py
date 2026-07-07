@@ -6,6 +6,9 @@ and V2RepairFlowService.create_revision_proposal behavior.
 
 from __future__ import annotations
 
+import json
+import re
+
 import pytest
 
 from migration_factory.repair_loop.repair_context import (
@@ -18,6 +21,27 @@ from migration_factory.repair_loop.failure_evidence import (
     FailureSource,
     build_failure_evidence,
 )
+
+
+def _reviewer_json_from_prompt(prompt: str, decision: str = "accept") -> str:
+    checksums = {
+        key: re.search(pattern, prompt).group(1)  # type: ignore[union-attr]
+        for key, pattern in {
+            "context": r"Context pack checksum: ([0-9a-f]+)",
+            "primary": r"Primary output checksum: ([0-9a-f]+)",
+            "diff": r"Proposed diff checksum: ([0-9a-f]+)",
+        }.items()
+    }
+    return json.dumps({
+        "decision": decision,
+        "notes": ["Revised diff scoped correctly"],
+        "confidence": 0.95,
+        "risks": [],
+        "policy_concerns": [],
+        "reviewed_context_checksum": checksums["context"],
+        "reviewed_primary_output_checksum": checksums["primary"],
+        "reviewed_diff_checksum": checksums["diff"],
+    }, sort_keys=True)
 from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
     RepairProposal,
@@ -355,16 +379,7 @@ class TestRevisionRegeneratesAzureRepairChain:
                         "deterministic_rule_id": "DEPENDENCY_ADD_H2_RUNTIME",
                     }, sort_keys=True)
                 else:
-                    content = json.dumps({
-                        "decision": reviewer_decision,
-                        "notes": ["Revised diff scoped correctly"],
-                        "confidence": 0.95,
-                        "risks": [],
-                        "policy_concerns": [],
-                        "reviewed_context_checksum": "",
-                        "reviewed_primary_output_checksum": "",
-                        "reviewed_diff_checksum": "",
-                    }, sort_keys=True)
+                    content = _reviewer_json_from_prompt(prompt, reviewer_decision)
                 return V2AssistantModelResult(
                     content=content,
                     source="azure_openai",
@@ -570,16 +585,7 @@ class TestRevisionRegeneratesAzureRepairChain:
                     "confidence": 0.9,
                     "rationale": "fix",
                     "deterministic_rule_id": "DEPENDENCY_ADD_H2_RUNTIME",
-                }, sort_keys=True) if role == V2ModelRole.PROPOSER else json.dumps({
-                    "decision": "accept",
-                    "notes": [],
-                    "confidence": 0.95,
-                    "risks": [],
-                    "policy_concerns": [],
-                    "reviewed_context_checksum": "",
-                    "reviewed_primary_output_checksum": "",
-                    "reviewed_diff_checksum": "",
-                }, sort_keys=True)
+                }, sort_keys=True) if role == V2ModelRole.PROPOSER else _reviewer_json_from_prompt(prompt)
                 return V2AssistantModelResult(
                     content=content,
                     source="azure_openai",

@@ -10,11 +10,17 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from migration_factory.control_tower.application.v2_assistant_model_client import (
     V2AssistantModelClient,
+)
+from migration_factory.control_tower.application.v2_model_schemas import (
+    REPAIR_PRIMARY_OUTPUT_SCHEMA,
+    REPAIR_REVIEWER_OUTPUT_SCHEMA,
+    SchemaValidationError,
+    validate_model_output,
 )
 from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
 from migration_factory.control_tower.application.v2_review_chain_contracts import (
@@ -22,7 +28,11 @@ from migration_factory.control_tower.application.v2_review_chain_contracts impor
     _check_execution_instruction,
 )
 from migration_factory.control_tower.domain.checksums import (
+    SHA256_CANONICAL_JSON_V1,
+    SHA256_UTF8_BYTES_V1,
     sha256_canonical_json,
+    sha256_raw_model_response,
+    sha256_unified_diff_text,
     utc_now_text,
 )
 from migration_factory.repair_loop.failure_evidence import (
@@ -40,6 +50,10 @@ from migration_factory.repair_loop.repair_context import (
 
 class RepairReviewChainProductionError(RuntimeError):
     pass
+
+
+_PRIMARY_CANONICAL_FIELDS = tuple(REPAIR_PRIMARY_OUTPUT_SCHEMA["properties"].keys())
+_REVIEWER_CANONICAL_FIELDS = tuple(REPAIR_REVIEWER_OUTPUT_SCHEMA["properties"].keys())
 
 
 # ── F5-T3: Deterministic repair artifact ─────────────────────────────
@@ -135,22 +149,41 @@ def _reviewer_repair_prompt(
     )
 
 
-def _coerce_primary_repair_output(content: str) -> dict[str, Any]:
+def _parse_strict_json_object(content: str, *, label: str) -> dict[str, Any]:
+    if not isinstance(content, str):
+        raise RepairReviewChainProductionError(f"{label} output must be a JSON object string")
+    text = content.strip()
+    if not text:
+        raise RepairReviewChainProductionError(f"{label} output must not be empty")
+    decoder = json.JSONDecoder()
     try:
-        parsed = json.loads(str(content))
-        if not isinstance(parsed, dict):
-            return _fallback_primary_repair_output(content)
-    except json.JSONDecodeError:
-        return _fallback_primary_repair_output(content)
-
-    required = {"root_cause", "fix_strategy", "changed_files", "proposed_diff", "risk", "confidence"}
-    missing = required - set(parsed.keys())
-    if missing:
-        raise RepairReviewChainProductionError(
-            f"primary repair output missing required fields: {sorted(missing)}"
-        )
-
+        parsed, end = decoder.raw_decode(text)
+    except json.JSONDecodeError as exc:
+        raise RepairReviewChainProductionError(f"{label} output must be valid JSON") from exc
+    if text[end:].strip():
+        raise RepairReviewChainProductionError(f"{label} output must contain exactly one JSON object")
+    if not isinstance(parsed, dict):
+        raise RepairReviewChainProductionError(f"{label} output root must be a JSON object")
     return parsed
+
+
+def _validate_primary_repair_contract(content: str) -> dict[str, Any]:
+    parsed = _parse_strict_json_object(content, label="primary repair")
+    try:
+        validate_model_output("RepairPrimaryOutput", parsed)
+    except (SchemaValidationError, ValueError) as exc:
+        raise RepairReviewChainProductionError(f"primary repair output schema invalid: {exc}") from exc
+
+    failures = _validate_primary_repair_output(parsed)
+    if failures:
+        raise RepairReviewChainProductionError(
+            "invalid primary repair output: " + "; ".join(failures)
+        )
+    return parsed
+
+
+def _coerce_primary_repair_output(content: str) -> dict[str, Any]:
+    return _validate_primary_repair_contract(content)
 
 
 def _fallback_primary_repair_output(content: str) -> dict[str, Any]:
@@ -166,84 +199,86 @@ def _coerce_reviewer_repair_output(
     primary_checksum: str,
     diff_checksum: str,
 ) -> dict[str, Any]:
+    parsed = _parse_strict_json_object(content, label="reviewer repair")
     try:
-        parsed = json.loads(str(content))
-        if not isinstance(parsed, dict):
-            raise RepairReviewChainProductionError("reviewer output must be JSON")
-    except json.JSONDecodeError:
-        raise RepairReviewChainProductionError("reviewer output must be valid JSON")
+        validate_model_output("RepairReviewerOutput", parsed)
+    except (SchemaValidationError, ValueError) as exc:
+        raise RepairReviewChainProductionError(f"reviewer repair output schema invalid: {exc}") from exc
 
-    decision = str(parsed.get("decision") or "").strip().lower()
-    if decision not in {"accept", "revise", "reject"}:
+    if parsed["reviewed_context_checksum"] != context_checksum:
         raise RepairReviewChainProductionError(
-            f"invalid reviewer decision {decision!r}; must be accept/revise/reject"
+            f"reviewer context checksum mismatch: expected {context_checksum}, got {parsed['reviewed_context_checksum']}"
         )
-    if decision == "revise":
-        decision = "request_revision"
-
-    return {
-        "decision": decision,
-        "notes": parsed.get("notes") if isinstance(parsed.get("notes"), list) else [str(parsed.get("reasoning") or "No notes.")],
-        "confidence": float(parsed.get("confidence", 0.8)),
-        "risks": parsed.get("risks") if isinstance(parsed.get("risks"), list) else [],
-        "policy_concerns": parsed.get("policy_concerns") if isinstance(parsed.get("policy_concerns"), list) else [],
-        "reviewed_context_checksum": str(parsed.get("reviewed_context_checksum") or context_checksum),
-        "reviewed_primary_output_checksum": str(parsed.get("reviewed_primary_output_checksum") or primary_checksum),
-        "reviewed_diff_checksum": str(parsed.get("reviewed_diff_checksum") or diff_checksum),
-        "review_dimensions": parsed.get("review_dimensions") if isinstance(parsed.get("review_dimensions"), dict) else {},
-    }
+    if parsed["reviewed_primary_output_checksum"] != primary_checksum:
+        raise RepairReviewChainProductionError(
+            f"reviewer primary checksum mismatch: expected {primary_checksum}, got {parsed['reviewed_primary_output_checksum']}"
+        )
+    if parsed["reviewed_diff_checksum"] != diff_checksum:
+        raise RepairReviewChainProductionError(
+            f"reviewer diff checksum mismatch: expected {diff_checksum}, got {parsed['reviewed_diff_checksum']}"
+        )
+    return parsed
 
 
 def _compute_primary_repair_checksum(output: dict[str, Any]) -> str:
-    payload = {
-        "root_cause": str(output.get("root_cause", "")),
-        "fix_strategy": str(output.get("fix_strategy", "")),
-        "changed_files": list(output.get("changed_files", [])),
-        "proposed_diff": str(output.get("proposed_diff", "")),
-        "deterministic_rule_id": str(output.get("deterministic_rule_id", "")),
-        "risk": str(output.get("risk", "")),
-        "confidence": float(output.get("confidence", 0.0)),
-        "rationale": str(output.get("rationale", "")),
-        "no_fix_reason": str(output.get("no_fix_reason", "")),
-    }
-    return sha256_canonical_json(payload)
+    return sha256_canonical_json(canonical_primary_repair_output(output))
 
 
 def _compute_reviewer_repair_checksum(output: dict[str, Any]) -> str:
-    payload = {
-        "decision": str(output.get("decision", "")),
-        "notes": list(output.get("notes", [])),
-        "confidence": float(output.get("confidence", 0.0)),
-        "risks": list(output.get("risks", [])),
-        "policy_concerns": list(output.get("policy_concerns", [])),
-        "reviewed_context_checksum": str(output.get("reviewed_context_checksum", "")),
-        "reviewed_primary_output_checksum": str(output.get("reviewed_primary_output_checksum", "")),
-        "reviewed_diff_checksum": str(output.get("reviewed_diff_checksum", "")),
-    }
-    return sha256_canonical_json(payload)
+    return sha256_canonical_json(canonical_reviewer_repair_output(output))
+
+
+def canonical_primary_repair_output(output: dict[str, Any]) -> dict[str, Any]:
+    return _canonical_schema_projection(output, _PRIMARY_CANONICAL_FIELDS)
+
+
+def canonical_reviewer_repair_output(output: dict[str, Any]) -> dict[str, Any]:
+    return _canonical_schema_projection(output, _REVIEWER_CANONICAL_FIELDS)
+
+
+def _canonical_schema_projection(output: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    source = output.get("validated_output") if isinstance(output.get("validated_output"), dict) else output
+    return {field: source[field] for field in fields if field in source}
 
 
 def _validate_primary_repair_output(output: dict[str, Any]) -> list[str]:
     failures: list[str] = []
 
-    for key in ("root_cause", "fix_strategy", "proposed_diff"):
+    for key in ("root_cause", "fix_strategy", "rationale"):
         if not isinstance(output.get(key), str) or not output[key].strip():
             failures.append(f"empty or missing required field {key!r}")
 
     changed = output.get("changed_files")
-    if not isinstance(changed, list) or not all(isinstance(f, str) for f in changed):
+    if not isinstance(changed, list):
         failures.append("changed_files must be a list of strings")
+    else:
+        seen: set[str] = set()
+        for item in changed:
+            if not isinstance(item, str) or not item.strip():
+                failures.append("changed_files must contain non-empty strings")
+                continue
+            reason = _unsafe_relative_path_reason(item)
+            if reason:
+                failures.append(f"changed_files path {item!r} is invalid: {reason}")
+            normalized = item.replace("\\", "/")
+            if normalized in seen:
+                failures.append(f"duplicate changed_files path {item!r}")
+            seen.add(normalized)
 
     risk = str(output.get("risk", "")).upper()
     if risk not in {"LOW", "MEDIUM", "HIGH"}:
         failures.append(f"risk must be LOW/MEDIUM/HIGH, got {risk!r}")
 
     confidence = output.get("confidence")
-    if not isinstance(confidence, (int, float)) or not (0.0 <= float(confidence) <= 1.0):
+    if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not (0.0 <= float(confidence) <= 1.0):
         failures.append("confidence must be a float between 0.0 and 1.0")
 
     diff = str(output.get("proposed_diff", ""))
-    if diff.strip():
+    if not diff:
+        no_fix_reason = output.get("no_fix_reason")
+        if not isinstance(no_fix_reason, str) or not no_fix_reason.strip():
+            failures.append("empty proposed_diff requires non-empty no_fix_reason")
+    else:
         if not _is_unified_diff(diff):
             failures.append("proposed_diff does not appear to be a valid unified diff")
 
@@ -256,6 +291,23 @@ def _validate_primary_repair_output(output: dict[str, Any]) -> list[str]:
         failures.extend(forbidden_fields)
 
     return failures
+
+
+def _unsafe_relative_path_reason(value: str) -> str:
+    text = value.strip()
+    if PureWindowsPath(text).is_absolute() or PurePosixPath(text).is_absolute():
+        return "absolute path"
+    if PureWindowsPath(text).drive:
+        return "drive-qualified path"
+    normalized = text.replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part]
+    if not parts:
+        return "empty path"
+    if any(part == ".." for part in parts):
+        return "path traversal"
+    if any(part in {".", ""} for part in normalized.split("/")):
+        return "ambiguous path segment"
+    return ""
 
 
 def _is_unified_diff(diff: str) -> bool:
@@ -289,12 +341,26 @@ def _check_forbidden_paths_in_diff(diff: str) -> list[str]:
 
 def _check_forbidden_keys(data: dict[str, Any]) -> list[str]:
     failures: list[str] = []
-    for key in (
+    forbidden = {
         "sandbox_path", "argv", "env", "raw_command", "filesystem_target",
         "provider", "endpoint", "deployment", "env_ref", "user_supplied_file_path",
-    ):
-        if key in data and data[key]:
-            failures.append(f"forbidden key {key!r} found in repair output")
+        "approval", "approved", "approval_checksum", "command", "maven_command",
+        "jdk_path", "java_home", "sandbox", "target_path",
+    }
+
+    def walk(value: Any, path: str = "") -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                key_text = str(key)
+                current = f"{path}.{key_text}" if path else key_text
+                if key_text in forbidden and item:
+                    failures.append(f"forbidden key {current!r} found in repair output")
+                walk(item, current)
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                walk(item, f"{path}[{index}]")
+
+    walk(data)
     return failures
 
 
@@ -314,7 +380,7 @@ def _build_final_reviewed_repair_artifact(
     deterministic_checksum: str,
 ) -> dict[str, Any]:
     proposed_diff = str(primary_output.get("proposed_diff", ""))
-    diff_checksum = sha256_canonical_json({"unified_diff": proposed_diff})
+    diff_checksum = sha256_unified_diff_text(proposed_diff)
 
     return {
         "schema_version": "2.0.0",
@@ -328,6 +394,7 @@ def _build_final_reviewed_repair_artifact(
         "primary_output_checksum": primary_checksum,
         "reviewer_output_checksum": reviewer_checksum,
         "proposed_diff_checksum": diff_checksum,
+        "proposed_diff_checksum_algorithm": SHA256_UTF8_BYTES_V1,
         "changed_files": list(primary_output.get("changed_files", [])),
         "base_repo_state_checksum": context_pack.base_repo_state_checksum,
         "root_cause": str(primary_output.get("root_cause", "")),
@@ -432,22 +499,27 @@ def produce_repair_review_chain(
         raise RepairReviewChainProductionError(
             f"primary repair model failed closed: {primary_result.failure_reason or primary_result.model_status}"
         )
+    if bool(getattr(primary_result, "fallback_used", False)) or str(getattr(primary_result, "source", "") or "") == "deterministic":
+        raise RepairReviewChainProductionError("primary repair model fallback blocked; no actionable repair produced")
 
-    primary_output = _coerce_primary_repair_output(primary_result.content)
-    primary_failures = _validate_primary_repair_output(primary_output)
-    if primary_failures:
-        raise RepairReviewChainProductionError(
-            "invalid primary repair output: " + "; ".join(primary_failures)
-        )
+    primary_raw_response = str(primary_result.content)
+    primary_raw_checksum = sha256_raw_model_response(primary_raw_response)
+    validated_primary_output = _coerce_primary_repair_output(primary_raw_response)
 
-    primary_checksum = _compute_primary_repair_checksum(primary_output)
-    primary_output["output_checksum"] = primary_checksum
+    primary_checksum = _compute_primary_repair_checksum(validated_primary_output)
+    primary_artifact_envelope = {
+        **validated_primary_output,
+        "output_checksum": primary_checksum,
+        "raw_response_checksum": primary_raw_checksum,
+        "raw_response_checksum_algorithm": SHA256_UTF8_BYTES_V1,
+        "structured_output_checksum_algorithm": SHA256_CANONICAL_JSON_V1,
+    }
     primary_path = output_dir / "primary_repair_llm_output.json"
-    _write_json(primary_path, primary_output)
+    _write_json(primary_path, primary_artifact_envelope)
 
     context_checksum = context_pack.context_pack_checksum
-    proposed_diff = str(primary_output.get("proposed_diff", ""))
-    diff_checksum = sha256_canonical_json({"unified_diff": proposed_diff})
+    proposed_diff = str(validated_primary_output.get("proposed_diff", ""))
+    diff_checksum = sha256_unified_diff_text(proposed_diff)
 
     # ── PR-G: Capture reviewer invocation ────────────────────────────
     if invocation_ledger is not None:
@@ -464,7 +536,7 @@ def produce_repair_review_chain(
     reviewer_result = client.answer_with_role(
         role=V2ModelRole.REVIEWER,
         prompt=_reviewer_repair_prompt(
-            primary_output,
+            validated_primary_output,
             deterministic_checksum,
             context_checksum,
             primary_checksum,
@@ -497,46 +569,56 @@ def produce_repair_review_chain(
         raise RepairReviewChainProductionError(
             f"reviewer repair model failed closed: {reviewer_result.failure_reason or reviewer_result.model_status}"
         )
+    if bool(getattr(reviewer_result, "fallback_used", False)) or str(getattr(reviewer_result, "source", "") or "") == "deterministic":
+        raise RepairReviewChainProductionError("reviewer repair model fallback blocked; no actionable repair produced")
 
-    reviewer_output = _coerce_reviewer_repair_output(
-        reviewer_result.content,
+    reviewer_raw_response = str(reviewer_result.content)
+    reviewer_raw_checksum = sha256_raw_model_response(reviewer_raw_response)
+    validated_reviewer_output = _coerce_reviewer_repair_output(
+        reviewer_raw_response,
         deterministic_checksum,
         context_checksum,
         primary_checksum,
         diff_checksum,
     )
 
-    if reviewer_output["reviewed_context_checksum"] != context_checksum:
+    if validated_reviewer_output["reviewed_context_checksum"] != context_checksum:
         raise RepairReviewChainProductionError(
-            f"reviewer context checksum mismatch: expected {context_checksum}, got {reviewer_output['reviewed_context_checksum']}"
+            f"reviewer context checksum mismatch: expected {context_checksum}, got {validated_reviewer_output['reviewed_context_checksum']}"
         )
-    if reviewer_output["reviewed_primary_output_checksum"] != primary_checksum:
+    if validated_reviewer_output["reviewed_primary_output_checksum"] != primary_checksum:
         raise RepairReviewChainProductionError(
-            f"reviewer primary checksum mismatch: expected {primary_checksum}, got {reviewer_output['reviewed_primary_output_checksum']}"
+            f"reviewer primary checksum mismatch: expected {primary_checksum}, got {validated_reviewer_output['reviewed_primary_output_checksum']}"
         )
-    if reviewer_output["reviewed_diff_checksum"] != diff_checksum:
+    if validated_reviewer_output["reviewed_diff_checksum"] != diff_checksum:
         raise RepairReviewChainProductionError(
-            f"reviewer diff checksum mismatch: expected {diff_checksum}, got {reviewer_output['reviewed_diff_checksum']}"
-        )
-
-    if reviewer_output["decision"] != "accept":
-        raise RepairReviewChainProductionError(
-            f"reviewer decision failed closed: {reviewer_output['decision']}"
+            f"reviewer diff checksum mismatch: expected {diff_checksum}, got {validated_reviewer_output['reviewed_diff_checksum']}"
         )
 
-    reviewer_checksum = _compute_reviewer_repair_checksum(reviewer_output)
-    reviewer_output["output_checksum"] = reviewer_checksum
+    if validated_reviewer_output["decision"] != "accept":
+        raise RepairReviewChainProductionError(
+            f"reviewer decision failed closed: {validated_reviewer_output['decision']}"
+        )
+
+    reviewer_checksum = _compute_reviewer_repair_checksum(validated_reviewer_output)
+    reviewer_artifact_envelope = {
+        **validated_reviewer_output,
+        "output_checksum": reviewer_checksum,
+        "raw_response_checksum": reviewer_raw_checksum,
+        "raw_response_checksum_algorithm": SHA256_UTF8_BYTES_V1,
+        "structured_output_checksum_algorithm": SHA256_CANONICAL_JSON_V1,
+    }
     reviewer_path = output_dir / "reviewer_repair_llm_output.json"
-    _write_json(reviewer_path, reviewer_output)
+    _write_json(reviewer_path, reviewer_artifact_envelope)
 
     final_artifact = _build_final_reviewed_repair_artifact(
         job_id=context_pack.job_id,
         stage_index=context_pack.stage_index,
         failure_evidence=failure_evidence,
         context_pack=context_pack,
-        primary_output=primary_output,
+        primary_output=validated_primary_output,
         primary_checksum=primary_checksum,
-        reviewer_output=reviewer_output,
+        reviewer_output=validated_reviewer_output,
         reviewer_checksum=reviewer_checksum,
         deterministic_checksum=deterministic_checksum,
     )
@@ -546,16 +628,19 @@ def produce_repair_review_chain(
     _write_json(final_artifact_path, final_artifact)
 
     diff_path = output_dir / "final_reviewed_repair.diff"
-    diff_path.write_text(proposed_diff, encoding="utf-8")
+    diff_path.write_bytes(proposed_diff.encode("utf-8"))
 
     review_chain: dict[str, Any] = {
         "deterministic_artifact_checksum": deterministic_checksum,
         "context_pack_checksum": context_checksum,
         "primary_output_checksum": primary_checksum,
+        "primary_raw_response_checksum": primary_raw_checksum,
         "reviewer_output_checksum": reviewer_checksum,
+        "reviewer_raw_response_checksum": reviewer_raw_checksum,
         "proposed_diff_checksum": diff_checksum,
+        "proposed_diff_checksum_algorithm": SHA256_UTF8_BYTES_V1,
         "final_artifact_checksum": final_artifact_checksum,
-        "reviewer_decision": reviewer_output["decision"],
+        "reviewer_decision": validated_reviewer_output["decision"],
         "job_id": context_pack.job_id,
         "stage_index": context_pack.stage_index,
         "deterministic_artifact_ref": str(deterministic_path),
@@ -566,6 +651,11 @@ def produce_repair_review_chain(
         "model_roles": {
             "proposer": _safe_model_role_status(primary_result),
             "reviewer": _safe_model_role_status(reviewer_result),
+        },
+        "checksum_algorithms": {
+            "raw_model_response_checksum": SHA256_UTF8_BYTES_V1,
+            "validated_structured_output_checksum": SHA256_CANONICAL_JSON_V1,
+            "unified_diff_checksum": SHA256_UTF8_BYTES_V1,
         },
     }
     if proposer_invocation_id is not None and reviewer_invocation_id is not None:

@@ -40,6 +40,22 @@ def sha256_hex(value: bytes | bytearray | memoryview) -> str:
     return hashlib.sha256(bytes(value)).hexdigest()
 
 
+SHA256_UTF8_BYTES_V1 = "sha256_utf8_bytes_v1"
+SHA256_CANONICAL_JSON_V1 = "sha256_canonical_json_v1"
+
+
+def sha256_utf8_text(value: str) -> str:
+    return sha256_hex(str(value).encode("utf-8"))
+
+
+def sha256_raw_model_response(value: str) -> str:
+    return sha256_utf8_text(value)
+
+
+def sha256_unified_diff_text(value: str) -> str:
+    return sha256_utf8_text(value)
+
+
 def sha256_canonical_json(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 

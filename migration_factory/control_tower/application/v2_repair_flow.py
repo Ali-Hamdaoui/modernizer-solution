@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from migration_factory.control_tower.domain.checksums import (
     sha256_canonical_json,
+    sha256_unified_diff_text,
     utc_now_text,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
@@ -2085,8 +2086,8 @@ class V2RepairFlowService:
         diff_path = Path(final_diff_ref)
         if not diff_path.is_file():
             raise ValueError(f"Reviewed repair diff artifact not found: {diff_path}")
-        diff_content = diff_path.read_text(encoding="utf-8")
-        actual_diff_checksum = sha256_canonical_json({"unified_diff": diff_content})
+        diff_content = diff_path.read_bytes().decode("utf-8")
+        actual_diff_checksum = sha256_unified_diff_text(diff_content)
         if actual_diff_checksum != final_diff_checksum:
             raise ValueError("Reviewed repair diff artifact checksum mismatch")
 
