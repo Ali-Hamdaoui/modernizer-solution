@@ -877,50 +877,24 @@ export function SourceProfileOverrideForm({
   );
 }
 
-export function ApprovalModePanel({
-  enabled,
-  busy,
-  error,
-  onToggle,
-}: {
-  enabled: boolean;
-  busy: boolean;
-  error: string | null;
-  onToggle: (enabled: boolean) => void;
-}) {
-  return (
-    <section className="panel" aria-label="Approval mode">
-      <h2>Approval Mode</h2>
-      <div className="approval-mode-row">
-        <div>
-          <strong>{enabled ? "Auto Approval ON" : "Manual"}</strong>
-          <p className="meta">{enabled ? "Successful approval gates are approved automatically." : "Approval gates wait for manual Approve or Reject."}</p>
-        </div>
-        <label className="toggle-control">
-          <input
-            type="checkbox"
-            checked={enabled}
-            disabled={busy}
-            onChange={(event) => onToggle(event.target.checked)}
-          />
-          <span>{busy ? "Updating..." : enabled ? "On" : "Off"}</span>
-        </label>
-      </div>
-      {error && <p className="warning-text" role="alert">{error}</p>}
-    </section>
-  );
-}
-
 export function ApprovalDecisionsPanel({
   approvals,
   approvalReviewOpen,
   approvalBusy,
+  approvalModeEnabled,
+  approvalModeBusy,
+  approvalModeError,
+  onApprovalModeToggle,
   onApprove,
   onReject,
 }: {
   approvals: V2ApprovalResponse[];
   approvalReviewOpen: boolean;
   approvalBusy: string | null;
+  approvalModeEnabled: boolean;
+  approvalModeBusy: boolean;
+  approvalModeError: string | null;
+  onApprovalModeToggle: (enabled: boolean) => void;
   onApprove: (card: V2ApprovalResponse) => void;
   onReject: (card: V2ApprovalResponse) => void;
 }) {
@@ -931,6 +905,22 @@ export function ApprovalDecisionsPanel({
   return (
     <section className="panel">
       <h2>Approval Decisions</h2>
+      <div className="approval-mode-row" aria-label="Approval mode">
+        <div>
+          <strong>{approvalModeEnabled ? "Auto Approval ON" : "Manual"}</strong>
+          <p className="meta">{approvalModeEnabled ? "Successful approval gates are approved automatically." : "Approval gates wait for manual Approve or Reject."}</p>
+        </div>
+        <label className="toggle-control">
+          <input
+            type="checkbox"
+            checked={approvalModeEnabled}
+            disabled={approvalModeBusy}
+            onChange={(event) => onApprovalModeToggle(event.target.checked)}
+          />
+          <span>{approvalModeBusy ? "Updating..." : approvalModeEnabled ? "On" : "Off"}</span>
+        </label>
+      </div>
+      {approvalModeError && <p className="warning-text" role="alert">{approvalModeError}</p>}
       {approvalReviewOpen && (
         <p className="meta">
           A pre-transform review gate is open. Approve/Reject buttons are enabled below for each pending gate; the chatbot can also confirm the exact checksum.
@@ -1632,16 +1622,14 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       </section>
 
       {/* Decisions Panel */}
-      <ApprovalModePanel
-        enabled={Boolean(data.job.auto_approval_enabled)}
-        busy={approvalModeBusy}
-        error={approvalModeError}
-        onToggle={(enabled) => void updateApprovalMode(enabled)}
-      />
       <ApprovalDecisionsPanel
         approvals={data.approvals}
         approvalReviewOpen={approvalReviewOpen}
         approvalBusy={approvalBusy}
+        approvalModeEnabled={Boolean(data.job.auto_approval_enabled)}
+        approvalModeBusy={approvalModeBusy}
+        approvalModeError={approvalModeError}
+        onApprovalModeToggle={(enabled) => void updateApprovalMode(enabled)}
         onApprove={(card) => void approveCard(card)}
         onReject={(card) => void rejectCard(card)}
       />
