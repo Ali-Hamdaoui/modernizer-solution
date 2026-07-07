@@ -19,7 +19,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from pathlib import Path, PureWindowsPath
 
@@ -593,7 +593,9 @@ class StageProgressRequest(BaseModel):
 
 class ApprovalModeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    auto_approval_enabled: bool
+    auto_approval_enabled: bool = Field(
+        validation_alias=AliasChoices("auto_approval_enabled", "autoApprovalEnabled")
+    )
 
 
 class AssistantMessageRequest(BaseModel):
@@ -916,7 +918,7 @@ def create_app(
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[local_security.frontend_origin],
+        allow_origins=list(local_security.allowed_frontend_origins),
         allow_credentials=False,
         allow_methods=list(local_security.cors_allowed_methods),
         allow_headers=list(local_security.cors_allowed_headers),
@@ -950,7 +952,7 @@ def create_app(
 
         if request.method in MUTATION_METHODS:
             origin = request.headers.get("origin")
-            if origin != local_security.frontend_origin:
+            if not local_security.is_allowed_frontend_origin(origin):
                 return _json_error(
                     request,
                     status.HTTP_403_FORBIDDEN,
@@ -1403,6 +1405,7 @@ def create_app(
         return {
             "job_id": job_id,
             "auto_approval_enabled": enabled,
+            "autoApprovalEnabled": enabled,
             "job": service.result_to_dict(result) if result is not None else None,
         }
 
