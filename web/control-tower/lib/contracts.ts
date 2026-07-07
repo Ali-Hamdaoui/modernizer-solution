@@ -576,6 +576,14 @@ export type V2ApprovalModeResponse = {
   job_id: string;
   auto_approval_enabled: boolean;
   autoApprovalEnabled?: boolean;
+  auto_approved?: {
+    resume_id: string;
+    stage_index: number;
+    card_id: string;
+    gate_id: string;
+    checksum: string;
+    decision_id: string;
+  } | null;
   job: V2MigrationJobResponse | null;
 };
 
