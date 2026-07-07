@@ -1,488 +1,382 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 
-_PAGE_WIDTH = 595
-_PAGE_HEIGHT = 842
-_MARGIN = 50
-_CONTENT_WIDTH = _PAGE_WIDTH - 2 * _MARGIN
-_FONT_SIZE = 10
-_HEADING_SIZES = {1: 22, 2: 16, 3: 13, 4: 11, 5: 10}
-_LINE_HEIGHT = 14
-_TABLE_LINE_HEIGHT = 20
-_MAX_CELL_CHARS = 80
+_PAGE_WIDTH = 612.0
+_PAGE_HEIGHT = 792.0
+_MARGIN_X = 44.0
+_MARGIN_TOP = 42.0
+_MARGIN_BOTTOM = 42.0
+_CONTENT_WIDTH = _PAGE_WIDTH - (_MARGIN_X * 2)
+_FONT_REGULAR = "F1"
+_FONT_BOLD = "F2"
+_FONT_ITALIC = "F3"
+_BODY_SIZE = 10.5
+_SMALL_SIZE = 9.0
+_SECTION_SIZE = 18.0
+_SUBSECTION_SIZE = 14.0
+_TITLE_SIZE = 24.0
+_LINE_GAP = 4.0
+_PARAGRAPH_GAP = 10.0
+_TABLE_CELL_PAD_X = 6.0
+_TABLE_CELL_PAD_Y = 5.0
+_DEFAULT_MAX_CHARS = 80
+
+_NAVY = (0.09, 0.20, 0.37)
+_TEAL = (0.10, 0.50, 0.54)
+_TEXT = (0.14, 0.16, 0.20)
+_BORDER = (0.80, 0.84, 0.88)
+_ROW_ALT = (0.97, 0.98, 0.99)
+_HEADER_FILL = (0.17, 0.30, 0.48)
+_WHITE = (1.0, 1.0, 1.0)
 
 
-@dataclass
+@dataclass(frozen=True)
+class _TextStyle:
+    font: str
+    size: float
+    color: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class _HeadingBlock:
+    level: int
+    text: str
+
+
+@dataclass(frozen=True)
+class _ParagraphBlock:
+    text: str
+
+
+@dataclass(frozen=True)
+class _BulletBlock:
+    text: str
+
+
+@dataclass(frozen=True)
+class _TableBlock:
+    rows: list[list[str]]
+
+
+_Block = _HeadingBlock | _ParagraphBlock | _BulletBlock | _TableBlock
+
+
 class _PdfCanvas:
-    objects: list[dict[str, Any]] = field(default_factory=list)
-    y: float = _PAGE_HEIGHT - _MARGIN
-    page: int = 1
-    font_name: str = "Helvetica"
-    font_size: int = _FONT_SIZE
-    content: list[str] = field(default_factory=list)
-    object_index: int = 0
+    def __init__(self) -> None:
+        self._pages: list[list[str]] = [[]]
+        self._page_index = 0
+        self._cursor_y = _PAGE_HEIGHT - _MARGIN_TOP
 
-    def add_page(self) -> None:
-        self.page += 1
-        self.y = _PAGE_HEIGHT - _MARGIN
-        self._flush_page()
+    def ensure_space(self, height: float) -> None:
+        if self._cursor_y - height < _MARGIN_BOTTOM:
+            self.new_page()
 
-    def _flush_page(self) -> None:
-        pass
+    def new_page(self) -> None:
+        self._pages.append([])
+        self._page_index += 1
+        self._cursor_y = _PAGE_HEIGHT - _MARGIN_TOP
 
-    def write_text(
+    def draw_rect(
         self,
-        text: str,
-        size: int | None = None,
-        bold: bool = False,
-        indent: float = 0,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        *,
+        fill: tuple[float, float, float] | None = None,
+        stroke: tuple[float, float, float] | None = None,
+        line_width: float = 1.0,
     ) -> None:
-        if self.y < _MARGIN + _LINE_HEIGHT:
-            self.add_page()
-        self.content.append(
-            f"BT "
-            f"/F{'B' if bold else 'H'} {size or _FONT_SIZE} Tf "
-            f"{_MARGIN + indent:.0f} {self.y:.0f} Td "
-            f"({_escape_pdf(text)}) Tj ET"
-        )
-        self.y -= _LINE_HEIGHT + (4 if bold and (size or _FONT_SIZE) > 12 else 0)
+        commands: list[str] = []
+        if fill is not None:
+            commands.append(_fill_color(fill))
+        if stroke is not None:
+            commands.append(_stroke_color(stroke))
+            commands.append(f"{line_width:.2f} w")
+        mode = "B" if fill is not None and stroke is not None else "f" if fill is not None else "S"
+        commands.append(f"{x:.2f} {y:.2f} {width:.2f} {height:.2f} re {mode}")
+        self._append(commands)
 
-    def write_wrapped(
+    def draw_text(self, x: float, y: float, text: str, style: _TextStyle) -> None:
+        self._append([
+            "BT",
+            _fill_color(style.color),
+            f"/{style.font} {style.size:.2f} Tf",
+            f"1 0 0 1 {x:.2f} {y:.2f} Tm",
+            f"({_escape_pdf_text(text)}) Tj",
+            "ET",
+        ])
+
+    def draw_line(
         self,
-        text: str,
-        size: int | None = None,
-        bold: bool = False,
-        indent: float = 0,
-        max_chars: int = _MAX_CELL_CHARS,
+        x1: float,
+        y1: float,
+        x2: float,
+        y2: float,
+        *,
+        color: tuple[float, float, float] = _BORDER,
+        line_width: float = 1.0,
     ) -> None:
-        wrapped = _wrap_text(text, max_chars)
-        for line in wrapped:
-            self.write_text(line, size=size, bold=bold, indent=indent)
+        self._append([
+            _stroke_color(color),
+            f"{line_width:.2f} w",
+            f"{x1:.2f} {y1:.2f} m",
+            f"{x2:.2f} {y2:.2f} l S",
+        ])
 
-    def draw_table(
-        self,
-        headers: list[str],
-        rows: list[list[str]],
-        col_widths: list[float] | None = None,
-    ) -> None:
-        if not rows:
-            return
-        if col_widths is None:
-            col_widths = [_CONTENT_WIDTH / len(headers)] * len(headers)
+    def move_cursor(self, amount: float) -> None:
+        self._cursor_y -= amount
 
-        full_table_height = _table_height(rows, col_widths)
-        if self.y - full_table_height < _MARGIN:
-            self.add_page()
+    @property
+    def cursor_y(self) -> float:
+        return self._cursor_y
 
-        row_height = _TABLE_LINE_HEIGHT
-        x_start = _MARGIN
-        y_start = self.y
+    @property
+    def pages(self) -> list[list[str]]:
+        return self._pages
 
-        for header, width in zip(headers, col_widths):
-            x_end = x_start + width
-            self.content.append(
-                f"BT /FB {_FONT_SIZE} Tf {x_start:.0f} {y_start - 2:.0f} Td "
-                f"({_escape_pdf(header)}) Tj ET"
-            )
-            self.content.append(
-                f"{x_start:.0f} {y_start:.0f} {width:.0f} {row_height:.0f} re S"
-            )
-            x_start = x_end
-
-        self.y -= row_height
-
-        for row in rows:
-            max_lines = max(len(_wrap_text(str(cell or ""), _MAX_CELL_CHARS)) for cell in row)
-            cell_row_height = max(row_height, max_lines * _LINE_HEIGHT)
-
-            if self.y - cell_row_height < _MARGIN:
-                self.add_page()
-                y_start = self.y
-
-            x_start = _MARGIN
-            for cell, width in zip(row, col_widths):
-                x_end = x_start + width
-                wrapped = _wrap_text(str(cell or ""), int(width / 5.5))
-                cell_y = self.y
-                for line in wrapped:
-                    if cell_y < _MARGIN + _LINE_HEIGHT:
-                        break
-                    self.content.append(
-                        f"BT /FH {_FONT_SIZE - 1} Tf "
-                        f"{x_start + 2:.0f} {cell_y - 2:.0f} Td "
-                        f"({_escape_pdf(line)}) Tj ET"
-                    )
-                    cell_y -= _LINE_HEIGHT
-                self.content.append(
-                    f"{x_start:.0f} {self.y - cell_row_height:.0f} "
-                    f"{width:.0f} {cell_row_height:.0f} re S"
-                )
-                x_start = x_end
-
-            self.y -= cell_row_height
+    def _append(self, commands: list[str]) -> None:
+        self._pages[self._page_index].extend(commands)
 
 
-def write_text_pdf_from_markdown(markdown_path: str | Path, output_pdf_path: str | Path) -> None:
-    markdown_path = Path(markdown_path)
-    output_pdf_path = Path(output_pdf_path)
-    output_pdf_path.parent.mkdir(parents=True, exist_ok=True)
-
-    text = markdown_path.read_text(encoding="utf-8")
-    parsed = _parse_markdown(text)
-
+def write_text_pdf_from_markdown(markdown_path: str | Path, output_pdf_path: str | Path) -> Path:
+    source_path = Path(markdown_path)
+    output_path = Path(output_pdf_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    markdown = source_path.read_text(encoding="utf-8")
+    blocks = _parse_markdown(markdown)
     canvas = _PdfCanvas()
-    _render_document(canvas, parsed)
+    _render_document(canvas, blocks)
+    output_path.write_bytes(_build_pdf_bytes(canvas.pages))
+    return output_path
 
-    pdf_bytes = _build_pdf_bytes(canvas, text)
-    output_pdf_path.write_bytes(pdf_bytes)
 
-
-def _parse_markdown(text: str) -> list[dict[str, Any]]:
-    lines = text.split("\n")
-    blocks: list[dict[str, Any]] = []
-    in_table = False
-    table_headers: list[str] = []
-    table_rows: list[list[str]] = []
-    table_col_widths: list[float] | None = None
-
-    for line in lines:
+def _parse_markdown(markdown: str) -> list[_Block]:
+    lines = markdown.splitlines()
+    blocks: list[_Block] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index].rstrip()
         stripped = line.strip()
-
-        if stripped.startswith("|") and stripped.endswith("|"):
-            cells = [
-                c.strip()
-                for c in stripped.strip("|").split("|")
-            ]
-            if not in_table:
-                in_table = True
-                table_headers = cells
-                table_rows = []
-            elif re.match(r"^[\s|:\-]+$", stripped):
-                col_count = len(cells)
-                table_col_widths = [_CONTENT_WIDTH / max(col_count, 1)] * max(col_count, 1)
-            else:
-                table_rows.append(cells)
-            continue
-
-        if in_table and table_headers:
-            blocks.append({
-                "type": "table",
-                "headers": table_headers,
-                "rows": table_rows,
-                "col_widths": table_col_widths,
-            })
-            in_table = False
-            table_headers = []
-            table_rows = []
-            table_col_widths = None
-
         if not stripped:
-            blocks.append({"type": "spacer"})
+            index += 1
             continue
-
-        heading = re.match(r"^(#{1,5})\s+(.+)$", stripped)
-        if heading:
-            level = len(heading.group(1))
-            blocks.append({
-                "type": "heading",
-                "level": level,
-                "text": heading.group(2).strip(),
-            })
+        if stripped.startswith("#"):
+            level = len(stripped) - len(stripped.lstrip("#"))
+            blocks.append(_HeadingBlock(level=min(level, 6), text=stripped[level:].strip()))
+            index += 1
             continue
-
-        if stripped.startswith("- ") or stripped.startswith("* "):
-            blocks.append({
-                "type": "bullet",
-                "text": stripped[2:].strip(),
-            })
+        if stripped.startswith("|"):
+            table_lines = [stripped]
+            index += 1
+            while index < len(lines) and lines[index].strip().startswith("|"):
+                table_lines.append(lines[index].strip())
+                index += 1
+            rows = []
+            for row_index, row in enumerate(table_lines):
+                separator = row.replace("|", "").replace("-", "").replace(":", "").strip()
+                if row_index == 1 and not separator:
+                    continue
+                cells = [cell.strip() for cell in row.strip("|").split("|")]
+                rows.append(cells)
+            if rows:
+                blocks.append(_TableBlock(rows=rows))
             continue
-
-        blocks.append({
-            "type": "paragraph",
-            "text": stripped,
-        })
-
-    if in_table and table_headers:
-        blocks.append({
-            "type": "table",
-            "headers": table_headers,
-            "rows": table_rows,
-            "col_widths": table_col_widths,
-        })
-
+        if stripped.startswith("- "):
+            blocks.append(_BulletBlock(text=stripped[2:].strip()))
+            index += 1
+            continue
+        paragraph_lines = [stripped]
+        index += 1
+        while index < len(lines):
+            candidate = lines[index].strip()
+            if not candidate or candidate.startswith("#") or candidate.startswith("|") or candidate.startswith("- "):
+                break
+            paragraph_lines.append(candidate)
+            index += 1
+        blocks.append(_ParagraphBlock(text=" ".join(paragraph_lines)))
     return blocks
 
 
-def _render_document(canvas: _PdfCanvas, blocks: list[dict[str, Any]]) -> None:
-    canvas.write_text(
-        "Migration Report",
-        size=22,
-        bold=True,
-    )
-    canvas.y -= 6
-
+def _render_document(canvas: _PdfCanvas, blocks: list[_Block]) -> None:
+    if blocks and isinstance(blocks[0], _HeadingBlock) and blocks[0].level == 1:
+        _render_title_banner(canvas, blocks[0].text)
+        blocks = blocks[1:]
+    else:
+        _render_title_banner(canvas, "Final Migration Report")
     for block in blocks:
-        block_type = block.get("type", "")
-
-        if block_type == "spacer":
-            canvas.y -= 6
-            continue
-
-        if block_type == "heading":
-            level = block.get("level", 1)
-            size = _HEADING_SIZES.get(level, 10)
-            canvas.write_text(block.get("text", ""), size=size, bold=True)
-            continue
-
-        if block_type == "paragraph":
-            text = block.get("text", "")
-            if text.startswith("- ") or text.startswith("* "):
-                canvas.write_wrapped(text, indent=10)
-            else:
-                canvas.write_wrapped(text)
-            continue
-
-        if block_type == "bullet":
-            canvas.write_wrapped(f"• {block.get('text', '')}", indent=10)
-            continue
-
-        if block_type == "table":
-            headers = block.get("headers", [])
-            rows = block.get("rows", [])
-            col_widths = block.get("col_widths")
-            canvas.draw_table(headers, rows, col_widths=col_widths)
-            continue
+        if isinstance(block, _HeadingBlock):
+            _render_heading(canvas, block)
+        elif isinstance(block, _ParagraphBlock):
+            _render_paragraph(canvas, block.text)
+        elif isinstance(block, _BulletBlock):
+            _render_bullet(canvas, block.text)
+        elif isinstance(block, _TableBlock):
+            _render_table(canvas, block.rows)
 
 
-def _build_pdf_bytes(canvas: _PdfCanvas, text: str) -> bytes:
-    pages = _split_into_pages(canvas.content)
-    objects: list[bytes] = []
-    object_refs: list[int] = []
-
-    obj_num = 0
-
-    def _next_obj(data: bytes) -> int:
-        nonlocal obj_num
-        obj_num += 1
-        objects.append(data)
-        return obj_num
-
-    page_object_numbers: list[int] = []
-    for page_content in pages:
-        content_stream = b"\n".join(
-            line.encode("latin-1", errors="replace") if isinstance(line, str) else line
-            for line in page_content
-        )
-        content_stream = b"q\n" + content_stream + b"\nQ\n"
-        content_obj = _next_obj(
-            b"<< /Length " + str(len(content_stream)).encode() + b" >>\nstream\n" + content_stream + b"\nendstream"
-        )
-
-        font_helv = _next_obj(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-        font_helv_bold = _next_obj(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>")
-
-        resources = _next_obj(
-            b"<< /Font <</FH " + str(font_helv).encode() + b" 0 R /FB " + str(font_helv_bold).encode() + b" 0 R>> >>"
-        )
-
-        page_obj = _next_obj(
-            b"<< /Type /Page /Parent 3 0 R /MediaBox [0 0 "
-            + str(_PAGE_WIDTH).encode() + b" " + str(_PAGE_HEIGHT).encode()
-            + b"] /Contents " + str(content_obj).encode() + b" 0 R /Resources " + str(resources).encode() + b" 0 R >>"
-        )
-        page_object_numbers.append(page_obj)
-
-    pages_obj = _next_obj(
-        b"<< /Type /Pages /Kids ["
-        + b" ".join(str(p).encode() + b" 0 R" for p in page_object_numbers)
-        + b"] /Count " + str(len(page_object_numbers)).encode() + b" >>"
+def _render_title_banner(canvas: _PdfCanvas, title: str) -> None:
+    banner_height = 94.0
+    canvas.ensure_space(banner_height + 24.0)
+    banner_y = canvas.cursor_y - banner_height
+    canvas.draw_rect(_MARGIN_X, banner_y, _CONTENT_WIDTH, banner_height, fill=_NAVY)
+    canvas.draw_rect(_MARGIN_X, banner_y, 10.0, banner_height, fill=_TEAL)
+    canvas.draw_text(_MARGIN_X + 20.0, banner_y + 56.0, title, _TextStyle(_FONT_BOLD, _TITLE_SIZE, _WHITE))
+    canvas.draw_text(
+        _MARGIN_X + 20.0,
+        banner_y + 28.0,
+        "Governed sandbox migration report",
+        _TextStyle(_FONT_REGULAR, 11.0, (0.88, 0.93, 0.97)),
     )
+    canvas.move_cursor(banner_height + 22.0)
 
-    header = b"%PDF-1.4\n"
 
-    body = b""
-    for i, data in enumerate(objects, start=1):
-        body += f"{i} 0 obj\n".encode() + data + b"\nendobj\n"
+def _render_heading(canvas: _PdfCanvas, block: _HeadingBlock) -> None:
+    size = _SECTION_SIZE if block.level == 2 else _SUBSECTION_SIZE if block.level == 3 else 12.0
+    style = _TextStyle(_FONT_BOLD, size, _NAVY if block.level <= 2 else _TEXT)
+    height = size + 8.0
+    canvas.ensure_space(height + _PARAGRAPH_GAP)
+    if block.level == 2:
+        y_line = canvas.cursor_y - 3.0
+        canvas.draw_line(_MARGIN_X, y_line, _PAGE_WIDTH - _MARGIN_X, y_line, color=_BORDER, line_width=1.2)
+        canvas.move_cursor(10.0)
+    canvas.draw_text(_MARGIN_X, canvas.cursor_y - size, block.text, style)
+    canvas.move_cursor(height)
 
-    xref_offset = len(header + body)
-    xref = b"xref\n0 " + str(obj_num + 1).encode() + b"\n"
-    xref += b"0000000000 65535 f \n"
-    offset = 0
-    for i in range(obj_num):
-        if i == 0:
-            offset = len(header)
-        xref += f"{offset:010d} 00000 n \n".encode()
-        offset += len(objects[i - 1]) + len(f"{i} 0 obj\n".encode()) + len(b"\nendobj\n") if i > 0 else 0
 
-    trailer = b"trailer\n<< /Size " + str(obj_num + 1).encode() + b" /Root 1 0 R >>\n"
-    # Override page tree reference — we need pages_obj to be the last object
-    # Rebuild: the first object is always the catalog referencing page tree
-    # For simplicity, use a fixed approach
-    # Actually, let's rebuild properly.
+def _render_paragraph(canvas: _PdfCanvas, text: str) -> None:
+    lines = _wrap_text(text, _BODY_SIZE, _CONTENT_WIDTH)
+    height = len(lines) * (_BODY_SIZE + _LINE_GAP) + _PARAGRAPH_GAP
+    canvas.ensure_space(height)
+    current_y = canvas.cursor_y
+    for line in lines:
+        canvas.draw_text(_MARGIN_X, current_y - _BODY_SIZE, line, _TextStyle(_FONT_REGULAR, _BODY_SIZE, _TEXT))
+        current_y -= _BODY_SIZE + _LINE_GAP
+    canvas.move_cursor(height)
 
-    # Reset and build simply
-    objects2: list[bytes] = []
 
-    font_h = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
-    font_b = b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>"
-    resources2 = b"<< /Font <</FH 2 0 R /FB 3 0 R>> >>"
+def _render_bullet(canvas: _PdfCanvas, text: str) -> None:
+    bullet_indent = 16.0
+    wrap_width = _CONTENT_WIDTH - bullet_indent
+    lines = _wrap_text(text, _BODY_SIZE, wrap_width)
+    height = len(lines) * (_BODY_SIZE + _LINE_GAP) + 3.0
+    canvas.ensure_space(height + 2.0)
+    current_y = canvas.cursor_y
+    canvas.draw_text(_MARGIN_X, current_y - _BODY_SIZE, "*", _TextStyle(_FONT_BOLD, _BODY_SIZE + 1.0, _TEAL))
+    for line in lines:
+        canvas.draw_text(_MARGIN_X + bullet_indent, current_y - _BODY_SIZE, line, _TextStyle(_FONT_REGULAR, _BODY_SIZE, _TEXT))
+        current_y -= _BODY_SIZE + _LINE_GAP
+    canvas.move_cursor(height)
 
-    page_content_list: list[int] = []
-    page_refs: list[int] = []
 
-    next_n = 4
-    for p_idx, page_content in enumerate(pages):
-        pc_stream = b"q\n" + b"\n".join(
-            line.encode("latin-1", errors="replace") if isinstance(line, str) else line
-            for line in page_content
-        ) + b"\nQ\n"
-        pc_obj = b"<< /Length " + str(len(pc_stream)).encode() + b" >>\nstream\n" + pc_stream + b"\nendstream"
-        objects2.append(pc_obj)
-        page_content_list.append(next_n)
-        next_n += 1
-
-    for p_idx in range(len(pages)):
-        p_obj = (
-            b"<< /Type /Page /Parent 1 0 R /MediaBox [0 0 "
-            + str(_PAGE_WIDTH).encode() + b" " + str(_PAGE_HEIGHT).encode()
-            + b"] /Contents " + str(page_content_list[p_idx]).encode() + b" 0 R /Resources " + str(next_n).encode() + b" 0 R >>"
-        )
-        objects2.append(p_obj)
-        page_refs.append(next_n)
-        next_n += 1
-
-    pages_obj2 = (
-        b"<< /Type /Pages /Kids ["
-        + b" ".join(str(r).encode() + b" 0 R" for r in page_refs)
-        + b"] /Count " + str(len(page_refs)).encode() + b" >>"
-    )
-    objects2.append(pages_obj2)  # will be object 1
-    # Actually index 0 will be catalog - let me redo this properly.
-
-    # Simplest approach: fixed object layout
-    # 1: Pages (parent)
-    # 2: Font H
-    # 3: Font B
-    # 4..N: Content streams
-    # N+1..: Page objects
-    # Last: Resources (shareable)
-
-    all_objects: list[bytes] = []
-    all_objects.append(pages_obj2)  # becomes object 1
-    all_objects.append(font_h)       # becomes object 2
-    all_objects.append(font_b)       # becomes object 3
-    content_start = 4
-    content_objs: list[int] = []
-    for p_idx, page_content in enumerate(pages):
-        pc_stream = b"q\n" + b"\n".join(
-            line.encode("latin-1", errors="replace") if isinstance(line, str) else line
-            for line in page_content
-        ) + b"\nQ\n"
-        pc_obj = b"<< /Length " + str(len(pc_stream)).encode() + b" >>\nstream\n" + pc_stream + b"\nendstream"
-        all_objects.append(pc_obj)
-        content_objs.append(content_start + p_idx)
-
-    resources_num = content_start + len(pages)
-    all_objects.append(resources2)  # shareable resources
-
-    page_nums: list[int] = []
-    for p_idx in range(len(pages)):
-        p_obj = (
-            b"<< /Type /Page /Parent 1 0 R /MediaBox [0 0 "
-            + str(_PAGE_WIDTH).encode() + b" " + str(_PAGE_HEIGHT).encode()
-            + b"] /Contents " + str(content_objs[p_idx]).encode() + b" 0 R /Resources " + str(resources_num).encode() + b" 0 R >>"
-        )
-        all_objects.append(p_obj)
-        page_nums.append(resources_num + 1 + p_idx)
-
-    catalog = b"<< /Type /Catalog /Pages 1 0 R >>"
-    all_objects.insert(0, catalog)  # becomes object 0? No, shift everything.
-    # Let's redo: all_objects[0] = catalog, all_objects[1] = pages, etc.
-    all_objects_final: list[bytes] = [
-        catalog,  # 1 0 obj
-        pages_obj2,  # 2 0 obj
-        font_h,  # 3 0 obj
-        font_b,  # 4 0 obj
+def _render_table(canvas: _PdfCanvas, rows: list[list[str]]) -> None:
+    if not rows:
+        return
+    normalized_rows = [list(row) for row in rows]
+    column_count = max(len(row) for row in normalized_rows)
+    normalized_rows = [row + [""] * (column_count - len(row)) for row in normalized_rows]
+    widths = _table_column_widths(normalized_rows, _CONTENT_WIDTH)
+    row_heights = [
+        _table_row_height(row, widths, _BODY_SIZE if index else _SMALL_SIZE + 0.5)
+        for index, row in enumerate(normalized_rows)
     ]
-    content_start_final = 5
-    content_objs_final: list[int] = []
-    for p_idx, page_content in enumerate(pages):
-        pc_stream = b"q\n" + b"\n".join(
-            line.encode("latin-1", errors="replace") if isinstance(line, str) else line
-            for line in page_content
-        ) + b"\nQ\n"
-        pc_obj = b"<< /Length " + str(len(pc_stream)).encode() + b" >>\nstream\n" + pc_stream + b"\nendstream"
-        all_objects_final.append(pc_obj)
-        content_objs_final.append(content_start_final + p_idx)
-
-    resources_num_final = content_start_final + len(pages)
-    all_objects_final.append(resources2)
-
-    for p_idx in range(len(pages)):
-        p_obj = (
-            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 "
-            + str(_PAGE_WIDTH).encode() + b" " + str(_PAGE_HEIGHT).encode()
-            + b"] /Contents " + str(content_objs_final[p_idx]).encode() + b" 0 R /Resources "
-            + str(resources_num_final).encode() + b" 0 R >>"
-        )
-        all_objects_final.append(p_obj)
-
-    body2 = b""
-    for i, data in enumerate(all_objects_final, start=1):
-        body2 += f"{i} 0 obj\n".encode() + data + b"\nendobj\n"
-
-    xref_offset2 = len(header + body2)
-    num_objects = len(all_objects_final)
-    xref2 = b"xref\n0 " + str(num_objects + 1).encode() + b"\n"
-    xref2 += b"0000000000 65535 f \n"
-    pos = len(header)
-    for i in range(1, num_objects + 1):
-        xref2 += f"{pos:010d} 00000 n \n".encode()
-        obj_data = all_objects_final[i - 1]
-        obj_entry = f"{i} 0 obj\n".encode() + obj_data + b"\nendobj\n"
-        pos += len(obj_entry)
-
-    trailer2 = b"trailer\n<< /Size " + str(num_objects + 1).encode() + b" /Root 1 0 R >>\n"
-    eof = b"startxref\n" + str(xref_offset2).encode() + b"\n%%EOF\n"
-
-    return header + body2 + xref2 + trailer2 + eof
+    canvas.ensure_space(sum(row_heights) + _PARAGRAPH_GAP)
+    current_top = canvas.cursor_y
+    for row_index, row in enumerate(normalized_rows):
+        row_height = row_heights[row_index]
+        y_bottom = current_top - row_height
+        fill = _HEADER_FILL if row_index == 0 else _ROW_ALT if row_index % 2 == 0 else _WHITE
+        canvas.draw_rect(_MARGIN_X, y_bottom, _CONTENT_WIDTH, row_height, fill=fill, stroke=_BORDER, line_width=0.8)
+        x = _MARGIN_X
+        for col_index, cell in enumerate(row):
+            if col_index:
+                canvas.draw_line(x, current_top, x, y_bottom, color=_BORDER, line_width=0.8)
+            style = _TextStyle(
+                _FONT_BOLD if row_index == 0 else _FONT_REGULAR,
+                _SMALL_SIZE + 0.5 if row_index == 0 else _BODY_SIZE,
+                _WHITE if row_index == 0 else _TEXT,
+            )
+            wrapped = _wrap_text(cell or " ", style.size, widths[col_index] - (_TABLE_CELL_PAD_X * 2))
+            text_y = current_top - _TABLE_CELL_PAD_Y - style.size
+            for line in wrapped:
+                canvas.draw_text(x + _TABLE_CELL_PAD_X, text_y, line, style)
+                text_y -= style.size + 2.5
+            x += widths[col_index]
+        current_top = y_bottom
+    canvas.move_cursor(sum(row_heights) + _PARAGRAPH_GAP)
 
 
-def _split_into_pages(content: list[str]) -> list[list[str]]:
-    if not content:
-        return [[]]
-    return [content]
+def _table_column_widths(rows: list[list[str]], available_width: float) -> list[float]:
+    column_count = len(rows[0])
+    weights = [1.0] * column_count
+    for column in range(column_count):
+        max_len = max(len(row[column]) for row in rows)
+        weights[column] = max(1.0, min(float(max_len), 30.0))
+    total = sum(weights) or 1.0
+    widths = [available_width * (weight / total) for weight in weights]
+    min_width = max(available_width / column_count * 0.55, 72.0 if column_count <= 3 else 52.0)
+    adjusted = [max(width, min_width) for width in widths]
+    scale = available_width / sum(adjusted)
+    return [width * scale for width in adjusted]
 
 
-def _escape_pdf(text: str) -> str:
-    text = str(text)
-    text = text.replace("\\", "\\\\")
-    text = text.replace("(", "\\(")
-    text = text.replace(")", "\\)")
-    text = text.replace("\n", "\\n")
-    text = text.replace("\r", "\\r")
-    text = text.replace("\t", "\\t")
-    return text
+def _table_row_height(row: list[str], widths: list[float], font_size: float) -> float:
+    line_counts = [
+        max(1, len(_wrap_text(cell or " ", font_size, widths[index] - (_TABLE_CELL_PAD_X * 2))))
+        for index, cell in enumerate(row)
+    ]
+    return max(line_counts) * (font_size + 2.5) + (_TABLE_CELL_PAD_Y * 2) + 2.0
 
 
-def _wrap_text(text: str, max_chars: int = _MAX_CELL_CHARS) -> list[str]:
-    text = str(text)
-    text = text.replace("<br />", "\n").replace("<br>", "\n")
+def _wrap_text(
+    text: str,
+    font_size: float | None = None,
+    width: float | None = None,
+    *,
+    max_chars: int | None = None,
+) -> list[str]:
+    if width is None:
+        limit = max_chars if max_chars is not None else int(font_size or _DEFAULT_MAX_CHARS)
+        return _wrap_text_by_chars(text, limit)
+
+    plain = str(text).replace("**", "").replace("`", "")
+    lines: list[str] = []
+    for paragraph in plain.replace("<br />", "\n").replace("<br>", "\n").splitlines() or [""]:
+        words = [
+            chunk
+            for word in paragraph.split()
+            for chunk in _split_long_word(word, font_size or _BODY_SIZE, width)
+        ]
+        if not words:
+            lines.append("")
+            continue
+        current = words[0]
+        for word in words[1:]:
+            candidate = f"{current} {word}"
+            if _estimate_text_width(candidate, font_size or _BODY_SIZE) <= width:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+    return lines
+
+
+def _wrap_text_by_chars(text: str, max_chars: int) -> list[str]:
+    text = str(text).replace("<br />", "\n").replace("<br>", "\n")
     if len(text) <= max_chars and "\n" not in text:
         return [text]
-
     lines: list[str] = []
     for paragraph in text.split("\n"):
         if not paragraph:
             lines.append("")
             continue
         while len(paragraph) > max_chars:
-            split = _split_long_word(paragraph, max_chars)
+            split = _split_long_word(paragraph, max_chars=max_chars)
             if split:
                 part, paragraph = split
             else:
@@ -491,28 +385,119 @@ def _wrap_text(text: str, max_chars: int = _MAX_CELL_CHARS) -> list[str]:
             lines.append(part)
         if paragraph:
             lines.append(paragraph)
-
     return lines if lines else [""]
 
 
-def _split_long_word(text: str, max_chars: int) -> tuple[str, str] | None:
-    if len(text) <= max_chars:
+def _split_long_word(
+    text: str,
+    font_size: float | None = None,
+    width: float | None = None,
+    *,
+    max_chars: int | None = None,
+) -> list[str] | tuple[str, str] | None:
+    if width is None:
+        limit = max_chars if max_chars is not None else int(font_size or _DEFAULT_MAX_CHARS)
+        if len(text) <= limit:
+            return None
+        for sep in ("/", "\\", ".", "-", "_", ":", " "):
+            idx = text.rfind(sep, 0, limit)
+            if idx > 0:
+                return text[:idx + 1], text[idx + 1:]
         return None
-    for sep in ("/", "\\", ".", "-", "_", ":", " "):
-        idx = text.rfind(sep, 0, max_chars)
-        if idx > 0:
-            return text[:idx + 1], text[idx + 1:]
-    return None
+
+    if _estimate_text_width(text, font_size or _BODY_SIZE) <= width:
+        return [text]
+    max_chars_for_width = max(1, int(width / ((font_size or _BODY_SIZE) * 0.52)))
+    chunks: list[str] = []
+    remaining = text
+    separators = ("/", "\\", "_", "-", ".", ":")
+    while remaining:
+        if _estimate_text_width(remaining, font_size or _BODY_SIZE) <= width:
+            chunks.append(remaining)
+            break
+        split_at = max_chars_for_width
+        for index in range(min(max_chars_for_width, len(remaining) - 1), 0, -1):
+            if remaining[index - 1] in separators:
+                split_at = index
+                break
+        chunks.append(remaining[:split_at])
+        remaining = remaining[split_at:]
+    return chunks
 
 
-def _table_height(rows: list[list[str]], col_widths: list[float]) -> float:
-    if not rows:
-        return 0
-    height = _TABLE_LINE_HEIGHT
-    for row in rows:
-        max_lines = 1
-        for cell in row:
-            wrapped = _wrap_text(str(cell or ""), int(max(col_widths[0], 1) / 5.5)) if col_widths else [str(cell or "")]
-            max_lines = max(max_lines, len(wrapped))
-        height += max(max(_TABLE_LINE_HEIGHT, max_lines * _LINE_HEIGHT), _TABLE_LINE_HEIGHT)
-    return height
+def _estimate_text_width(text: str, font_size: float) -> float:
+    return len(text) * font_size * 0.52
+
+
+def _build_pdf_bytes(page_commands: list[list[str]]) -> bytes:
+    objects: list[bytes] = []
+
+    def add_object(payload: bytes) -> int:
+        objects.append(payload)
+        return len(objects)
+
+    regular_font = add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    bold_font = add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>")
+    italic_font = add_object(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Oblique >>")
+
+    content_ids: list[int] = []
+    for commands in page_commands:
+        stream = "\n".join(commands).encode("latin-1", errors="replace")
+        content_ids.append(
+            add_object(b"<< /Length " + str(len(stream)).encode("ascii") + b" >>\nstream\n" + stream + b"\nendstream")
+        )
+
+    pages_id = add_object(b"<< /Type /Pages /Kids [] /Count 0 >>")
+    page_ids: list[int] = []
+    for content_id in content_ids:
+        page_ids.append(
+            add_object(
+                (
+                    f"<< /Type /Page /Parent {pages_id} 0 R /MediaBox [0 0 {_PAGE_WIDTH:.0f} {_PAGE_HEIGHT:.0f}] "
+                    f"/Resources << /Font << /{_FONT_REGULAR} {regular_font} 0 R /{_FONT_BOLD} {bold_font} 0 R /{_FONT_ITALIC} {italic_font} 0 R >> >> "
+                    f"/Contents {content_id} 0 R >>"
+                ).encode("ascii")
+            )
+        )
+    kids = " ".join(f"{page_id} 0 R" for page_id in page_ids)
+    objects[pages_id - 1] = f"<< /Type /Pages /Kids [{kids}] /Count {len(page_ids)} >>".encode("ascii")
+    catalog_id = add_object(f"<< /Type /Catalog /Pages {pages_id} 0 R >>".encode("ascii"))
+
+    pdf = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0]
+    for index, payload in enumerate(objects, start=1):
+        offsets.append(len(pdf))
+        pdf.extend(f"{index} 0 obj\n".encode("ascii"))
+        pdf.extend(payload)
+        pdf.extend(b"\nendobj\n")
+    xref_offset = len(pdf)
+    pdf.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    pdf.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        pdf.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    pdf.extend(
+        (
+            f"trailer\n<< /Size {len(objects) + 1} /Root {catalog_id} 0 R >>\n"
+            f"startxref\n{xref_offset}\n%%EOF\n"
+        ).encode("ascii")
+    )
+    return bytes(pdf)
+
+
+def _fill_color(color: tuple[float, float, float]) -> str:
+    return f"{color[0]:.3f} {color[1]:.3f} {color[2]:.3f} rg"
+
+
+def _stroke_color(color: tuple[float, float, float]) -> str:
+    return f"{color[0]:.3f} {color[1]:.3f} {color[2]:.3f} RG"
+
+
+def _escape_pdf_text(value: str) -> str:
+    cleaned = (
+        str(value)
+        .replace("\u2014", "-")
+        .replace("\u2013", "-")
+        .replace("\u2022", "*")
+        .replace("\u2192", "->")
+    )
+    return cleaned.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
