@@ -80,6 +80,35 @@ class SqliteV2JobRepository:
         ).fetchall()
         return tuple(self._row_to_record(row) for row in rows)
 
+    def get_auto_approval_enabled(self, job_id: str) -> bool:
+        row = self._connection.execute(
+            "SELECT auto_approval_enabled FROM v2_job_approval_settings WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        return bool(int(row["auto_approval_enabled"]))
+
+    def set_auto_approval_enabled(
+        self,
+        job_id: str,
+        enabled: bool,
+        *,
+        updated_at: str,
+        updated_by: str,
+    ) -> bool:
+        self._connection.execute(
+            """INSERT INTO v2_job_approval_settings (
+                job_id, auto_approval_enabled, updated_at, updated_by
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(job_id) DO UPDATE SET
+                auto_approval_enabled = excluded.auto_approval_enabled,
+                updated_at = excluded.updated_at,
+                updated_by = excluded.updated_by""",
+            (job_id, 1 if enabled else 0, updated_at, updated_by),
+        )
+        return enabled
+
     def _row_to_record(self, row: sqlite3.Row) -> V2MigrationJobRecord:
         return V2MigrationJobRecord(
             job_id=str(row["job_id"]),

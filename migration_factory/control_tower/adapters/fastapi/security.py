@@ -76,17 +76,24 @@ class LocalApiSecuritySettings:
         return f"{self.api_host}:{self.api_port}"
 
     @property
+    def allowed_frontend_origins(self) -> tuple[str, ...]:
+        ports = {self.frontend_port, 3000, 5173}
+        origins: list[str] = []
+        for port in sorted(ports):
+            origins.append(f"http://127.0.0.1:{port}")
+            origins.append(f"http://localhost:{port}")
+        return tuple(origins)
+
+    def is_allowed_frontend_origin(self, origin: str | None) -> bool:
+        return origin in self.allowed_frontend_origins
+
+    @property
     def cors_allowed_methods(self) -> tuple[str, ...]:
-        return ("GET", "POST")
+        return ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 
     @property
     def cors_allowed_headers(self) -> tuple[str, ...]:
-        return (
-            "Content-Type",
-            "X-Control-Tower-Client",
-            "Idempotency-Key",
-            "If-Match",
-        )
+        return ("*",)
 
 
 def generate_correlation_id() -> str:

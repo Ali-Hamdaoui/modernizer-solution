@@ -1363,14 +1363,14 @@ class V2GateActionService:
                     reason="No accepted plan revision for this stage",
                 )
 
-        if actor_type != GateActorType.HUMAN.value:
+        if actor_type not in {GateActorType.HUMAN.value, GateActorType.SYSTEM.value}:
             return GateActionResult(
                 action=GateDecision.APPROVE.value,
                 gate_id=gate_id,
                 decision_id="",
                 status="actor_not_authoritative",
                 reason=(
-                    "approve_transformation requires a human actor; "
+                    "approve_transformation requires a human actor or system auto-approval; "
                     f"received actor_type='{actor_type}'"
                 ),
             )
@@ -1707,7 +1707,16 @@ class V2GateActionService:
 
         # 3aa. Actor authority check — non-human actors cannot perform
         #      authoritative actions (approve, reject).
-        if action.value in HUMAN_AUTHORITATIVE_ACTIONS and actor_type != GateActorType.HUMAN.value:
+        system_auto_approval = (
+            action == GateDecision.APPROVE
+            and actor_type == GateActorType.SYSTEM.value
+            and decided_by == "system:auto-approval"
+        )
+        if (
+            action.value in HUMAN_AUTHORITATIVE_ACTIONS
+            and actor_type != GateActorType.HUMAN.value
+            and not system_auto_approval
+        ):
             return GateActionResult(
                 action=action.value,
                 gate_id=gate_id,

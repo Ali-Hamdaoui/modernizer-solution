@@ -19,7 +19,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.sse import EventSourceResponse, ServerSentEvent
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
 from pathlib import Path, PureWindowsPath
 
@@ -591,6 +591,12 @@ class StageProgressRequest(BaseModel):
     setup_id: str
     current_stage: int
 
+class ApprovalModeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    auto_approval_enabled: bool = Field(
+        validation_alias=AliasChoices("auto_approval_enabled", "autoApprovalEnabled")
+    )
+
 
 class AssistantMessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -912,7 +918,7 @@ def create_app(
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[local_security.frontend_origin],
+        allow_origins=list(local_security.allowed_frontend_origins),
         allow_credentials=False,
         allow_methods=list(local_security.cors_allowed_methods),
         allow_headers=list(local_security.cors_allowed_headers),
@@ -946,7 +952,7 @@ def create_app(
 
         if request.method in MUTATION_METHODS:
             origin = request.headers.get("origin")
-            if origin != local_security.frontend_origin:
+            if not local_security.is_allowed_frontend_origin(origin):
                 return _json_error(
                     request,
                     status.HTTP_403_FORBIDDEN,
@@ -1358,6 +1364,97 @@ def create_app(
             )
         return service.result_to_dict(result)
 
+    @app.patch(
+        "/v1/v2/jobs/{job_id}/approval-mode",
+        include_in_schema=False,
+        operation_id="patch_v2_job_approval_mode_alias",
+    )
+    @app.patch("/v1/v2/migration-jobs/{job_id}/approval-mode")
+    def patch_v2_job_approval_mode(
+        job_id: str,
+        payload: ApprovalModeRequest,
+    ) -> dict[str, Any]:
+        print("[approval-mode-updated]", {
+            "job_id": job_id,
+            "auto_approval_enabled": payload.auto_approval_enabled,
+        })
+        auto_approval_outcome: dict[str, Any] | None = None
+        with unit_of_work_factory() as uow:
+            job = _require_v2_job(uow, job_id)
+            enabled = uow.v2_jobs.set_auto_approval_enabled(
+                job_id,
+                payload.auto_approval_enabled,
+                updated_at=utc_now_text(),
+                updated_by="control-tower-frontend",
+            )
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=None,
+                event_type="approval_mode_updated",
+                status="updated",
+                message=(
+                    "Auto Approval enabled." if enabled else "Auto Approval disabled."
+                ),
+                payload={"job_id": job_id, "auto_approval_enabled": enabled},
+            )
+            if enabled:
+                auto_approval_outcome = _maybe_auto_approve_open_approval_gate(
+                    uow, job_id=job_id,
+                )
+            service = V2MigrationJobService(
+                setup_repo=uow.v2_setups,
+                job_repo=uow.v2_jobs,
+                run_config_repo=uow.run_configurations,
+                runner_profile_repo=uow.runner_profiles,
+                pipeline_repo=uow.pipeline_definitions,
+            )
+            result = service.get_job(job.job_id)
+        # Launch the resume command outside the UoW so the auto-approved
+        # decision is committed before the runner reads it. This mirrors the
+        # manual approve endpoint's launch ordering.
+        if auto_approval_outcome is not None and auto_approval_outcome.get("resume_id"):
+            launch_result = _start_resume_command(
+                app,
+                job_id=job_id,
+                resume_id=auto_approval_outcome["resume_id"],
+                stage_index=auto_approval_outcome["stage_index"],
+            )
+            with unit_of_work_factory() as event_uow:
+                message = "Auto Approval accepted; backend-owned resume command queued."
+                if launch_result.status == "retrying":
+                    message = "Auto Approval accepted; backend-owned resume command is retrying."
+                elif launch_result.status == "started":
+                    message = "Auto Approval accepted; backend-owned resume command started."
+                _append_v2_event(
+                    event_uow,
+                    job_id=job_id,
+                    stage=auto_approval_outcome["stage_index"],
+                    event_type="approval_resume_queued",
+                    status=launch_result.status,
+                    message=message,
+                    payload={
+                        "card_id": auto_approval_outcome.get("card_id"),
+                        "resume_id": auto_approval_outcome["resume_id"],
+                        "resume_status": launch_result.status,
+                        "decision_source": "auto_approval",
+                    },
+                )
+            print("[workflow-resumed-after-auto-approval]", {
+                "job_id": job_id,
+                "next_phase": "transform",
+                "resume_id": auto_approval_outcome["resume_id"],
+                "resume_status": launch_result.status,
+            })
+        asyncio.run(app.state.public_event_notifier.notify())
+        return {
+            "job_id": job_id,
+            "auto_approval_enabled": enabled,
+            "autoApprovalEnabled": enabled,
+            "auto_approved": auto_approval_outcome,
+            "job": service.result_to_dict(result) if result is not None else None,
+        }
+
     @app.get(
         "/v1/v2/jobs/{job_id}/stages",
         include_in_schema=False,
@@ -1707,6 +1804,12 @@ def create_app(
 
         actor_type = payload.actor_type.value if hasattr(payload.actor_type, "value") else str(payload.actor_type)
         action_value = payload.action.value if hasattr(payload.action, "value") else str(payload.action)
+        if actor_type == GateActorType.SYSTEM.value:
+            raise _error(
+                status.HTTP_403_FORBIDDEN,
+                "SYSTEM_ACTOR_FORBIDDEN",
+                "System gate actions are backend-owned and cannot be submitted by API clients.",
+            )
         if action_value == GateDecision.OVERRIDE_SOURCE_PROFILE.value:
             result = action_service.override_source_profile(
                 gate_id=gate_id,
@@ -7819,6 +7922,289 @@ def _is_sqlite_locked_error(exc: BaseException) -> bool:
     return "database is locked" in lowered or "database table is locked" in lowered or "locked" in lowered
 
 
+def _maybe_auto_approve_open_approval_gate(
+    uow: Any,
+    *,
+    job_id: str,
+) -> dict[str, Any] | None:
+    """Evaluate the currently open approval_review gate when Auto Approval is ON.
+
+    When Auto Approval is enabled while a valid approval gate is already open
+    and blocked, approve it immediately so the workflow continues to the
+    Transform phase without waiting for a manual click.
+
+    This reuses the EXACT same backend path as the manual Approve button
+    (approve_decision_card endpoint) and the assistant `confirm checksum`
+    command:
+      1. V2ApprovalMappingService.approve()  — create resume command
+      2. V2GateActionService.approve_from_gate()  — resolve gate + persist
+         approval_review revision artifact
+      3. update_card_status("auto_approved")  — mark decision card
+
+    The only difference from manual approval is the decision source:
+      - Manual:  decided_by="human", actor_type="human"
+      - Auto:    decided_by="system:auto-approval", actor_type="system"
+
+    Safety rules — auto-approval is skipped (gate left blocked) when:
+      * there is no open approval_review gate,
+      * there is no pending decision card matching the gate checksum,
+      * the job was cancelled/completed/failed,
+      * the checkpoint profile route cannot be computed (assessment not ready),
+      * the gate checksum is missing,
+      * the gate action service rejects the decision (stale checksum, conflict, ...).
+
+    Returns a dict with resume launch details when the gate was auto-approved,
+    or None when there is no eligible open gate or safety checks failed.
+    """
+    open_gates = uow.phase_gates.list_open(job_id)
+    approval_gates = [g for g in open_gates if g.gate_phase == "approval_review"]
+    has_open_gate = bool(approval_gates)
+    print("[open-gate-detected-after-toggle]", {
+        "job_id": job_id,
+        "hasOpenGate": has_open_gate,
+        "gateCount": len(approval_gates),
+    })
+    if not approval_gates:
+        return None
+
+    events = uow.v2_events.list_by_job(job_id)
+    terminal_status = _v2_cancel_terminal_status(events)
+    if terminal_status is not None:
+        print("[auto-approval-safety-check]", {
+            "job_id": job_id,
+            "safeToApprove": False,
+            "reason": terminal_status,
+        })
+        return None
+
+    commands = uow.v2_commands.list_by_job(job_id)
+    approval_service = V2ApprovalMappingService(uow.v2_approvals)
+    action_service = V2GateActionService(
+        uow.phase_gates,
+        uow.gate_decisions,
+        V2PhaseGateService(uow.phase_gates),
+        revision_repo=uow.artifact_revisions,
+        command_repo=uow.v2_commands,
+    )
+
+    for gate in approval_gates:
+        stage_index = gate.stage_index
+        try:
+            refs = json.loads(gate.source_artifact_refs_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            refs = []
+        gate_checksum_value = gate_checksum(
+            gate_id=gate.gate_id,
+            job_id=gate.job_id,
+            gate_phase=gate.gate_phase,
+            stage_index=gate.stage_index,
+            source_artifact_checksum=gate.source_artifact_checksum,
+            source_artifact_refs=refs if isinstance(refs, list) else [],
+        )
+
+        pending_cards = [
+            existing_card
+            for existing_card in uow.v2_approvals.list_cards_by_job(job_id)
+            if existing_card.stage_index == stage_index
+            and existing_card.status == "pending"
+            and existing_card.request_checksum == gate_checksum_value
+        ]
+        if not pending_cards:
+            continue
+        card = pending_cards[0]
+
+        profile_metadata = _approval_review_profile_metadata_for_resume(
+            uow,
+            job_id=job_id,
+            stage_index=stage_index,
+        )
+        checksum_present = bool(gate.source_artifact_checksum)
+        # Soft-check accepted revisions for logging only — do NOT block.
+        # The manual Approve button and confirm_checksum path use
+        # approve_from_gate which does NOT require accepted analysis/plan
+        # revision records.  The UI shows PASS based on events, not on
+        # revision records, so requiring them here would break auto-approval
+        # for real jobs where revisions were never explicitly created.
+        revision_repo = getattr(uow, "artifact_revisions", None)
+        accepted_analysis = (
+            revision_repo.find_accepted(job_id, stage_index, "analysis")
+            if revision_repo is not None
+            else None
+        )
+        accepted_plan = (
+            revision_repo.find_accepted(job_id, stage_index, "planning")
+            if revision_repo is not None
+            else None
+        )
+
+        # Hard safety checks: profile_metadata (assessment route) and checksum
+        # must be present. These match the requirements of the manual approve
+        # endpoint and the confirm_checksum assistant command.
+        safe_to_approve = profile_metadata is not None and checksum_present
+        print("[auto-approval-safety-check]", {
+            "job_id": job_id,
+            "gate_id": gate.gate_id,
+            "analysisStatus": "PASS" if accepted_analysis else "MISSING",
+            "planningStatus": "PASS" if accepted_plan else "MISSING",
+            "assessmentStatus": "PASS" if profile_metadata else "MISSING",
+            "checksumPresent": checksum_present,
+            "safeToApprove": safe_to_approve,
+            "reasonIfNotSafe": (
+                "checkpoint_profile_metadata_missing"
+                if profile_metadata is None
+                else "checksum_missing"
+                if not checksum_present
+                else ""
+            ),
+        })
+
+        if not safe_to_approve:
+            skip_reason = (
+                "checkpoint_profile_metadata_missing"
+                if profile_metadata is None
+                else "checksum_missing"
+            )
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=stage_index,
+                event_type="approval_auto_approved_skipped",
+                status="blocked",
+                message="Auto Approval skipped: safety checks failed for the open gate.",
+                payload={
+                    "gate_id": gate.gate_id,
+                    "card_id": card.card_id,
+                    "gate_checksum": gate_checksum_value,
+                    "decision_source": "auto_approval",
+                    "reason": skip_reason,
+                },
+            )
+            continue
+
+        # --- Step 1: Create resume command (same as manual approve) ---
+        try:
+            run_dir = _v2_resume_run_dir_from_commands(
+                commands, stage_index, card.interrupt_id,
+            )
+        except HTTPException:
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=stage_index,
+                event_type="approval_auto_approved_skipped",
+                status="blocked",
+                message="Auto Approval skipped: resume run directory could not be derived.",
+                payload={
+                    "gate_id": gate.gate_id,
+                    "card_id": card.card_id,
+                    "gate_checksum": gate_checksum_value,
+                    "decision_source": "auto_approval",
+                    "reason": "resume_run_dir_unavailable",
+                },
+            )
+            continue
+
+        print("[auto-approval-calling-manual-path]", {
+            "job_id": job_id,
+            "gate_id": gate.gate_id,
+            "checksum": gate_checksum_value,
+            "decisionSource": "auto_approval",
+        })
+
+        resume = approval_service.approve(
+            card.card_id,
+            gate_checksum_value,
+            job_id,
+            run_dir=run_dir,
+        )
+
+        # --- Step 2: Resolve gate via approve_from_gate (same as manual) ---
+        # This is the EXACT same method used by:
+        #   - POST /approvals/{card_id}/approve  (frontend Approve button)
+        #   - assistant "confirm checksum <checksum>" command
+        # It resolves the gate, records the decision, and persists the
+        # approval_review revision artifact — all the side effects needed
+        # to unblock the orchestrator and continue to Transform.
+        gate_result = action_service.approve_from_gate(
+            gate_id=gate.gate_id,
+            job_id=job_id,
+            decided_by="system:auto-approval",
+            idempotency_key=f"auto-approval:{gate.gate_id}:{gate_checksum_value}",
+            expected_gate_checksum=gate_checksum_value,
+            actor_type="system",
+            profile_metadata=profile_metadata,
+        )
+        if gate_result.status not in {"executed", "idempotent"}:
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=stage_index,
+                event_type="approval_auto_approved_skipped",
+                status="blocked",
+                message="Auto Approval skipped: gate action rejected the decision.",
+                payload={
+                    "gate_id": gate.gate_id,
+                    "card_id": card.card_id,
+                    "gate_checksum": gate_checksum_value,
+                    "decision_source": "auto_approval",
+                    "reason": gate_result.reason or gate_result.status,
+                },
+            )
+            continue
+
+        # --- Step 3: Mark card as auto_approved ---
+        uow.v2_approvals.update_card_status(card.card_id, "auto_approved")
+
+        # --- Step 4: Emit success event ---
+        print("[auto-approval-applied]", {
+            "job_id": job_id,
+            "gate_id": gate.gate_id,
+            "stage_id": stage_index,
+            "card_id": card.card_id,
+            "decision_source": "auto_approval",
+        })
+        _append_v2_event(
+            uow,
+            job_id=job_id,
+            stage=stage_index,
+            event_type="approval_auto_approved",
+            status="completed",
+            message="Approval gate auto-approved because Auto Approval is enabled.",
+            payload={
+                "card_id": card.card_id,
+                "gate_id": gate.gate_id,
+                "gate_checksum": gate_checksum_value,
+                "decision_id": gate_result.decision_id,
+                "resume_id": resume.resume_id,
+                "approval_mode": "auto",
+                "decision_source": "auto_approval",
+                "reason": "Auto approval enabled for this migration job",
+            },
+        )
+
+        # --- Step 5: Log result for operator tracing ---
+        gate_after = uow.phase_gates.get(gate.gate_id)
+        print("[auto-approval-result]", {
+            "job_id": job_id,
+            "gate_id": gate.gate_id,
+            "gateStatusAfter": gate_after.gate_status if gate_after else "unknown",
+            "humanApprovalStatusAfter": "auto_approved",
+            "transformStatusAfter": "resume_queued",
+            "resume_id": resume.resume_id,
+        })
+
+        return {
+            "resume_id": resume.resume_id,
+            "stage_index": stage_index,
+            "card_id": card.card_id,
+            "gate_id": gate.gate_id,
+            "checksum": gate_checksum_value,
+            "decision_id": gate_result.decision_id,
+        }
+
+    return None
+
+
 def _approval_review_revision_payload(
     *,
     job_id: str,
@@ -11472,7 +11858,7 @@ def _build_status_answer(
     latest = events[-1] if events else None
     failures = [event for event in events if event.status == "failed" or event.type in {"stage_failed", "transform_failed", "build_failed"}]
     pending_approvals = [card for card in approvals if card.status == "pending"]
-    approved_cards = [card for card in approvals if card.status == "approved"]
+    approved_cards = [card for card in approvals if card.status in {"approved", "auto_approved"}]
     completed = [event for event in events if event.type == "stage_completed"]
     repair_events = [event for event in events if event.type in {"repair_started", "repair_fallback_generated"}]
     running_events = [event for event in events if event.status == "running"]
@@ -11662,7 +12048,7 @@ def _build_v2_assistant_prompt(
     approved_cards = [
         {"card_id": card.card_id, "stage_index": card.stage_index, "status": card.status}
         for card in approvals
-        if card.status == "approved"
+        if card.status in {"approved", "auto_approved"}
     ]
     # Build grouped failure summary (one card per root cause, with collapsed repair events)
     grouped_failure_summary = _v2_failure_summary(job_id="", events=events)

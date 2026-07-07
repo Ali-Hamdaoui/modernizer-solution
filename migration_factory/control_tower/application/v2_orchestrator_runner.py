@@ -18,6 +18,8 @@ from migration_factory.control_tower.application.redaction import (
     redact_public_value,
 )
 from migration_factory.control_tower.application.v2_approval_mapping import V2ApprovalMappingService
+from migration_factory.control_tower.application.v2_gate_action_service import V2GateActionService
+from migration_factory.control_tower.application.v2_phase_gate_service import V2PhaseGateService
 from migration_factory.control_tower.application.v2_stage_progression import (
     TERMINAL_STAGE_INDEX,
     route_to_dict,
@@ -76,6 +78,8 @@ _MANIFEST_ENV_KEYS = (
 )
 
 _SECRET_ENV_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "AUTHORIZATION")
+
+_APPROVAL_ACCEPTED_STATUSES = {"approved", "auto_approved"}
 
 _TERMINAL_FAILURES = {
     "BUILD_FAILED_IN_SANDBOX",
@@ -767,6 +771,123 @@ class V2OrchestratorRunner:
                         summary="Pre-transform review required before sandbox transform.",
                     )
 
+                auto_approval_enabled = uow.v2_jobs.get_auto_approval_enabled(job_id)
+                auto_resume_id = ""
+                auto_decision_id = ""
+                auto_approval_error = ""
+                print("[approval-mode-read-at-gate-creation]", {
+                    "job_id": job_id,
+                    "auto_approval_enabled": auto_approval_enabled,
+                    "gate_id": approval_gate.gate_id,
+                    "stage_id": stage_index,
+                })
+                print("[approval-gate-created]", {
+                    "job_id": job_id,
+                    "gate_id": approval_gate.gate_id,
+                    "gate_type": approval_gate.gate_phase,
+                    "gate_status": approval_gate.gate_status,
+                    "checksum_present": bool(approval_gate.source_artifact_checksum),
+                })
+                if auto_approval_enabled:
+                    profile_metadata: dict[str, Any] | None = None
+                    route = _current_route_for_job(uow, job_id)
+                    if route is not None and route.valid:
+                        profile_metadata = route_to_dict(route)
+                        profile_metadata["stage_index"] = stage_index
+                    if profile_metadata is None:
+                        auto_approval_error = "checkpoint_profile_metadata_missing"
+                        print("[auto-approval-skipped]", {
+                            "job_id": job_id,
+                            "gate_id": approval_gate.gate_id,
+                            "reason": auto_approval_error,
+                        })
+                    else:
+                        action_service = V2GateActionService(
+                            uow.phase_gates,
+                            uow.gate_decisions,
+                            V2PhaseGateService(uow.phase_gates),
+                            revision_repo=uow.artifact_revisions,
+                            command_repo=uow.v2_commands,
+                        )
+                        print("[auto-approval-check]", {
+                            "job_id": job_id,
+                            "gate_id": approval_gate.gate_id,
+                            "auto_approval_enabled": True,
+                            "safe_to_approve": True,
+                        })
+                        print("[auto-approval-calling-manual-path]", {
+                            "job_id": job_id,
+                            "gate_id": approval_gate.gate_id,
+                            "checksum": approval_gate_checksum,
+                            "decision_source": "auto_approval",
+                        })
+                        # Use approve_from_gate — the EXACT same method used by:
+                        #   - POST /approvals/{card_id}/approve (Approve button)
+                        #   - assistant "confirm checksum <checksum>" command
+                        # approve_transformation was previously used but it
+                        # requires accepted analysis/plan revision records
+                        # that may not exist in real jobs, causing silent
+                        # failures (no_accepted_analysis / no_accepted_plan).
+                        gate_result = action_service.approve_from_gate(
+                            gate_id=approval_gate.gate_id,
+                            job_id=job_id,
+                            decided_by="system:auto-approval",
+                            idempotency_key=f"auto-approval:{approval_gate.gate_id}:{approval_gate_checksum}",
+                            expected_gate_checksum=approval_gate_checksum,
+                            actor_type="system",
+                            profile_metadata=profile_metadata,
+                        )
+                        if gate_result.status in {"executed", "idempotent"}:
+                            run_dir = _result_run_dir(result, cwd=self._cwd)
+                            resume = approval_service.approve(
+                                card.card_id,
+                                approval_gate_checksum,
+                                job_id,
+                                run_dir=str(run_dir) if run_dir is not None else "",
+                            )
+                            uow.v2_approvals.update_card_status(card.card_id, "auto_approved")
+                            auto_resume_id = resume.resume_id
+                            auto_decision_id = gate_result.decision_id
+                            print("[auto-approval-applied]", {
+                                "job_id": job_id,
+                                "gate_id": approval_gate.gate_id,
+                                "stage_id": stage_index,
+                                "decision_source": "auto_approval",
+                            })
+                        else:
+                            auto_approval_error = gate_result.reason or gate_result.status
+                            print("[auto-approval-skipped]", {
+                                "job_id": job_id,
+                                "gate_id": approval_gate.gate_id,
+                                "reason": auto_approval_error,
+                            })
+            if auto_resume_id:
+                self._event(
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="approval_auto_approved",
+                    status="completed",
+                    message="Approval gate auto-approved because Auto Approval is enabled.",
+                    payload={
+                        "command_id": command_id,
+                        "card_id": card.card_id,
+                        "gate_id": approval_gate.gate_id,
+                        "gate_checksum": approval_gate_checksum,
+                        "decision_id": auto_decision_id,
+                        "resume_id": auto_resume_id,
+                        "approval_mode": "auto",
+                        "decision_source": "auto_approval",
+                        "reason": "Auto approval enabled for this migration job",
+                    },
+                )
+                print("[workflow-resumed-after-auto-approval]", {
+                    "job_id": job_id,
+                    "next_phase": "transform",
+                    "resume_id": auto_resume_id,
+                })
+                self.start_resume(job_id=job_id, resume_id=auto_resume_id)
+                return
+
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -883,7 +1004,7 @@ class V2OrchestratorRunner:
             unapproved = [
                 c
                 for c in cards
-                if c.stage_index == stage_index and c.status != "approved"
+                if c.stage_index == stage_index and c.status not in _APPROVAL_ACCEPTED_STATUSES
             ]
 
             if unapproved:
@@ -1722,13 +1843,13 @@ class V2OrchestratorRunner:
         message: str,
         payload: dict[str, Any] | None = None,
     ) -> None:
-        if (
-            event_type not in {"migration_cancelling", "stage_cancelled", "migration_cancelled"}
-            and self._is_job_cancelled(job_id)
-        ):
-            return
-
         with self._event_lock:
+            if (
+                event_type not in {"migration_cancelling", "stage_cancelled", "migration_cancelled"}
+                and self._is_job_cancelled(job_id)
+            ):
+                return
+
             with self._unit_of_work_factory() as uow:
                 redacted_payload = redact_public_value(payload or {})
                 uow.v2_events.save(
@@ -1744,8 +1865,11 @@ class V2OrchestratorRunner:
             asyncio.run(self._notifier.notify())
 
     def _is_job_cancelled(self, job_id: str) -> bool:
-        with self._unit_of_work_factory() as uow:
-            events = uow.v2_events.list_by_job(job_id)
+        try:
+            with self._unit_of_work_factory() as uow:
+                events = uow.v2_events.list_by_job(job_id)
+        except sqlite3.Error:
+            return False
         return any(event.type == "migration_cancelled" for event in events)
 
     # ── planning phase completion ──────────────────────────────────
@@ -2149,7 +2273,7 @@ def _validate_resume_checkpoint(
         return _ResumeValidationResult(False, "foreign_job", stage_index)
     if card.stage_index != stage_index:
         return _ResumeValidationResult(False, "stage_mismatch", stage_index)
-    if card.status != "approved":
+    if card.status not in _APPROVAL_ACCEPTED_STATUSES:
         return _ResumeValidationResult(False, "checkpoint_not_accepted", stage_index)
 
     gate = _find_gate_for_resume_checksum(

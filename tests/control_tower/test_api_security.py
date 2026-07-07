@@ -81,7 +81,7 @@ def test_browser_mutation_rejects_wrong_origin(tmp_path: Path) -> None:
     response = client.post(
         "/v1/jobs",
         json=_job_payload(),
-        headers=_mutation_headers(origin="http://localhost:3000"),
+        headers=_mutation_headers(origin="http://127.0.0.1:4000"),
     )
 
     assert response.status_code == 403
@@ -271,7 +271,7 @@ def test_public_errors_follow_contract_and_include_correlation_id(tmp_path: Path
     response = client.post(
         "/v1/jobs",
         json=_job_payload(),
-        headers=_mutation_headers(origin="http://localhost:3000"),
+        headers=_mutation_headers(origin="http://127.0.0.1:4000"),
     )
 
     body = response.json()

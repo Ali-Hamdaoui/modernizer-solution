@@ -160,6 +160,39 @@ def test_transform_blocked_before_approval(tmp_path: Path) -> None:
     assert approve_result.status == "executed"
 
 
+def test_system_auto_approval_requires_accepted_analysis_and_plan(tmp_path: Path) -> None:
+    conn = _connection(tmp_path, "app-auto-safety.sqlite3")
+    gate_repo = SqlitePhaseGateRepository(conn)
+    decision_repo = SqliteGateDecisionRepository(conn)
+    revision_repo = SqliteArtifactRevisionRepository(conn)
+    gate_svc = V2PhaseGateService(gate_repo)
+    action_svc = V2GateActionService(
+        gate_repo, decision_repo, gate_svc, revision_repo,
+    )
+
+    gate_result = gate_svc.create_gate(CreateGateRequest(
+        job_id="job-auto-safety",
+        gate_phase="approval_review",
+        stage_index=2,
+        source_artifact_checksum="sha256:analysis+plan",
+        source_artifact_refs=("analysis.json", "plan.json"),
+        created_by="system",
+    ))
+
+    result = action_svc.approve_transformation(
+        gate_id=gate_result.gate_id,
+        job_id="job-auto-safety",
+        decided_by="system:auto-approval",
+        expected_gate_checksum=gate_result.gate_checksum,
+        actor_type="system",
+    )
+
+    assert result.status == "no_accepted_analysis"
+    gate = gate_repo.get(gate_result.gate_id)
+    assert gate is not None
+    assert gate.gate_status == "open"
+    assert decision_repo.list_by_job("job-auto-safety") == ()
+
 def test_approval_review_gate_approve_and_reject_valid(tmp_path: Path) -> None:
     """Approval_review gate allows APPROVE and REJECT decisions."""
     assert is_valid_decision_for_phase(

@@ -11,6 +11,7 @@ import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import {
   MigrationCockpit,
   ApprovalDecisionsPanel,
+  ApprovalModePanel,
   AssistantPanelContent,
   GatePanelContent,
   MigrationRoutePanel,
@@ -23,9 +24,10 @@ import {
   formatGateArtifactRefLabel,
   mergeCockpitLiveRefreshResults,
   reduceStageStatus,
+  stageStatusFromEvent,
   type CockpitData,
 } from "../app/migrations/[jobId]/MigrationCockpit";
-import { approveV2Card, askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, postV2GateAction, requireJobId, resolveReportDownloadUrl, v2EventStreamUrl } from "../lib/controlTowerApi";
+import { approveV2Card, askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, postV2GateAction, requireJobId, resolveReportDownloadUrl, updateV2ApprovalMode, v2EventStreamUrl } from "../lib/controlTowerApi";
 import type { GateDetailResponse, GateRepresentation, GateEvidencePack, V2ApprovalResponse, V2FailureSummaryItem, V2JobEvent, V2MigrationJobResponse, V2RouteStepEntry } from "../lib/contracts";
 
 describe("V2 Migration Cockpit contract", () => {
@@ -439,6 +441,120 @@ describe("V2 Migration Cockpit contract", () => {
     } finally {
       global.fetch = originalFetch;
     }
+  });
+
+  it("Auto Approval toggle displays current backend mode", () => {
+    const manualMarkup = renderToStaticMarkup(
+      <ApprovalModePanel enabled={false} busy={false} error={null} onToggle={() => undefined} />,
+    );
+    expect(manualMarkup).toContain("Manual");
+    expect(manualMarkup).toContain("Off");
+
+    const autoMarkup = renderToStaticMarkup(
+      <ApprovalModePanel enabled={true} busy={false} error={null} onToggle={() => undefined} />,
+    );
+    expect(autoMarkup).toContain("Auto Approval ON");
+    expect(autoMarkup).toContain("On");
+  });
+
+  it("turning Auto Approval ON requires confirmation in cockpit source", () => {
+    const source = MigrationCockpit.toString();
+    expect(source).toContain("window.confirm");
+    expect(source).toContain("Auto Approval will automatically approve future successful");
+    expect(source).toContain("setApprovalModeBusy(true)");
+    expect(source).toContain("Could not update approval mode. Please check backend connection or CORS configuration.");
+  });
+
+  it("updateV2ApprovalMode sends PATCH with the correct job id and value", async () => {
+    const originalFetch = global.fetch;
+    const calls: { url: string; method?: string; body: string | null; headers?: HeadersInit }[] = [];
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), method: init?.method, body: typeof init?.body === "string" ? init.body : null, headers: init?.headers });
+      return new Response(JSON.stringify({
+        job_id: "job-123",
+        auto_approval_enabled: true,
+        job: { job_id: "job-123", setup_id: "setup", setup_checksum: "chk", pipeline_id: "pipe", stages: [], created_at: "now", auto_approval_enabled: true },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      await updateV2ApprovalMode("job-123", true);
+      expect(calls[0].url).toBe(`${CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/job-123/approval-mode`);
+      expect(calls[0].method).toBe("PATCH");
+      expect(JSON.parse(calls[0].body ?? "{}")).toEqual({ autoApprovalEnabled: true });
+      expect(calls[0].headers).toMatchObject({ "Content-Type": "application/json" });
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("auto-approved approval decisions show AUTO APPROVED without action buttons", () => {
+    const autoApproved: V2ApprovalResponse = {
+      card_id: "card-auto",
+      job_id: "job-123",
+      interrupt_id: "run-auto",
+      request_checksum: "checksum-auto",
+      stage_index: 2,
+      summary: "Pre-transform review required before sandbox transform.",
+      status: "auto_approved",
+      created_at: "2026-07-07T00:00:00Z",
+    };
+    const markup = renderToStaticMarkup(
+      <ApprovalDecisionsPanel
+        approvals={[autoApproved]}
+        approvalReviewOpen={false}
+        approvalBusy={null}
+        onApprove={() => {}}
+        onReject={() => {}}
+      />,
+    );
+    expect(markup).toContain("AUTO APPROVED");
+    expect(markup).toContain("Mode: Auto Approval");
+    expect(markup).not.toContain("<button");
+  });
+
+  it("approval_auto_approved event maps Human Approval to completed (AUTO APPROVED)", () => {
+    // Frontend Test 2: Pipeline Status updates Human Approval from BLOCKED to
+    // COMPLETED/AUTO_APPROVED when the backend emits approval_auto_approved.
+    const autoEvent: V2JobEvent = {
+      event_id: "evt-5",
+      job_id: "job-123",
+      sequence: 5,
+      type: "approval_auto_approved",
+      status: "completed",
+      stage: 2,
+      message: "Approval gate auto-approved because Auto Approval is enabled.",
+      payload: { decision_source: "auto_approval", approval_mode: "auto" },
+      created_at: "2026-07-07T00:00:00Z",
+    };
+    expect(stageStatusFromEvent(autoEvent)).toBe("completed");
+  });
+
+  it("sandbox_transform_started event maps Transform Agent to running after auto approval", () => {
+    // Frontend Test 3: Transform Agent becomes RUNNING according to backend
+    // state after auto approval.
+    const transformEvent: V2JobEvent = {
+      event_id: "evt-6",
+      job_id: "job-123",
+      sequence: 6,
+      type: "sandbox_transform_started",
+      status: "running",
+      stage: 2,
+      message: "Transform started.",
+      payload: {},
+      created_at: "2026-07-07T00:00:01Z",
+    };
+    expect(stageStatusFromEvent(transformEvent)).toBe("running");
+  });
+
+  it("cockpit proactively refreshes live state and gates when approval-mode response auto-approved a gate", () => {
+    // Frontend Test 1: When the backend returns auto_approved, the cockpit
+    // must proactively refresh approvals/pipeline/gate state so the UI shows
+    // AUTO APPROVED and no longer shows active Approve/Reject for that gate.
+    const source = MigrationCockpit.toString();
+    expect(source).toContain("response.auto_approved");
+    expect(source).toContain("[approval-mode-auto-approved]");
+    expect(source).toContain("refreshLiveState()");
+    expect(source).toContain("refreshGateState()");
   });
 
   it("pending approval card renders Approve/Reject buttons even when approvalReviewOpen is true", () => {
