@@ -11,7 +11,6 @@ import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import {
   MigrationCockpit,
   ApprovalDecisionsPanel,
-  ApprovalModePanel,
   AssistantPanelContent,
   GatePanelContent,
   MigrationRoutePanel,
@@ -445,13 +444,35 @@ describe("V2 Migration Cockpit contract", () => {
 
   it("Auto Approval toggle displays current backend mode", () => {
     const manualMarkup = renderToStaticMarkup(
-      <ApprovalModePanel enabled={false} busy={false} error={null} onToggle={() => undefined} />,
+      <ApprovalDecisionsPanel
+        approvals={[]}
+        approvalReviewOpen={false}
+        approvalBusy={null}
+        approvalModeEnabled={false}
+        approvalModeBusy={false}
+        approvalModeError={null}
+        onApprovalModeToggle={() => undefined}
+        onApprove={() => undefined}
+        onReject={() => undefined}
+      />,
     );
+    expect(manualMarkup).toContain("Approval Decisions");
     expect(manualMarkup).toContain("Manual");
     expect(manualMarkup).toContain("Off");
+    expect(manualMarkup).not.toContain("Approval Mode");
 
     const autoMarkup = renderToStaticMarkup(
-      <ApprovalModePanel enabled={true} busy={false} error={null} onToggle={() => undefined} />,
+      <ApprovalDecisionsPanel
+        approvals={[]}
+        approvalReviewOpen={false}
+        approvalBusy={null}
+        approvalModeEnabled={true}
+        approvalModeBusy={false}
+        approvalModeError={null}
+        onApprovalModeToggle={() => undefined}
+        onApprove={() => undefined}
+        onReject={() => undefined}
+      />,
     );
     expect(autoMarkup).toContain("Auto Approval ON");
     expect(autoMarkup).toContain("On");
@@ -503,6 +524,10 @@ describe("V2 Migration Cockpit contract", () => {
         approvals={[autoApproved]}
         approvalReviewOpen={false}
         approvalBusy={null}
+        approvalModeEnabled={false}
+        approvalModeBusy={false}
+        approvalModeError={null}
+        onApprovalModeToggle={() => undefined}
         onApprove={() => {}}
         onReject={() => {}}
       />,
@@ -576,6 +601,10 @@ describe("V2 Migration Cockpit contract", () => {
         approvals={[pending]}
         approvalReviewOpen={true}
         approvalBusy={null}
+        approvalModeEnabled={false}
+        approvalModeBusy={false}
+        approvalModeError={null}
+        onApprovalModeToggle={() => undefined}
         onApprove={() => {}}
         onReject={() => {}}
       />,
@@ -2191,6 +2220,10 @@ describe("V2 multi-stage approval flow", () => {
         approvals={[stage2Approved, stage3Pending]}
         approvalReviewOpen={true}
         approvalBusy={null}
+        approvalModeEnabled={false}
+        approvalModeBusy={false}
+        approvalModeError={null}
+        onApprovalModeToggle={() => undefined}
         onApprove={() => {}}
         onReject={() => {}}
       />,
@@ -2249,6 +2282,10 @@ describe("V2 multi-stage approval flow", () => {
         approvals={[stage4Pending, stage3Approved, stage2Approved]}
         approvalReviewOpen={true}
         approvalBusy={null}
+        approvalModeEnabled={false}
+        approvalModeBusy={false}
+        approvalModeError={null}
+        onApprovalModeToggle={() => undefined}
         onApprove={() => {}}
         onReject={() => {}}
       />,
