@@ -387,6 +387,67 @@ def test_copilot_documentation_runs_only_after_successful_sandbox_validation(tmp
     assert "copilot_migration_overview" not in result["artifact_refs"]
 
 
+def test_final_report_includes_full_stage_history_warnings_errors_and_logs(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("AI_MIGRATION_ENABLE_COPILOT_STATEMENT", raising=False)
+    state = _successful_state(tmp_path)
+    state["full_migration_source_stack"] = {"java": "11", "spring_boot": "2.1.6"}
+    state["full_migration_target_stack"] = {"java": "21", "spring_boot": "4.0.0"}
+    state["pipeline_history"] = [
+        {
+            "stage_index": 1,
+            "profile": "springboot-2.1.6-to-2.7-java11",
+            "source_stack": {"java": "11", "spring_boot": "2.1.6"},
+            "target_stack": {"java": "11", "spring_boot": "2.7.x"},
+            "chain_status": "PASS",
+            "duration_seconds": 12.5,
+        },
+        {
+            "stage_index": 2,
+            "profile": "springboot-2.7-to-3.5-java17",
+            "source_stack": {"java": "11", "spring_boot": "2.7.x"},
+            "target_stack": {"java": "17", "spring_boot": "3.5.x"},
+            "chain_status": "PASS",
+            "duration_seconds": 22.0,
+        },
+        {
+            "stage_index": 3,
+            "profile": "springboot-3.5-java17-to-3.5-java21",
+            "source_stack": {"java": "17", "spring_boot": "3.5.x"},
+            "target_stack": {"java": "21", "spring_boot": "3.5.x"},
+            "chain_status": "PASS",
+            "duration_seconds": 31.0,
+        },
+        {
+            "stage_index": 4,
+            "profile": "springboot-3.5-java21-to-4.0-java21",
+            "source_stack": {"java": "21", "spring_boot": "3.5.x"},
+            "target_stack": {"java": "21", "spring_boot": "4.0.0"},
+            "chain_status": "PASS",
+            "duration_seconds": 44.0,
+        },
+    ]
+    state["warnings"] = ["manual compatibility warning"]
+    state["errors"] = ["transient repair error captured before retry"]
+
+    result = finalize_orchestration_state(state)
+
+    payload = json.loads(Path(result["artifact_refs"]["final_migration_report"]).read_text(encoding="utf-8"))
+    assert payload["full_migration_source_stack"]["spring_boot"] == "2.1.6"
+    assert payload["full_migration_target_stack"]["spring_boot"] == "4.0.0"
+    assert len(payload["pipeline_history"]) == 4
+    assert payload["timing"]["total_duration_seconds"] == 109.5
+    assert any("Stage 4" in item for item in payload["change_summary"])
+
+    summary = Path(result["artifact_refs"]["final_migration_summary"]).read_text(encoding="utf-8")
+    assert "## 5. Stage-By-Stage Journey" in summary
+    assert "Stage 1" in summary
+    assert "Stage 4" in summary
+    assert "manual compatibility warning" in summary
+    assert "transient repair error captured before retry" in summary
+    assert "## 14. Log References" in summary
+    assert "## 15. Related Artifacts" in summary
+
+
 def test_final_report_extracts_transform_unit_recipes_and_boot4_target(tmp_path: Path) -> None:
     state = _successful_state(tmp_path)
     run_dir = Path(state["run_dir"])
