@@ -33,6 +33,8 @@ VALID_DIFF = "--- a/src/App.java\n+++ b/src/App.java\n@@ -1 +1 @@\n-old\n+new\n"
 
 def _primary(**overrides: Any) -> dict[str, Any]:
     data: dict[str, Any] = {
+        "schema_version": "1.0",
+        "proposal_kind": "llm_repair_primary",
         "root_cause": "old API",
         "fix_strategy": "replace old call",
         "changed_files": ["src/App.java"],
@@ -47,6 +49,8 @@ def _primary(**overrides: Any) -> dict[str, Any]:
 
 def _reviewer(*, context: str = "ctx", primary: str = "primary", diff: str = "diff", decision: str = "accept", **overrides: Any) -> dict[str, Any]:
     data: dict[str, Any] = {
+        "schema_version": "1.0",
+        "proposal_kind": "llm_repair_review",
         "decision": decision,
         "notes": ["bound to exact diff"],
         "risks": [],
@@ -62,6 +66,21 @@ def _reviewer(*, context: str = "ctx", primary: str = "primary", diff: str = "di
 
 def _json(data: Any) -> str:
     return json.dumps(data, ensure_ascii=False, sort_keys=True)
+
+
+class _Ledger:
+    def __init__(self) -> None:
+        self.count = 0
+
+    def start_invocation(self, **_: Any) -> str:
+        self.count += 1
+        return f"inv-{self.count}"
+
+    def complete_invocation(self, *_: Any, **__: Any) -> None:
+        return None
+
+    def fail_invocation(self, *_: Any, **__: Any) -> None:
+        return None
 
 
 @pytest.mark.parametrize(
@@ -201,6 +220,7 @@ def test_reviewer_revise_or_reject_fails_closed(tmp_path: Path, decision: str) -
             context_pack=context,
             output_dir=tmp_path / "chain",
             model_client=_BoundClient(reviewer_decision=decision),
+            invocation_ledger=_Ledger(),
         )
     assert not (tmp_path / "chain" / "final_reviewed_repair_artifact.json").exists()
 
@@ -213,6 +233,7 @@ def test_review_chain_artifacts_use_same_exact_diff_checksum(tmp_path: Path) -> 
         context_pack=context,
         output_dir=tmp_path / "chain",
         model_client=client,
+        invocation_ledger=_Ledger(),
     )
     refs = result["artifact_refs"]
     diff_bytes = Path(refs["final_reviewed_diff"]).read_bytes()

@@ -342,8 +342,22 @@ def reviewed_diff_proposal_to_safe_dict(proposal: ReviewedDiffProposal) -> dict[
         "risk": proposal.risk,
         "required_validation": list(proposal.required_validation),
         "allowed_actions": list(proposal.allowed_actions),
-        "redactions": list(proposal.redactions),
+        "redactions": _safe_public_redactions(proposal.redactions),
     }
+
+
+def _safe_public_redactions(redactions: tuple[str, ...]) -> list[str]:
+    safe: list[str] = []
+    for value in redactions:
+        text = str(value or "")
+        lowered = text.replace("\\", "/").lower()
+        if "primary_raw_response.txt" in lowered or "reviewer_raw_response.txt" in lowered:
+            label = "internal_model_response"
+        else:
+            label = text
+        if label and label not in safe:
+            safe.append(label)
+    return safe
 
 
 def reviewer_verdict_projection_to_safe_dict(verdict: ReviewerVerdictProjection) -> dict[str, Any]:

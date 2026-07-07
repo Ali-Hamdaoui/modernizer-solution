@@ -319,6 +319,30 @@ def test_client_answer_with_role_uses_requested_role_deployment(monkeypatch) -> 
     assert result.content == "proposer draft"
 
 
+def test_client_preserves_exact_provider_content_separate_from_public_content(monkeypatch) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("AZURE_OPENAI_PROPOSER_DEPLOYMENT", "proposer-deployment")
+
+    exact = '  {"schema_version":"1.0","proposal_kind":"llm_repair_primary","root_cause":"x","fix_strategy":"y","changed_files":["src/App.java"],"proposed_diff":"--- a/src/App.java\\n+++ b/src/App.java\\n@@ -1 +1 @@\\n-a\\n+b\\n","risk":"LOW","confidence":0.9,"rationale":"path C:/repo/secret"}\n'
+
+    client = V2AssistantModelClient()
+    monkeypatch.setattr(client, "_chat_completion", lambda **_: exact)
+
+    result = client.answer_with_role(
+        role=V2ModelRole.PROPOSER,
+        prompt="Draft repair",
+        fallback="fallback",
+        output_schema_name="RepairPrimaryOutput",
+        require_schema=True,
+    )
+
+    assert result.success is True
+    assert result.exact_provider_content == exact
+    assert result.content != result.exact_provider_content
+    assert result.content == result.content.strip()
+
+
 def test_answer_delegates_to_assistant_role(monkeypatch) -> None:
     seen: dict[str, str] = {}
 

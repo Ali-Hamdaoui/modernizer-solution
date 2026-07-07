@@ -54,6 +54,8 @@ VALID_UNIFIED_DIFF = """\
 def _valid_primary_json() -> str:
     return json.dumps(
         {
+            "schema_version": "1.0",
+            "proposal_kind": "llm_repair_primary",
             "root_cause": "Missing import",
             "fix_strategy": "Add import statement",
             "changed_files": ["src/main/java/App.java"],
@@ -83,6 +85,8 @@ def _accept_reviewer_json(prompt: str, *, decision: str = "accept", context_chec
     checksums = _checksums_from_prompt(prompt)
     return json.dumps(
         {
+            "schema_version": "1.0",
+            "proposal_kind": "llm_repair_review",
             "decision": decision,
             "notes": ["Looks correct"],
             "confidence": 0.95,
@@ -190,6 +194,21 @@ class FailingRepairClient:
             redacted_summary="model unavailable",
             failure_reason="missing_deployment",
         )
+
+
+class _Ledger:
+    def __init__(self) -> None:
+        self.count = 0
+
+    def start_invocation(self, **_: Any) -> str:
+        self.count += 1
+        return f"inv-{self.count}"
+
+    def complete_invocation(self, *_: Any, **__: Any) -> None:
+        return None
+
+    def fail_invocation(self, *_: Any, **__: Any) -> None:
+        return None
 
 
 # ── F5-T3: _is_unified_diff ──────────────────────────────────────────
@@ -384,6 +403,7 @@ def test_produce_raises_on_invalid_primary_json(tmp_path: Path) -> None:
             context_pack=context_pack,
             output_dir=tmp_path / "output",
             model_client=client,
+            invocation_ledger=_Ledger(),
         )
     assert "schema invalid" in str(exc_info.value)
 
@@ -398,6 +418,7 @@ def test_produce_raises_on_reviewer_reject_decision(tmp_path: Path) -> None:
             context_pack=context_pack,
             output_dir=tmp_path / "output",
             model_client=client,
+            invocation_ledger=_Ledger(),
         )
     assert "reject" in str(exc_info.value)
 
@@ -412,6 +433,7 @@ def test_produce_raises_on_reviewer_checksum_mismatch(tmp_path: Path) -> None:
             context_pack=context_pack,
             output_dir=tmp_path / "output",
             model_client=client,
+            invocation_ledger=_Ledger(),
         )
     assert "checksum mismatch" in str(exc_info.value)
 
@@ -425,6 +447,7 @@ def test_produce_success_with_accept_decision(tmp_path: Path) -> None:
         context_pack=context_pack,
         output_dir=tmp_path / "output",
         model_client=client,
+        invocation_ledger=_Ledger(),
     )
     assert "artifact_refs" in result
     assert "review_chain" in result
@@ -445,6 +468,57 @@ def test_produce_success_with_accept_decision(tmp_path: Path) -> None:
     assert "endpoint" not in json.dumps(result["review_chain"]["model_roles"]).lower()
 
 
+def test_produce_accepts_real_provider_fallback(tmp_path: Path) -> None:
+    evidence = _make_evidence()
+    context_pack = _make_context(evidence)
+    client = FakeRepairClient()
+
+    original_answer = client.answer_with_role
+
+    def answer_with_fallback_marker(**kwargs: Any) -> V2AssistantModelResult:
+        result = original_answer(**kwargs)
+        return V2AssistantModelResult(
+            content=result.content,
+            source="azure_openai",
+            model_status="live_ok",
+            provider="azure_openai",
+            role=result.role,
+            success=True,
+            redacted_summary=result.redacted_summary,
+            failure_reason="",
+            fallback_used=True,
+            exact_provider_content=result.content,
+        )
+
+    client.answer_with_role = answer_with_fallback_marker  # type: ignore[method-assign]
+    result = produce_repair_review_chain(
+        failure_evidence=evidence,
+        context_pack=context_pack,
+        output_dir=tmp_path / "output",
+        model_client=client,
+        invocation_ledger=_Ledger(),
+    )
+
+    assert result["review_chain"]["primary_fallback_used"] is True
+    assert result["review_chain"]["reviewer_fallback_used"] is True
+    assert result["review_chain"]["primary_provider_source"] == "azure_openai"
+
+
+def test_produce_requires_mandatory_invocation_ledger(tmp_path: Path) -> None:
+    evidence = _make_evidence()
+    context_pack = _make_context(evidence)
+    client = FakeRepairClient()
+
+    with pytest.raises(RepairReviewChainProductionError, match="mandatory invocation ledger"):
+        produce_repair_review_chain(
+            failure_evidence=evidence,
+            context_pack=context_pack,
+            output_dir=tmp_path / "output",
+            model_client=client,
+        )
+    assert client.calls == []
+
+
 def test_produce_raises_on_primary_model_failure(tmp_path: Path) -> None:
     evidence = _make_evidence()
     context_pack = _make_context(evidence)
@@ -455,5 +529,6 @@ def test_produce_raises_on_primary_model_failure(tmp_path: Path) -> None:
             context_pack=context_pack,
             output_dir=tmp_path / "output",
             model_client=client,
+            invocation_ledger=_Ledger(),
         )
     assert "failed closed" in str(exc_info.value)

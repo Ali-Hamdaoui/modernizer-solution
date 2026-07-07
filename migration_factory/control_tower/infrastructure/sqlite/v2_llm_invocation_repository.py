@@ -31,6 +31,18 @@ class V2LLMInvocationRecord:
     total_tokens: int | None = None
     latency_ms: int | None = None
     completed_at: str | None = None
+    stage_index: int | None = None
+    attempt_number: int | None = None
+    raw_response_checksum: str | None = None
+    normalized_output_checksum: str | None = None
+    validated_output_checksum: str | None = None
+    diff_checksum: str | None = None
+    raw_response_artifact_ref: str | None = None
+    normalized_output_artifact_ref: str | None = None
+    validated_output_artifact_ref: str | None = None
+    diff_artifact_ref: str | None = None
+    accepted_provider_source: str | None = None
+    deterministic_fallback_used: int = 0
 
 
 class SqliteV2LLMInvocationRepository:
@@ -46,8 +58,14 @@ class SqliteV2LLMInvocationRepository:
                 schema_name, status, fallback_used,
                 redacted_error, redacted_summary,
                 prompt_tokens, completion_tokens, total_tokens,
-                latency_ms, created_at, completed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                latency_ms, created_at, completed_at,
+                stage_index, attempt_number,
+                raw_response_checksum, normalized_output_checksum,
+                validated_output_checksum, diff_checksum,
+                raw_response_artifact_ref, normalized_output_artifact_ref,
+                validated_output_artifact_ref, diff_artifact_ref,
+                accepted_provider_source, deterministic_fallback_used
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.invocation_id,
                 record.job_id,
@@ -71,6 +89,18 @@ class SqliteV2LLMInvocationRepository:
                 record.latency_ms,
                 record.created_at,
                 record.completed_at,
+                record.stage_index,
+                record.attempt_number,
+                record.raw_response_checksum,
+                record.normalized_output_checksum,
+                record.validated_output_checksum,
+                record.diff_checksum,
+                record.raw_response_artifact_ref,
+                record.normalized_output_artifact_ref,
+                record.validated_output_artifact_ref,
+                record.diff_artifact_ref,
+                record.accepted_provider_source,
+                record.deterministic_fallback_used,
             ),
         )
 
@@ -88,6 +118,16 @@ class SqliteV2LLMInvocationRepository:
         latency_ms: int | None = None,
         completed_at: str | None = None,
         fallback_used: int | None = None,
+        raw_response_checksum: str | None = None,
+        normalized_output_checksum: str | None = None,
+        validated_output_checksum: str | None = None,
+        diff_checksum: str | None = None,
+        raw_response_artifact_ref: str | None = None,
+        normalized_output_artifact_ref: str | None = None,
+        validated_output_artifact_ref: str | None = None,
+        diff_artifact_ref: str | None = None,
+        accepted_provider_source: str | None = None,
+        deterministic_fallback_used: int | None = None,
     ) -> None:
         parts: list[str] = ["status = ?"]
         params: list[Any] = [status]
@@ -118,6 +158,22 @@ class SqliteV2LLMInvocationRepository:
         if fallback_used is not None:
             parts.append("fallback_used = ?")
             params.append(fallback_used)
+        optional_updates = {
+            "raw_response_checksum": raw_response_checksum,
+            "normalized_output_checksum": normalized_output_checksum,
+            "validated_output_checksum": validated_output_checksum,
+            "diff_checksum": diff_checksum,
+            "raw_response_artifact_ref": raw_response_artifact_ref,
+            "normalized_output_artifact_ref": normalized_output_artifact_ref,
+            "validated_output_artifact_ref": validated_output_artifact_ref,
+            "diff_artifact_ref": diff_artifact_ref,
+            "accepted_provider_source": accepted_provider_source,
+            "deterministic_fallback_used": deterministic_fallback_used,
+        }
+        for column, value in optional_updates.items():
+            if value is not None:
+                parts.append(f"{column} = ?")
+                params.append(value)
         params.append(invocation_id)
         self._connection.execute(
             f"UPDATE v2_llm_invocations SET {', '.join(parts)} WHERE invocation_id = ?",
@@ -175,4 +231,16 @@ class SqliteV2LLMInvocationRepository:
             latency_ms=int(row["latency_ms"]) if row["latency_ms"] is not None else None,
             created_at=str(row["created_at"]),
             completed_at=str(row["completed_at"]) if row["completed_at"] is not None else None,
+            stage_index=int(row["stage_index"]) if "stage_index" in row.keys() and row["stage_index"] is not None else None,
+            attempt_number=int(row["attempt_number"]) if "attempt_number" in row.keys() and row["attempt_number"] is not None else None,
+            raw_response_checksum=str(row["raw_response_checksum"]) if "raw_response_checksum" in row.keys() and row["raw_response_checksum"] is not None else None,
+            normalized_output_checksum=str(row["normalized_output_checksum"]) if "normalized_output_checksum" in row.keys() and row["normalized_output_checksum"] is not None else None,
+            validated_output_checksum=str(row["validated_output_checksum"]) if "validated_output_checksum" in row.keys() and row["validated_output_checksum"] is not None else None,
+            diff_checksum=str(row["diff_checksum"]) if "diff_checksum" in row.keys() and row["diff_checksum"] is not None else None,
+            raw_response_artifact_ref=str(row["raw_response_artifact_ref"]) if "raw_response_artifact_ref" in row.keys() and row["raw_response_artifact_ref"] is not None else None,
+            normalized_output_artifact_ref=str(row["normalized_output_artifact_ref"]) if "normalized_output_artifact_ref" in row.keys() and row["normalized_output_artifact_ref"] is not None else None,
+            validated_output_artifact_ref=str(row["validated_output_artifact_ref"]) if "validated_output_artifact_ref" in row.keys() and row["validated_output_artifact_ref"] is not None else None,
+            diff_artifact_ref=str(row["diff_artifact_ref"]) if "diff_artifact_ref" in row.keys() and row["diff_artifact_ref"] is not None else None,
+            accepted_provider_source=str(row["accepted_provider_source"]) if "accepted_provider_source" in row.keys() and row["accepted_provider_source"] is not None else None,
+            deterministic_fallback_used=int(row["deterministic_fallback_used"]) if "deterministic_fallback_used" in row.keys() and row["deterministic_fallback_used"] is not None else 0,
         )

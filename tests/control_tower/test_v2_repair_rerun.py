@@ -36,6 +36,8 @@ def _reviewer_json_from_prompt(prompt: str) -> str:
         }.items()
     }
     return json.dumps({
+        "schema_version": "1.0",
+        "proposal_kind": "llm_repair_review",
         "decision": "accept",
         "notes": [],
         "confidence": 0.95,
@@ -45,6 +47,17 @@ def _reviewer_json_from_prompt(prompt: str) -> str:
         "reviewed_primary_output_checksum": checksums["primary"],
         "reviewed_diff_checksum": checksums["diff"],
     }, sort_keys=True)
+
+
+def _invocation_ledger(conn):
+    from migration_factory.control_tower.application.v2_llm_invocation_ledger import (
+        V2LLMInvocationLedger,
+    )
+    from migration_factory.control_tower.infrastructure.sqlite.v2_llm_invocation_repository import (
+        SqliteV2LLMInvocationRepository,
+    )
+
+    return V2LLMInvocationLedger(SqliteV2LLMInvocationRepository(conn))
 
 
 # ── F5-T11-1: FailureSource enum values are correct ────────────────────
@@ -290,14 +303,14 @@ class TestBoundedNextRepairCycle:
             def answer_with_role(self, *, role, prompt, fallback, output_schema_name=None, require_schema=True):
                 self.calls.append(role)
                 if role == V2ModelRole.PROPOSER:
-                    c = json.dumps({"root_cause":"fix","fix_strategy":"patch","changed_files":["pom.xml"],"proposed_diff":"diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@\n+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n","risk":"LOW","confidence":0.9,"rationale":"fix","deterministic_rule_id":"DEPENDENCY_ADD_H2_RUNTIME"},sort_keys=True)
+                    c = json.dumps({"schema_version":"1.0","proposal_kind":"llm_repair_primary","root_cause":"fix","fix_strategy":"patch","changed_files":["pom.xml"],"proposed_diff":"diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@\n+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n","risk":"LOW","confidence":0.9,"rationale":"fix","deterministic_rule_id":"DEPENDENCY_ADD_H2_RUNTIME"},sort_keys=True)
                 else:
                     c = _reviewer_json_from_prompt(prompt)
                 return V2AssistantModelResult(content=c,source="azure",model_status="live_ok",provider="azure",role=role.value,success=True,redacted_summary="ok",failure_reason="")
 
         gate_repo = SqlitePhaseGateRepository(conn)
         gate_service = V2PhaseGateService(gate_repo)
-        repair_gate_service = V2RepairGateService(gate_service=gate_service, max_repair_attempts=3)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service, invocation_ledger=_invocation_ledger(conn), max_repair_attempts=3)
 
         sandbox = tmp_path / "sandbox"
         sandbox.mkdir()
@@ -345,7 +358,7 @@ class TestBoundedNextRepairCycle:
 
         gate_repo = SqlitePhaseGateRepository(conn)
         gate_service = V2PhaseGateService(gate_repo)
-        repair_gate_service = V2RepairGateService(gate_service=gate_service, max_repair_attempts=1)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service, invocation_ledger=_invocation_ledger(conn), max_repair_attempts=1)
 
         sandbox = tmp_path / "sandbox"
         sandbox.mkdir()
@@ -392,14 +405,14 @@ class TestBoundedNextRepairCycle:
             def answer_with_role(self, *, role, prompt, fallback, output_schema_name=None, require_schema=True):
                 self.calls.append(role)
                 if role == V2ModelRole.PROPOSER:
-                    c = json.dumps({"root_cause":"fix","fix_strategy":"patch","changed_files":["pom.xml"],"proposed_diff":"diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@\n+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n","risk":"LOW","confidence":0.9,"rationale":"fix","deterministic_rule_id":"DEPENDENCY_ADD_H2_RUNTIME"},sort_keys=True)
+                    c = json.dumps({"schema_version":"1.0","proposal_kind":"llm_repair_primary","root_cause":"fix","fix_strategy":"patch","changed_files":["pom.xml"],"proposed_diff":"diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@\n+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n","risk":"LOW","confidence":0.9,"rationale":"fix","deterministic_rule_id":"DEPENDENCY_ADD_H2_RUNTIME"},sort_keys=True)
                 else:
                     c = _reviewer_json_from_prompt(prompt)
                 return V2AssistantModelResult(content=c,source="azure",model_status="live_ok",provider="azure",role=role.value,success=True,redacted_summary="ok",failure_reason="")
 
         gate_repo = SqlitePhaseGateRepository(conn)
         gate_service = V2PhaseGateService(gate_repo)
-        repair_gate_service = V2RepairGateService(gate_service=gate_service)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service, invocation_ledger=_invocation_ledger(conn))
 
         sandbox = tmp_path / "sandbox"
         sandbox.mkdir()
@@ -453,14 +466,14 @@ class TestBoundedNextRepairCycle:
             def answer_with_role(self, *, role, prompt, fallback, output_schema_name=None, require_schema=True):
                 self.calls.append({"role": role, "prompt": prompt})
                 if role == V2ModelRole.PROPOSER:
-                    c = json.dumps({"root_cause":"fix","fix_strategy":"patch","changed_files":["pom.xml"],"proposed_diff":"diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@\n+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n","risk":"LOW","confidence":0.9,"rationale":"fix","deterministic_rule_id":"DEPENDENCY_ADD_H2_RUNTIME"},sort_keys=True)
+                    c = json.dumps({"schema_version":"1.0","proposal_kind":"llm_repair_primary","root_cause":"fix","fix_strategy":"patch","changed_files":["pom.xml"],"proposed_diff":"diff --git a/pom.xml b/pom.xml\n--- a/pom.xml\n+++ b/pom.xml\n@@\n+<dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>\n","risk":"LOW","confidence":0.9,"rationale":"fix","deterministic_rule_id":"DEPENDENCY_ADD_H2_RUNTIME"},sort_keys=True)
                 else:
                     c = _reviewer_json_from_prompt(prompt)
                 return V2AssistantModelResult(content=c,source="azure",model_status="live_ok",provider="azure",role=role.value,success=True,redacted_summary="ok",failure_reason="")
 
         gate_repo = SqlitePhaseGateRepository(conn)
         gate_service = V2PhaseGateService(gate_repo)
-        repair_gate_service = V2RepairGateService(gate_service=gate_service, max_repair_attempts=5)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service, invocation_ledger=_invocation_ledger(conn), max_repair_attempts=5)
 
         sandbox = tmp_path / "sandbox"
         sandbox.mkdir()

@@ -42,6 +42,40 @@ class _FakeModelClient:
         self.calls.append({"prompt": prompt, "fallback": fallback})
         return self.result
 
+    def answer_with_role(
+        self,
+        *,
+        role,
+        prompt: str,
+        fallback: str,
+        conversation_history: list[dict[str, str]] | None = None,
+        output_schema_name: str | None = None,
+        require_schema: bool = False,
+    ) -> V2AssistantModelResult:
+        self.calls.append({"prompt": prompt, "fallback": fallback, "role": str(role)})
+        return self.result
+
+
+class _SequenceModelClient:
+    def __init__(self, results: list[V2AssistantModelResult]) -> None:
+        self.results = list(results)
+        self.calls: list[dict[str, str]] = []
+
+    def answer_with_role(
+        self,
+        *,
+        role,
+        prompt: str,
+        fallback: str,
+        conversation_history: list[dict[str, str]] | None = None,
+        output_schema_name: str | None = None,
+        require_schema: bool = False,
+    ) -> V2AssistantModelResult:
+        self.calls.append({"prompt": prompt, "fallback": fallback, "role": str(role)})
+        if not self.results:
+            raise AssertionError("No queued model result")
+        return self.results.pop(0)
+
 
 def _client(tmp_path: Path, model_client: _FakeModelClient) -> tuple[TestClient, sqlite3.Connection]:
     from migration_factory.control_tower.adapters.fastapi import create_app
@@ -538,7 +572,7 @@ def test_assistant_fallback_is_labeled_and_read_only(tmp_path: Path) -> None:
 
     response = client.post(
         "/v1/v2/jobs/job-model/assistant/ask",
-        json={"question": "approve it"},
+        json={"question": "status?"},
         headers=_mutation_headers(),
     )
 
@@ -551,6 +585,84 @@ def test_assistant_fallback_is_labeled_and_read_only(tmp_path: Path) -> None:
     assert body["guardrails"]["cannot_execute"] is True
     assert body["guardrails"]["cannot_approve"] is True
     assert body["guardrails"]["cannot_write_files"] is True
+
+
+def test_assistant_router_public_response_compatible_for_success_and_fallback(
+    tmp_path: Path,
+) -> None:
+    raw_exact = '{"answer":"RAW_PROVIDER_SECRET","debug":"exact_provider_content"}'
+    fake = _SequenceModelClient(
+        [
+            V2AssistantModelResult(
+                content="Azure-backed safe answer.",
+                source="azure_openai",
+                model_status="live_ok",
+                provider="azure_openai",
+                role="assistant",
+                success=True,
+                redacted_summary="primary ok",
+                failure_reason="",
+                fallback_used=False,
+                exact_provider_content=raw_exact,
+            ),
+            V2AssistantModelResult(
+                content="Deterministic safe fallback.",
+                source="deterministic",
+                model_status="fallback",
+                provider="deterministic",
+                role="assistant",
+                success=False,
+                redacted_summary="primary failed; fallback used",
+                failure_reason="primary_failed",
+                primary_failure_reason="http_500",
+                fallback_used=True,
+                exact_provider_content="RAW_FALLBACK_EXACT_PROVIDER_CONTENT",
+            ),
+        ]
+    )
+    client, conn = _client(tmp_path, fake)
+
+    success = client.post(
+        "/v1/v2/jobs/job-model/assistant/ask",
+        json={"question": "status?"},
+        headers=_mutation_headers(),
+    )
+    fallback = client.post(
+        "/v1/v2/jobs/job-model/assistant/ask",
+        json={"question": "status again?"},
+        headers=_mutation_headers(),
+    )
+
+    assert success.status_code == 200, success.text
+    assert fallback.status_code == 200, fallback.text
+    assert [call["role"] for call in fake.calls] == ["V2ModelRole.ASSISTANT", "V2ModelRole.ASSISTANT"]
+    success_body = success.json()
+    fallback_body = fallback.json()
+    assert success_body["model"]["status"] == "live_ok"
+    assert success_body["model"]["source"] == "azure_openai"
+    assert fallback_body["model"]["status"] == "fallback"
+    assert fallback_body["model"]["source"] == "deterministic"
+
+    serialized = success.text + fallback.text
+    assert "exact_provider_content" not in serialized
+    assert "RAW_PROVIDER_SECRET" not in serialized
+    assert "RAW_FALLBACK_EXACT_PROVIDER_CONTENT" not in serialized
+    assert "Deterministic safe fallback." in fallback.text
+    assert success_body["guardrails"]["cannot_execute"] is True
+    assert success_body["guardrails"]["cannot_approve"] is True
+    assert success_body["guardrails"]["cannot_write_files"] is True
+    assert fallback_body["guardrails"]["cannot_execute"] is True
+    assert fallback_body["guardrails"]["cannot_approve"] is True
+    assert fallback_body["guardrails"]["cannot_write_files"] is True
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-model")
+    completed = [event for event in events if event.type in {"model_invocation_completed", "model_invocation_failed"}]
+    assert [event.status for event in completed[-2:]] == ["completed", "fallback"]
+    payloads = [json.loads(event.payload_json) for event in completed[-2:]]
+    assert payloads[0]["source"] == "azure_openai"
+    assert payloads[0]["is_fallback"] is False
+    assert payloads[1]["source"] == "deterministic"
+    assert payloads[1]["is_fallback"] is True
 
 
 def test_assistant_prompt_includes_failure_summary(tmp_path: Path) -> None:
@@ -646,7 +758,7 @@ def test_assistant_prompt_includes_approval_state(tmp_path: Path) -> None:
 
     response = client.post(
         "/v1/v2/jobs/job-model/assistant/ask",
-        json={"question": "what should I approve?"},
+        json={"question": "status?"},
         headers=_mutation_headers(),
     )
 

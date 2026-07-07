@@ -53,6 +53,19 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_
 )
 
 
+def test_repair_gate_service_does_not_discover_sqlite_ledger_from_private_attrs() -> None:
+    import inspect
+    import migration_factory.control_tower.application.v2_repair_gate_service as module
+
+    module_source = inspect.getsource(module)
+    service_source = inspect.getsource(module.V2RepairGateService)
+    assert "SqliteV2LLMInvocationRepository" not in module_source
+    assert "getattr(self._gate_service" not in service_source
+    assert "._gate_repo" not in service_source
+    assert "._connection" not in service_source
+    assert "_repair_invocation_ledger" not in service_source
+
+
 # ── Helpers ───────────────────────────────────────────────────────────
 
 

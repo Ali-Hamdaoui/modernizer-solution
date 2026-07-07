@@ -33,6 +33,8 @@ def _reviewer_json_from_prompt(prompt: str, decision: str = "accept") -> str:
         }.items()
     }
     return json.dumps({
+        "schema_version": "1.0",
+        "proposal_kind": "llm_repair_review",
         "decision": decision,
         "notes": ["Revised diff scoped correctly"],
         "confidence": 0.95,
@@ -49,6 +51,17 @@ from migration_factory.control_tower.application.v2_repair_flow import (
 from migration_factory.control_tower.application.v2_repair_gate_service import (
     V2RepairGateService,
 )
+
+
+def _invocation_ledger(conn):
+    from migration_factory.control_tower.application.v2_llm_invocation_ledger import (
+        V2LLMInvocationLedger,
+    )
+    from migration_factory.control_tower.infrastructure.sqlite.v2_llm_invocation_repository import (
+        SqliteV2LLMInvocationRepository,
+    )
+
+    return V2LLMInvocationLedger(SqliteV2LLMInvocationRepository(conn))
 
 
 _failure_evidence = build_failure_evidence(
@@ -369,6 +382,8 @@ class TestRevisionRegeneratesAzureRepairChain:
                 })
                 if role == V2ModelRole.PROPOSER:
                     content = json.dumps({
+                        "schema_version": "1.0",
+                        "proposal_kind": "llm_repair_primary",
                         "root_cause": "Need updated dependency",
                         "fix_strategy": "Update pom.xml version",
                         "changed_files": ["pom.xml"],
@@ -404,7 +419,7 @@ class TestRevisionRegeneratesAzureRepairChain:
 
         gate_repo = SqlitePhaseGateRepository(conn)
         gate_service = V2PhaseGateService(gate_repo)
-        repair_gate_service = V2RepairGateService(gate_service=gate_service)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service, invocation_ledger=_invocation_ledger(conn))
 
         client = self._fake_client(reviewer_decision="accept")
         sandbox = tmp_path / "sandbox"
@@ -454,7 +469,7 @@ class TestRevisionRegeneratesAzureRepairChain:
 
         gate_repo = SqlitePhaseGateRepository(conn)
         gate_service = V2PhaseGateService(gate_repo)
-        repair_gate_service = V2RepairGateService(gate_service=gate_service)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service, invocation_ledger=_invocation_ledger(conn))
 
         client = self._fake_client(reviewer_decision="accept")
         sandbox = tmp_path / "sandbox"
@@ -523,7 +538,7 @@ class TestRevisionRegeneratesAzureRepairChain:
 
         gate_repo = SqlitePhaseGateRepository(conn)
         gate_service = V2PhaseGateService(gate_repo)
-        repair_gate_service = V2RepairGateService(gate_service=gate_service)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service, invocation_ledger=_invocation_ledger(conn))
 
         client = self._fake_client(reviewer_decision="reject")
         sandbox = tmp_path / "sandbox"
@@ -569,7 +584,7 @@ class TestRevisionRegeneratesAzureRepairChain:
 
         gate_repo = SqlitePhaseGateRepository(conn)
         gate_service = V2PhaseGateService(gate_repo)
-        repair_gate_service = V2RepairGateService(gate_service=gate_service)
+        repair_gate_service = V2RepairGateService(gate_service=gate_service, invocation_ledger=_invocation_ledger(conn))
 
         calls = []
 
@@ -577,6 +592,8 @@ class TestRevisionRegeneratesAzureRepairChain:
             def answer_with_role(self, *, role, prompt, fallback, output_schema_name=None, require_schema=True):
                 calls.append({"role": role, "provider": "azure_openai"})
                 content = json.dumps({
+                    "schema_version": "1.0",
+                    "proposal_kind": "llm_repair_primary",
                     "root_cause": "fix",
                     "fix_strategy": "patch",
                     "changed_files": ["pom.xml"],

@@ -89,6 +89,8 @@ REPAIR_PRIMARY_OUTPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "required": [
+        "schema_version",
+        "proposal_kind",
         "root_cause",
         "fix_strategy",
         "changed_files",
@@ -98,6 +100,8 @@ REPAIR_PRIMARY_OUTPUT_SCHEMA = {
         "rationale",
     ],
     "properties": {
+        "schema_version": {"type": "string", "enum": ["1.0"]},
+        "proposal_kind": {"type": "string", "enum": ["llm_repair_primary"]},
         "root_cause": {"type": "string"},
         "fix_strategy": {"type": "string"},
         "changed_files": {"type": "array", "items": {"type": "string"}},
@@ -115,6 +119,8 @@ REPAIR_REVIEWER_OUTPUT_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
     "required": [
+        "schema_version",
+        "proposal_kind",
         "decision",
         "notes",
         "risks",
@@ -125,6 +131,8 @@ REPAIR_REVIEWER_OUTPUT_SCHEMA = {
         "reviewed_diff_checksum",
     ],
     "properties": {
+        "schema_version": {"type": "string", "enum": ["1.0"]},
+        "proposal_kind": {"type": "string", "enum": ["llm_repair_review"]},
         "decision": {"type": "string", "enum": ["accept", "revise", "reject"]},
         "notes": {"type": "array", "items": {"type": "string"}},
         "risks": {"type": "array", "items": {"type": "string"}},

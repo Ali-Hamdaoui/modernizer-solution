@@ -108,6 +108,16 @@ class V2LLMInvocationLedger:
         total_tokens: int | None = None,
         latency_ms: int | None = None,
         fallback_used: bool = False,
+        raw_response_checksum: str | None = None,
+        normalized_output_checksum: str | None = None,
+        validated_output_checksum: str | None = None,
+        diff_checksum: str | None = None,
+        raw_response_artifact_ref: str | None = None,
+        normalized_output_artifact_ref: str | None = None,
+        validated_output_artifact_ref: str | None = None,
+        diff_artifact_ref: str | None = None,
+        accepted_provider_source: str | None = None,
+        deterministic_fallback_used: bool = False,
     ) -> None:
         """Record successful completion of a model invocation."""
         if output_checksum is None and output is not None:
@@ -124,6 +134,16 @@ class V2LLMInvocationLedger:
             latency_ms=latency_ms,
             completed_at=utc_now_text(),
             fallback_used=1 if fallback_used else 0,
+            raw_response_checksum=raw_response_checksum,
+            normalized_output_checksum=normalized_output_checksum,
+            validated_output_checksum=validated_output_checksum,
+            diff_checksum=diff_checksum,
+            raw_response_artifact_ref=raw_response_artifact_ref,
+            normalized_output_artifact_ref=normalized_output_artifact_ref,
+            validated_output_artifact_ref=validated_output_artifact_ref,
+            diff_artifact_ref=diff_artifact_ref,
+            accepted_provider_source=accepted_provider_source,
+            deterministic_fallback_used=1 if deterministic_fallback_used else 0,
         )
 
     def fail_invocation(

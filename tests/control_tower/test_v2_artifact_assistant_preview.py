@@ -551,6 +551,117 @@ class TestArtifactPreviewPathSafety:
             assert "my-secret" not in preview
 
 
+class TestRawResponseArtifactIsolation:
+    def test_raw_response_artifacts_block_public_preview_download_and_assistant(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        client, conn, _setup_id = _client_with_setup(tmp_path, output_dir=str(tmp_path / "output"))
+        output_dir = tmp_path / "output"
+        raw_dir = output_dir / "repair_chain"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        (raw_dir / "primary_raw_response.txt").write_text("RAW_PROVIDER_SECRET", encoding="utf-8")
+        (raw_dir / "reviewer_raw_response.txt").write_text("RAW_REVIEWER_SECRET", encoding="utf-8")
+        safe_path = output_dir / "repair_chain" / "repair_ledger.json"
+        safe_path.write_text('{"status":"safe"}', encoding="utf-8")
+
+        _seed_artifact_event(
+            conn,
+            job_id="job-artifact",
+            stage=1,
+            artifact_kind="primary_raw_response.txt",
+            relative_path="repair_chain/primary_raw_response.txt",
+        )
+        _seed_artifact_event(
+            conn,
+            job_id="job-artifact",
+            stage=1,
+            artifact_kind="reviewer_raw_response.txt",
+            relative_path="repair_chain/reviewer_raw_response.txt",
+        )
+        _seed_artifact_event(
+            conn,
+            job_id="job-artifact",
+            stage=1,
+            artifact_kind="repair_ledger",
+            relative_path="repair_chain/repair_ledger.json",
+        )
+
+        for raw_kind in ("primary_raw_response.txt", "reviewer_raw_response.txt"):
+            preview = client.get(f"/v1/v2/jobs/job-artifact/artifacts/{raw_kind}")
+            assert preview.status_code == 400
+            download = client.get(f"/v1/v2/jobs/job-artifact/artifacts/{raw_kind}?mode=download")
+            assert download.status_code == 400
+
+        assistant = client.post(
+            "/v1/v2/jobs/job-artifact/assistant/ask",
+            json={"question": "what artifacts are available? show primary raw response"},
+            headers=_mutation_headers(),
+        )
+        assert assistant.status_code == 200, assistant.text
+        assistant_text = assistant.text
+        assert "RAW_PROVIDER_SECRET" not in assistant_text
+        assert "RAW_REVIEWER_SECRET" not in assistant_text
+        assert "primary_raw_response.txt" not in assistant_text
+        assert "reviewer_raw_response.txt" not in assistant_text
+        assert "repair_ledger" in assistant_text
+
+        events = client.get("/v1/v2/jobs/job-artifact/events/snapshot")
+        assert events.status_code == 200, events.text
+        event_text = events.text
+        assert "primary_raw_response.txt" not in event_text
+        assert "reviewer_raw_response.txt" not in event_text
+        assert "RAW_PROVIDER_SECRET" not in event_text
+        assert "internal_model_response" in event_text
+
+    def test_raw_response_refs_not_returned_in_public_proposal_dto(self) -> None:
+        from migration_factory.control_tower.application.v2_repair_projection import (
+            build_reviewed_diff_proposal_projection,
+            reviewed_diff_proposal_to_safe_dict,
+            ReviewedDiffProposal,
+        )
+
+        projection = build_reviewed_diff_proposal_projection(
+            proposal_id="proposal-raw",
+            job_id="job-artifact",
+            command_id="cmd-raw",
+            status="ready",
+            failure_summary="failed",
+            final_diff_text="--- a/pom.xml\n+++ b/pom.xml\n@@ -1 +1 @@\n-old\n+new\n",
+            review_chain={
+                "final_diff_ref": "repair_chain/final_reviewed_diff.diff",
+                "final_artifact_ref": "repair_chain/final_reviewed_diff.json",
+                "final_artifact_checksum": "sha256:diff",
+                "primary_raw_response_ref": "repair_chain/primary_raw_response.txt",
+                "reviewer_raw_response_ref": "repair_chain/reviewer_raw_response.txt",
+                "primary_raw_response_checksum": "sha256:raw1",
+                "reviewer_raw_response_checksum": "sha256:raw2",
+                "primary_output_checksum": "sha256:primary",
+                "reviewer_output_checksum": "sha256:reviewer",
+            },
+        )
+        dto = reviewed_diff_proposal_to_safe_dict(projection)
+        assert "primary_raw_response" not in json.dumps(dto)
+        assert "reviewer_raw_response" not in json.dumps(dto)
+
+        proposal_dto = reviewed_diff_proposal_to_safe_dict(
+            ReviewedDiffProposal(
+                proposal_id="proposal-raw",
+                status="ready",
+                failure_summary="failed",
+                diff_ref="repair_chain/final_reviewed_diff.diff",
+                diff_checksum="sha256:diff",
+                redactions=(
+                    "primary_raw_response.txt",
+                    "reviewer_raw_response.txt",
+                ),
+            )
+        )
+        dto_text = json.dumps(proposal_dto)
+        assert "primary_raw_response.txt" not in dto_text
+        assert "reviewer_raw_response.txt" not in dto_text
+
+
 class TestRootPomAssistantLiveTranscript:
     """F12: Assistant live-transcript behaviour for root_pom file alias."""
 

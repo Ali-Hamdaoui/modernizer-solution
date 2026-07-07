@@ -43,6 +43,7 @@ class V2AssistantModelResult:
     provider_retry_path: str = ""
     provider_http_status: str = ""
     provider_error_redacted_preview: str = ""
+    exact_provider_content: str = ""
 
 
 @dataclass(frozen=True)
@@ -360,8 +361,9 @@ class V2AssistantModelClient:
                 provider_error_redacted_preview=redact_model_summary(f"{type(exc).__name__}: {exc}")[:500],
             )
 
-        safe_content = str(redact_public_value(redact_model_summary(content))).strip()
-        if not safe_content:
+        exact_content = str(content)
+        safe_content = str(redact_public_value(redact_model_summary(exact_content))).strip()
+        if not exact_content:
             _log_empty_azure_result_summary(endpoint=endpoint, deployment=deployment)
             return _fallback_result(
                 fallback,
@@ -387,6 +389,7 @@ class V2AssistantModelClient:
             deployment=_public_deployment_label(deployment),
             endpoint_metadata=_safe_endpoint_metadata(endpoint),
             provider_retry_path=provider_retry_path,
+            exact_provider_content=exact_content,
         )
 
     def _to_assistant_result(self, routed: V2RoleModelResult) -> V2AssistantModelResult:
@@ -410,6 +413,7 @@ class V2AssistantModelClient:
             provider_retry_path=routed.provider_retry_path,
             provider_http_status=routed.provider_http_status,
             provider_error_redacted_preview=routed.provider_error_redacted_preview,
+            exact_provider_content=routed.exact_provider_content,
         )
 
     @staticmethod
@@ -1080,8 +1084,9 @@ def _fallback_result(
     provider_error_redacted_preview: str = "",
 ) -> V2AssistantModelResult:
     safe_summary = str(redact_model_summary(summary))
+    fallback_content = f"{fallback}\n\nModel: fallback\nSource: deterministic\nReason: {safe_summary}"
     return V2AssistantModelResult(
-        content=f"{fallback}\n\nModel: fallback\nSource: deterministic\nReason: {safe_summary}",
+        content=fallback_content,
         source="deterministic",
         model_status="fallback",
         provider="deterministic",
@@ -1099,6 +1104,7 @@ def _fallback_result(
         provider_retry_path=redact_model_summary(provider_retry_path)[:240],
         provider_http_status=redact_model_summary(provider_http_status)[:32],
         provider_error_redacted_preview=redact_model_summary(provider_error_redacted_preview)[:500],
+        exact_provider_content=fallback_content,
     )
 
 

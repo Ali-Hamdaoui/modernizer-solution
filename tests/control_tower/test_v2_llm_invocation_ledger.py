@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
@@ -54,8 +55,13 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_llm_invocation_rep
 
 MIGRATION_PATH = (
     "migration_factory/control_tower/infrastructure/sqlite/migrations"
-    "/0050_v2_llm_invocations.sql"
+    "/0056_v2_llm_invocations.sql"
 )
+MIGRATION_0057_PATH = (
+    "migration_factory/control_tower/infrastructure/sqlite/migrations"
+    "/0057_v2_llm_invocation_artifact_bindings.sql"
+)
+BASELINE_0056_COMMIT = "6e3b5f2"
 
 
 def _apply_migration_only(tmp_path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
@@ -64,6 +70,8 @@ def _apply_migration_only(tmp_path: Path, *, check_same_thread: bool = True) -> 
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     with open(MIGRATION_PATH) as f:
+        conn.executescript(f.read())
+    with open(MIGRATION_0057_PATH) as f:
         conn.executescript(f.read())
     return conn
 
@@ -154,6 +162,51 @@ class TestMigration:
             )
         conn.close()
 
+    def test_apply_pending_migrations_exposes_uow_repository(self, tmp_path: Path) -> None:
+        from migration_factory.control_tower.infrastructure.sqlite.migrations import (
+            apply_pending_migrations,
+        )
+        from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import (
+            SqliteControlTowerUnitOfWork,
+        )
+
+        db_path = tmp_path / "uow_v2_llm.sqlite3"
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        apply_pending_migrations(conn)
+
+        with SqliteControlTowerUnitOfWork(conn) as uow:
+            ledger = V2LLMInvocationLedger(uow.v2_llm_invocations)
+            inv_id = ledger.start_invocation(
+                job_id="job-uow",
+                role="main",
+                responsibility="repair_proposal",
+                schema_name="RepairPrimaryOutput",
+            )
+            ledger.complete_invocation(
+                inv_id,
+                output_checksum="validated-cs",
+                raw_response_checksum="raw-cs",
+                normalized_output_checksum="normalized-cs",
+                validated_output_checksum="validated-cs",
+                diff_checksum="diff-cs",
+                raw_response_artifact_ref="repair_chain/primary_raw_response.txt",
+                normalized_output_artifact_ref="repair_chain/primary_normalized_output.json",
+                validated_output_artifact_ref="repair_chain/primary_validated_output.json",
+                accepted_provider_source="azure_openai",
+            )
+
+        reopened = sqlite3.connect(str(db_path))
+        reopened.row_factory = sqlite3.Row
+        record = SqliteV2LLMInvocationRepository(reopened).get(inv_id)
+        assert record is not None
+        assert record.raw_response_checksum == "raw-cs"
+        assert record.normalized_output_checksum == "normalized-cs"
+        assert record.validated_output_checksum == "validated-cs"
+        assert record.diff_checksum == "diff-cs"
+        assert record.accepted_provider_source == "azure_openai"
+        reopened.close()
+
 
 # ── 2. Old DB upgrades cleanly ────────────────────────────────────────
 
@@ -170,6 +223,8 @@ class TestUpgradeCompat:
         conn.commit()
         with open(MIGRATION_PATH) as f:
             conn.executescript(f.read())
+        with open(MIGRATION_0057_PATH) as f:
+            conn.executescript(f.read())
         cur = conn.cursor()
         cur.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='v2_llm_invocations'"
@@ -178,6 +233,130 @@ class TestUpgradeCompat:
         rows = cur.execute("SELECT * FROM migration_jobs").fetchall()
         assert len(rows) == 1
         conn.close()
+
+    def test_upgrade_from_exact_baseline_0056_preserves_rows_and_adds_0057(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        import shutil
+        from migration_factory.control_tower.infrastructure.sqlite.migrations import (
+            apply_pending_migrations,
+            discover_migrations,
+        )
+        from migration_factory.control_tower.infrastructure.sqlite.connection import (
+            connect_control_tower,
+        )
+
+        repo_root = Path(__file__).resolve().parents[2]
+        migrations_src = repo_root / "migration_factory" / "control_tower" / "infrastructure" / "sqlite" / "migrations"
+        current_0056 = (migrations_src / "0056_v2_llm_invocations.sql").read_bytes()
+        baseline_0056 = subprocess.check_output(
+            [
+                "git",
+                "show",
+                f"{BASELINE_0056_COMMIT}:migration_factory/control_tower/infrastructure/sqlite/migrations/0056_v2_llm_invocations.sql",
+            ],
+            cwd=repo_root,
+        )
+        assert current_0056 == baseline_0056
+
+        migrations_dir = tmp_path / "migrations"
+        migrations_dir.mkdir()
+        for path in sorted(migrations_src.glob("*.sql")):
+            if path.name.startswith("0057_"):
+                continue
+            target = migrations_dir / path.name
+            if path.name == "0056_v2_llm_invocations.sql":
+                target.write_bytes(baseline_0056)
+            else:
+                shutil.copyfile(path, target)
+
+        conn = connect_control_tower(tmp_path / "upgrade_0057.sqlite3")
+        try:
+            apply_pending_migrations(conn, migrations_dir=migrations_dir)
+            assert max(m.version for m in discover_migrations(migrations_dir)) == 56
+            conn.execute(
+                """INSERT INTO v2_llm_invocations (
+                    invocation_id, job_id, role, responsibility, status,
+                    created_at, fallback_used
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    "baseline-invocation",
+                    "job-upgrade",
+                    "main",
+                    "repair_proposal",
+                    "completed",
+                    "2026-06-30T00:00:00.000000Z",
+                    0,
+                ),
+            )
+            conn.commit()
+
+            shutil.copyfile(migrations_src / "0057_v2_llm_invocation_artifact_bindings.sql", migrations_dir / "0057_v2_llm_invocation_artifact_bindings.sql")
+            pending = apply_pending_migrations(conn, migrations_dir=migrations_dir)
+
+            assert [migration.version for migration in pending] == [57]
+            assert conn.execute(
+                "SELECT version FROM schema_migrations WHERE version = 57"
+            ).fetchone() is not None
+            assert conn.execute(
+                "SELECT checksum FROM schema_migrations WHERE version = 56"
+            ).fetchone()["checksum"] == discover_migrations(migrations_dir)[55].checksum
+
+            old = conn.execute(
+                "SELECT invocation_id, job_id, raw_response_checksum FROM v2_llm_invocations WHERE invocation_id = ?",
+                ("baseline-invocation",),
+            ).fetchone()
+            assert old["job_id"] == "job-upgrade"
+            assert old["raw_response_checksum"] is None
+
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(v2_llm_invocations)").fetchall()}
+            assert {
+                "raw_response_checksum",
+                "normalized_output_checksum",
+                "validated_output_checksum",
+                "diff_checksum",
+                "raw_response_artifact_ref",
+                "normalized_output_artifact_ref",
+                "validated_output_artifact_ref",
+                "diff_artifact_ref",
+                "accepted_provider_source",
+                "deterministic_fallback_used",
+            }.issubset(columns)
+
+            repo = SqliteV2LLMInvocationRepository(conn)
+            ledger = V2LLMInvocationLedger(repo)
+            inv_id = ledger.start_invocation(
+                job_id="job-upgrade",
+                role="reviewer",
+                responsibility="repair_review",
+            )
+            ledger.complete_invocation(
+                inv_id,
+                output_checksum="validated-cs",
+                raw_response_checksum="raw-cs",
+                normalized_output_checksum="normalized-cs",
+                validated_output_checksum="validated-cs",
+                diff_checksum="diff-cs",
+                raw_response_artifact_ref="repair_chain/reviewer_raw_response.txt",
+                normalized_output_artifact_ref="repair_chain/reviewer_normalized_output.json",
+                validated_output_artifact_ref="repair_chain/reviewer_validated_output.json",
+                diff_artifact_ref="repair_chain/reviewer.diff",
+                accepted_provider_source="azure_openai",
+            )
+
+            assert repo.get("baseline-invocation") is not None
+            loaded = repo.get(inv_id)
+            assert loaded is not None
+            assert loaded.raw_response_checksum == "raw-cs"
+            listed = repo.list_by_job("job-upgrade")
+            assert {record.invocation_id for record in listed} == {
+                "baseline-invocation",
+                inv_id,
+            }
+            assert apply_pending_migrations(conn, migrations_dir=migrations_dir) == []
+        finally:
+            conn.close()
 
 
 # ── 3. Save/list/get invocation works ─────────────────────────────────
@@ -458,9 +637,14 @@ class TestRepairChainCapture:
         conn = _apply_migration_only(tmp_path)
         ledger = _make_ledger(conn)
 
-        from migration_factory.control_tower.domain.checksums import sha256_canonical_json as _cs
+        from migration_factory.control_tower.domain.checksums import (
+            sha256_canonical_json as _cs,
+            sha256_unified_diff_text as _diff_cs,
+        )
 
         primary_content = json.dumps({
+            "schema_version": "1.0",
+            "proposal_kind": "llm_repair_primary",
             "root_cause": "test failure",
             "fix_strategy": "update dependency",
             "changed_files": ["pom.xml"],
@@ -471,19 +655,17 @@ class TestRepairChainCapture:
         })
 
         expected_primary_checksum = _cs({
+            "schema_version": "1.0",
+            "proposal_kind": "llm_repair_primary",
             "root_cause": "test failure",
             "fix_strategy": "update dependency",
             "changed_files": ["pom.xml"],
             "proposed_diff": "--- a/pom.xml\n+++ b/pom.xml\n@@ -1 +1 @@\n-test\n+fixed",
-            "deterministic_rule_id": "",
             "risk": "LOW",
             "confidence": 0.9,
             "rationale": "test",
-            "no_fix_reason": "",
         })
-        expected_diff_checksum = _cs({
-            "unified_diff": "--- a/pom.xml\n+++ b/pom.xml\n@@ -1 +1 @@\n-test\n+fixed",
-        })
+        expected_diff_checksum = _diff_cs("--- a/pom.xml\n+++ b/pom.xml\n@@ -1 +1 @@\n-test\n+fixed")
 
         mock_client = MagicMock()
         call_count: list[int] = [0]
@@ -509,6 +691,8 @@ class TestRepairChainCapture:
             return MagicMock(
                 success=True,
                 content=json.dumps({
+                    "schema_version": "1.0",
+                    "proposal_kind": "llm_repair_review",
                     "decision": "accept",
                     "notes": ["Looks good"],
                     "risks": ["Low risk"],

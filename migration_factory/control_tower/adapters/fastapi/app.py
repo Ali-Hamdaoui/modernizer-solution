@@ -156,6 +156,9 @@ from migration_factory.control_tower.application.v2_assistant_model_client impor
     V2AssistantModelClient,
     V2AssistantModelResult,
 )
+from migration_factory.control_tower.application.v2_llm_invocation_ledger import (
+    V2LLMInvocationLedger,
+)
 from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
 from migration_factory.control_tower.application.v2_model_schemas import (
     describe_model_output_validation_failure,
@@ -300,6 +303,28 @@ from migration_factory.control_tower.application.pom_change_models import (
 
 UnitOfWorkFactory = Any
 ETAG_RE = re.compile(r'^"job-(?P<job_id>.+)-v(?P<version>[1-9][0-9]*)"$')
+_INTERNAL_RAW_RESPONSE_ARTIFACT_NAMES: frozenset[str] = frozenset({
+    "primary_raw_response.txt",
+    "reviewer_raw_response.txt",
+})
+_SAFE_V2_ARTIFACT_KINDS: frozenset[str] = frozenset({
+    "phase2_log",
+    "post_transform_test_log",
+    "failure_classification",
+    "repair_plan",
+    "deterministic_repair_plan",
+    "dependency_policy_report",
+    "dependency_policy_summary",
+    "dependency_repair_plan",
+    "orchestration_summary",
+    "target_dependency_plan",
+    "rewrite_dry_run.patch",
+    "rewrite_impact_summary.json",
+    "repair_ledger",
+    "migration_ledger",
+    "openrewrite_plugin_xml",
+    "approved_plan_lock",
+})
 _POM_DEPENDENCY_EDITOR_FACTORY: Callable[[], PomDependencyEditor] | None = None
 _ASSISTANT_RESPONSE_COMPOSER = V2AssistantResponseComposer()
 
@@ -325,6 +350,22 @@ def _read_unit_of_work(unit_of_work_factory: UnitOfWorkFactory):
         uow.transaction_mode = "read"
     with uow as entered:
         yield entered
+
+
+def _is_internal_raw_response_artifact(value: Any) -> bool:
+    text = str(value or "").replace("\\", "/").lower()
+    return any(name in text for name in _INTERNAL_RAW_RESPONSE_ARTIFACT_NAMES)
+
+
+def _sanitize_public_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    result = dict(payload)
+    if _is_internal_raw_response_artifact(result.get("artifact_kind")) or _is_internal_raw_response_artifact(
+        result.get("relative_path") or result.get("path")
+    ):
+        return {"artifact_kind": "internal_model_response", "public": False}
+    for key in ("primary_raw_response_ref", "reviewer_raw_response_ref"):
+        result.pop(key, None)
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -927,7 +968,7 @@ def create_app(
         payload: dict[str, Any] | None = None,
     ) -> None:
         with unit_of_work_factory() as uow:
-            redacted_payload = redact_public_value(payload or {})
+            redacted_payload = redact_public_value(_sanitize_public_event_payload(payload or {}))
             uow.v2_events.save(
                 job_id=job_id,
                 stage=stage,
@@ -1004,6 +1045,7 @@ def create_app(
                 gate_action_service=decision_service,
                 repair_flow=_repair_flow,
                 diagnosis_service=_diagnosis_service,
+                invocation_ledger=V2LLMInvocationLedger(uow.v2_llm_invocations),
             )
             create_repair_gate_diagnosis_callback(
                 repair_gate_service,
@@ -1889,6 +1931,7 @@ def create_app(
             gate_service=gate_service,
             gate_action_service=action_service,
             repair_flow=repair_flow,
+            invocation_ledger=V2LLMInvocationLedger(uow.v2_llm_invocations),
         )
 
         gate = uow.phase_gates.get(gate_id)
@@ -2200,6 +2243,7 @@ def create_app(
                 gate_service=gate_service,
                 gate_action_service=action_service,
                 repair_flow=repair_flow,
+                invocation_ledger=V2LLMInvocationLedger(uow.v2_llm_invocations),
             )
 
             gate = uow.phase_gates.get(gate_id)
@@ -2326,16 +2370,7 @@ def create_app(
         Redacts secrets and full local paths.
         Supports optional stage filter for stage-scoped artifacts.
         """
-        safe_kinds = {
-            "phase2_log", "post_transform_test_log", "failure_classification",
-            "repair_plan", "deterministic_repair_plan",
-            "dependency_policy_report", "dependency_policy_summary",
-            "dependency_repair_plan", "orchestration_summary",
-            "target_dependency_plan", "rewrite_dry_run.patch",
-            "rewrite_impact_summary.json", "repair_ledger", "migration_ledger",
-            "openrewrite_plugin_xml", "approved_plan_lock",
-        }
-        if artifact_kind not in safe_kinds:
+        if artifact_kind not in _SAFE_V2_ARTIFACT_KINDS or _is_internal_raw_response_artifact(artifact_kind):
             raise _error(
                 status.HTTP_400_BAD_REQUEST,
                 "UNKNOWN_ARTIFACT_KIND",
@@ -2372,6 +2407,7 @@ def create_app(
                 payload = json.loads(event.payload_json or "{}")
             except (json.JSONDecodeError, TypeError):
                 continue
+            payload = _sanitize_public_event_payload(payload)
             kind = str(payload.get("artifact_kind", ""))
             if kind == artifact_kind:
                 path_val = payload.get("relative_path") or payload.get("path")
@@ -4594,6 +4630,7 @@ def create_app(
                 gate_service=gate_service,
                 gate_action_service=action_service,
                 repair_flow=repair_flow,
+                invocation_ledger=V2LLMInvocationLedger(uow.v2_llm_invocations),
             )
             revision_context = _resolve_reviewed_repair_runtime_context(
                 uow=uow,
@@ -4990,6 +5027,7 @@ def create_app(
                 # Handle route progression via repair gate service
                 repair_gate_svc = V2RepairGateService(
                     gate_service=V2PhaseGateService(uow.phase_gates),
+                    invocation_ledger=V2LLMInvocationLedger(uow.v2_llm_invocations),
                 )
                 transition = repair_gate_svc.handle_repair_validation_result(
                     job_id=job_id,
@@ -5037,6 +5075,7 @@ def create_app(
                 # Create next repair cycle
                 repair_gate_svc = V2RepairGateService(
                     gate_service=V2PhaseGateService(uow.phase_gates),
+                    invocation_ledger=V2LLMInvocationLedger(uow.v2_llm_invocations),
                 )
                 transition = repair_gate_svc.handle_repair_validation_result(
                     job_id=job_id,
@@ -7155,7 +7194,7 @@ def _append_v2_event(
     message: str,
     payload: dict[str, Any] | None = None,
 ) -> Any:
-    redacted_payload = redact_public_data(payload or {})
+    redacted_payload = redact_public_data(_sanitize_public_event_payload(payload or {}))
     return uow.v2_events.save(
         job_id=job_id,
         stage=stage,
@@ -10535,8 +10574,9 @@ def _resolve_assistant_artifact_previews(
             payload = json.loads(event.payload_json or "{}")
         except (json.JSONDecodeError, TypeError):
             continue
+        payload = _sanitize_public_event_payload(payload)
         kind = str(payload.get("artifact_kind", ""))
-        if kind:
+        if kind in _SAFE_V2_ARTIFACT_KINDS:
             available_kinds[kind] = getattr(event, "sequence", 0)
 
     if not available_kinds:
@@ -10544,16 +10584,6 @@ def _resolve_assistant_artifact_previews(
         return previews
 
     # Only resolve kinds that are both in safe_kinds AND appear in events
-    safe_kinds = {
-        "phase2_log", "post_transform_test_log", "failure_classification",
-        "repair_plan", "deterministic_repair_plan",
-        "dependency_policy_report", "dependency_policy_summary",
-        "dependency_repair_plan", "orchestration_summary",
-        "target_dependency_plan", "rewrite_dry_run.patch",
-        "rewrite_impact_summary.json", "repair_ledger", "migration_ledger",
-        "openrewrite_plugin_xml", "approved_plan_lock",
-    }
-
     # Prefer kinds mentioned in the question, then fall back to all available
     lowered = str(question or "").lower()
     preferred_order: list[str] = []
@@ -10561,13 +10591,13 @@ def _resolve_assistant_artifact_previews(
         if any(part in lowered for part in kind.lower().replace("_", " ").split()):
             preferred_order.append(kind)
     for kind in sorted(available_kinds, key=lambda k: -available_kinds[k]):
-        if kind not in preferred_order and kind in safe_kinds:
+        if kind not in preferred_order and kind in _SAFE_V2_ARTIFACT_KINDS:
             preferred_order.append(kind)
 
     for kind in preferred_order:
         if len(previews) >= max_previews:
             break
-        if kind not in safe_kinds:
+        if kind not in _SAFE_V2_ARTIFACT_KINDS or _is_internal_raw_response_artifact(kind):
             continue
         preview = _resolve_single_artifact_preview(
             artifact_kind=kind,
@@ -10607,6 +10637,7 @@ def _resolve_single_artifact_preview(
             payload = _json.loads(event.payload_json or "{}")
         except (_json.JSONDecodeError, TypeError):
             continue
+        payload = _sanitize_public_event_payload(payload)
         kind = str(payload.get("artifact_kind", ""))
         if kind != artifact_kind:
             continue
@@ -13197,8 +13228,9 @@ def _extract_artifact_kinds_list(events: tuple[Any, ...]) -> list[str]:
                 payload = json.loads(getattr(event, "payload_json", "") or "{}")
             except (json.JSONDecodeError, TypeError):
                 continue
+            payload = _sanitize_public_event_payload(payload)
             kind = str(payload.get("artifact_kind", ""))
-            if kind and kind not in kinds:
+            if kind and kind in _SAFE_V2_ARTIFACT_KINDS and kind not in kinds:
                 kinds.append(kind)
     return kinds
 
@@ -13337,8 +13369,9 @@ def _build_status_answer(
                 payload = json.loads(event.payload_json or "{}")
             except (json.JSONDecodeError, TypeError):
                 payload = {}
+            payload = _sanitize_public_event_payload(payload)
             kind = str(payload.get("artifact_kind", ""))
-            if kind and kind not in artifact_kinds:
+            if kind and kind in _SAFE_V2_ARTIFACT_KINDS and kind not in artifact_kinds:
                 artifact_kinds.append(kind)
 
     # Determine action
@@ -13522,8 +13555,9 @@ def _build_v2_assistant_prompt(
                 payload = json.loads(event.payload_json or "{}")
             except (json.JSONDecodeError, TypeError):
                 payload = {}
+            payload = _sanitize_public_event_payload(payload)
             kind = str(payload.get("artifact_kind", ""))
-            if kind and kind not in artifact_kinds:
+            if kind and kind in _SAFE_V2_ARTIFACT_KINDS and kind not in artifact_kinds:
                 artifact_kinds.append(kind)
     # Build model/fallback status
     model_status = "available" if _model_client_available() else "fallback"
@@ -14371,8 +14405,9 @@ def _v2_failure_summary(job_id: str, events: tuple[Any, ...]) -> dict[str, Any]:
                 payload = json.loads(event.payload_json or "{}")
             except (json.JSONDecodeError, TypeError):
                 payload = {}
+            payload = _sanitize_public_event_payload(payload)
             kind = str(payload.get("artifact_kind", ""))
-            if kind and kind not in artifact_kinds:
+            if kind and kind in _SAFE_V2_ARTIFACT_KINDS and kind not in artifact_kinds:
                 artifact_kinds.append(kind)
     return {
         "job_id": job_id,
@@ -15759,13 +15794,19 @@ def _v2_event_payload(event: Any) -> dict[str, Any]:
         payload = json.loads(event.payload_json)
     except (json.JSONDecodeError, TypeError):
         payload = {}
+    payload = _sanitize_public_event_payload(payload)
+    message = (
+        "Internal model response artifact recorded."
+        if payload.get("artifact_kind") == "internal_model_response"
+        else _bounded_event_text(event.message)
+    )
     return redact_public_data({
         "event_id": event.event_id,
         "job_id": event.job_id,
         "stage": event.stage,
         "type": event.type,
         "status": event.status,
-        "message": _bounded_event_text(event.message),
+        "message": message,
         "payload": payload,
         "created_at": event.created_at,
         "sequence": event.sequence,

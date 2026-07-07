@@ -30,6 +30,7 @@ from migration_factory.control_tower.application.v2_review_chain_contracts impor
 from migration_factory.control_tower.domain.checksums import (
     SHA256_CANONICAL_JSON_V1,
     SHA256_UTF8_BYTES_V1,
+    canonical_json_text,
     sha256_canonical_json,
     sha256_raw_model_response,
     sha256_unified_diff_text,
@@ -103,7 +104,8 @@ def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checks
         "You are a repair proposer. Analyze the build/test failure evidence below "
         "and propose an exact unified diff to fix the issue.\n\n"
         "Return JSON with these required keys:\n"
-        "  root_cause, fix_strategy, changed_files (list of file paths), "
+        "  schema_version ('1.0'), proposal_kind ('llm_repair_primary'), "
+        "root_cause, fix_strategy, changed_files (list of file paths), "
         "proposed_diff (unified diff string), deterministic_rule_id (or 'no_safe_rule'), "
         "risk (LOW/MEDIUM/HIGH), confidence (0.0-1.0), rationale.\n"
         "If no safe fix is possible, set 'no_fix_reason' and make proposed_diff empty.\n\n"
@@ -130,7 +132,8 @@ def _reviewer_repair_prompt(
         "You are a repair reviewer. Validate the repair proposal below against the "
         "exact checksums, context, and policy constraints.\n\n"
         "Return JSON with keys:\n"
-        "  decision (accept/revise/reject), notes (list), risks (list), "
+        "  schema_version ('1.0'), proposal_kind ('llm_repair_review'), "
+        "decision (accept/revise/reject), notes (list), risks (list), "
         "confidence (0.0-1.0), policy_concerns (list), "
         "reviewed_context_checksum, reviewed_primary_output_checksum, "
         "reviewed_diff_checksum.\n\n"
@@ -239,6 +242,40 @@ def canonical_reviewer_repair_output(output: dict[str, Any]) -> dict[str, Any]:
 def _canonical_schema_projection(output: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
     source = output.get("validated_output") if isinstance(output.get("validated_output"), dict) else output
     return {field: source[field] for field in fields if field in source}
+
+
+def normalized_json_output(output: dict[str, Any]) -> str:
+    return canonical_json_text(output)
+
+
+def checksum_normalized_json_output(output: dict[str, Any]) -> str:
+    return sha256_raw_model_response(normalized_json_output(output))
+
+
+def _exact_provider_content(result: Any) -> str:
+    exact = getattr(result, "exact_provider_content", None)
+    if isinstance(exact, str) and exact:
+        return exact
+    return str(getattr(result, "content", "") or "")
+
+
+def _is_deterministic_fallback(result: Any) -> bool:
+    return (
+        str(getattr(result, "source", "") or "") == "deterministic"
+        or str(getattr(result, "provider", "") or "") == "deterministic"
+        or str(getattr(result, "model_status", "") or "") == "fallback"
+        and not bool(getattr(result, "success", False))
+    )
+
+
+def _safe_provider_source(result: Any) -> str:
+    provider = str(getattr(result, "provider", "") or "")
+    source = str(getattr(result, "source", "") or "")
+    if provider and provider != "deterministic":
+        return provider
+    if source and source != "deterministic":
+        return source
+    return "deterministic"
 
 
 def _validate_primary_repair_output(output: dict[str, Any]) -> list[str]:
@@ -437,7 +474,7 @@ def produce_repair_review_chain(
     Fails closed when any model call is unavailable, malformed, rejected, or misbound.
 
     Args:
-        invocation_ledger: Optional V2LLMInvocationLedger instance for capturing
+        invocation_ledger: Required V2LLMInvocationLedger instance for capturing
             proposer/reviewer invocations to the governed ledger table.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -454,10 +491,13 @@ def produce_repair_review_chain(
 
     client = model_client or V2AssistantModelClient()
 
+    if invocation_ledger is None:
+        raise RepairReviewChainProductionError("mandatory invocation ledger unavailable")
+
     # ── PR-G: Capture proposer invocation ────────────────────────────
     proposer_invocation_id: str | None = None
     reviewer_invocation_id: str | None = None
-    if invocation_ledger is not None:
+    try:
         context_checksum_for_ledger = getattr(context_pack, "context_pack_checksum", "") or ""
         proposer_invocation_id = invocation_ledger.start_invocation(
             job_id=context_pack.job_id,
@@ -467,6 +507,8 @@ def produce_repair_review_chain(
             input_checksum=deterministic_checksum,
             schema_name="RepairPrimaryOutput",
         )
+    except Exception as exc:
+        raise RepairReviewChainProductionError("mandatory proposer invocation ledger start failed") from exc
 
     # Primary Repair LLM (PROPOSER)
     primary_result = client.answer_with_role(
@@ -477,52 +519,79 @@ def produce_repair_review_chain(
         require_schema=True,
     )
 
-    # ── PR-G: Complete/fail proposer invocation ──────────────────────
-    fallback_used_primary = str(getattr(primary_result, "source", "") or "") == "deterministic"
-    if proposer_invocation_id is not None:
-        if primary_result.success:
-            invocation_ledger.complete_invocation(
-                proposer_invocation_id,
-                output=primary_result.content,
-                redacted_summary=primary_result.redacted_summary,
-                fallback_used=fallback_used_primary,
-            )
-        else:
+    provider_fallback_used_primary = bool(getattr(primary_result, "fallback_used", False))
+    deterministic_fallback_primary = _is_deterministic_fallback(primary_result)
+    if not primary_result.success:
+        try:
             invocation_ledger.fail_invocation(
                 proposer_invocation_id,
                 redacted_error=primary_result.failure_reason,
                 redacted_summary=primary_result.redacted_summary,
-                fallback_used=fallback_used_primary,
+                fallback_used=provider_fallback_used_primary or deterministic_fallback_primary,
             )
-
-    if not primary_result.success:
+        except Exception as exc:
+            raise RepairReviewChainProductionError("mandatory proposer invocation ledger failure update failed") from exc
         raise RepairReviewChainProductionError(
             f"primary repair model failed closed: {primary_result.failure_reason or primary_result.model_status}"
         )
-    if bool(getattr(primary_result, "fallback_used", False)) or str(getattr(primary_result, "source", "") or "") == "deterministic":
-        raise RepairReviewChainProductionError("primary repair model fallback blocked; no actionable repair produced")
+    if deterministic_fallback_primary:
+        raise RepairReviewChainProductionError("primary deterministic fallback blocked; no actionable repair produced")
 
-    primary_raw_response = str(primary_result.content)
+    primary_raw_response = _exact_provider_content(primary_result)
     primary_raw_checksum = sha256_raw_model_response(primary_raw_response)
+    primary_parsed_output = _parse_strict_json_object(primary_raw_response, label="primary repair")
+    primary_normalized_text = normalized_json_output(primary_parsed_output)
+    primary_normalized_checksum = sha256_raw_model_response(primary_normalized_text)
     validated_primary_output = _coerce_primary_repair_output(primary_raw_response)
 
     primary_checksum = _compute_primary_repair_checksum(validated_primary_output)
+    primary_validated_text = normalized_json_output(canonical_primary_repair_output(validated_primary_output))
     primary_artifact_envelope = {
         **validated_primary_output,
         "output_checksum": primary_checksum,
         "raw_response_checksum": primary_raw_checksum,
+        "normalized_output_checksum": primary_normalized_checksum,
+        "validated_output_checksum": primary_checksum,
         "raw_response_checksum_algorithm": SHA256_UTF8_BYTES_V1,
+        "normalized_output_checksum_algorithm": SHA256_UTF8_BYTES_V1,
         "structured_output_checksum_algorithm": SHA256_CANONICAL_JSON_V1,
     }
     primary_path = output_dir / "primary_repair_llm_output.json"
+    primary_raw_path = output_dir / "primary_raw_response.txt"
+    primary_normalized_path = output_dir / "primary_normalized_output.json"
+    primary_validated_path = output_dir / "primary_validated_output.json"
+    primary_raw_path.write_text(primary_raw_response, encoding="utf-8", newline="")
+    primary_normalized_path.write_text(primary_normalized_text, encoding="utf-8", newline="")
+    primary_validated_path.write_text(primary_validated_text, encoding="utf-8", newline="")
     _write_json(primary_path, primary_artifact_envelope)
 
     context_checksum = context_pack.context_pack_checksum
     proposed_diff = str(validated_primary_output.get("proposed_diff", ""))
     diff_checksum = sha256_unified_diff_text(proposed_diff)
+    diff_bytes_checksum = diff_checksum
+
+    try:
+        invocation_ledger.complete_invocation(
+            proposer_invocation_id,
+            output_checksum=primary_checksum,
+            redacted_summary=primary_result.redacted_summary,
+            fallback_used=provider_fallback_used_primary,
+            raw_response_checksum=primary_raw_checksum,
+            normalized_output_checksum=primary_normalized_checksum,
+            validated_output_checksum=primary_checksum,
+            diff_checksum=diff_checksum,
+            raw_response_artifact_ref=str(primary_raw_path),
+            normalized_output_artifact_ref=str(primary_normalized_path),
+            validated_output_artifact_ref=str(primary_validated_path),
+            diff_artifact_ref="",
+            accepted_provider_source=_safe_provider_source(primary_result),
+            deterministic_fallback_used=deterministic_fallback_primary,
+        )
+    except Exception as exc:
+        raise RepairReviewChainProductionError("mandatory proposer invocation ledger completion failed") from exc
 
     # ── PR-G: Capture reviewer invocation ────────────────────────────
-    if invocation_ledger is not None:
+    try:
         reviewer_invocation_id = invocation_ledger.start_invocation(
             job_id=context_pack.job_id,
             role="reviewer",
@@ -531,6 +600,8 @@ def produce_repair_review_chain(
             input_checksum=primary_checksum,
             schema_name="RepairReviewerOutput",
         )
+    except Exception as exc:
+        raise RepairReviewChainProductionError("mandatory reviewer invocation ledger start failed") from exc
 
     # Reviewer Repair LLM (REVIEWER)
     reviewer_result = client.answer_with_role(
@@ -547,33 +618,29 @@ def produce_repair_review_chain(
         require_schema=True,
     )
 
-    # ── PR-G: Complete/fail reviewer invocation ──────────────────────
-    fallback_used_reviewer = str(getattr(reviewer_result, "source", "") or "") == "deterministic"
-    if reviewer_invocation_id is not None:
-        if reviewer_result.success:
-            invocation_ledger.complete_invocation(
-                reviewer_invocation_id,
-                output=reviewer_result.content,
-                redacted_summary=reviewer_result.redacted_summary,
-                fallback_used=fallback_used_reviewer,
-            )
-        else:
+    provider_fallback_used_reviewer = bool(getattr(reviewer_result, "fallback_used", False))
+    deterministic_fallback_reviewer = _is_deterministic_fallback(reviewer_result)
+    if not reviewer_result.success:
+        try:
             invocation_ledger.fail_invocation(
                 reviewer_invocation_id,
                 redacted_error=reviewer_result.failure_reason,
                 redacted_summary=reviewer_result.redacted_summary,
-                fallback_used=fallback_used_reviewer,
+                fallback_used=provider_fallback_used_reviewer or deterministic_fallback_reviewer,
             )
-
-    if not reviewer_result.success:
+        except Exception as exc:
+            raise RepairReviewChainProductionError("mandatory reviewer invocation ledger failure update failed") from exc
         raise RepairReviewChainProductionError(
             f"reviewer repair model failed closed: {reviewer_result.failure_reason or reviewer_result.model_status}"
         )
-    if bool(getattr(reviewer_result, "fallback_used", False)) or str(getattr(reviewer_result, "source", "") or "") == "deterministic":
-        raise RepairReviewChainProductionError("reviewer repair model fallback blocked; no actionable repair produced")
+    if deterministic_fallback_reviewer:
+        raise RepairReviewChainProductionError("reviewer deterministic fallback blocked; no actionable repair produced")
 
-    reviewer_raw_response = str(reviewer_result.content)
+    reviewer_raw_response = _exact_provider_content(reviewer_result)
     reviewer_raw_checksum = sha256_raw_model_response(reviewer_raw_response)
+    reviewer_parsed_output = _parse_strict_json_object(reviewer_raw_response, label="reviewer repair")
+    reviewer_normalized_text = normalized_json_output(reviewer_parsed_output)
+    reviewer_normalized_checksum = sha256_raw_model_response(reviewer_normalized_text)
     validated_reviewer_output = _coerce_reviewer_repair_output(
         reviewer_raw_response,
         deterministic_checksum,
@@ -601,14 +668,24 @@ def produce_repair_review_chain(
         )
 
     reviewer_checksum = _compute_reviewer_repair_checksum(validated_reviewer_output)
+    reviewer_validated_text = normalized_json_output(canonical_reviewer_repair_output(validated_reviewer_output))
     reviewer_artifact_envelope = {
         **validated_reviewer_output,
         "output_checksum": reviewer_checksum,
         "raw_response_checksum": reviewer_raw_checksum,
+        "normalized_output_checksum": reviewer_normalized_checksum,
+        "validated_output_checksum": reviewer_checksum,
         "raw_response_checksum_algorithm": SHA256_UTF8_BYTES_V1,
+        "normalized_output_checksum_algorithm": SHA256_UTF8_BYTES_V1,
         "structured_output_checksum_algorithm": SHA256_CANONICAL_JSON_V1,
     }
     reviewer_path = output_dir / "reviewer_repair_llm_output.json"
+    reviewer_raw_path = output_dir / "reviewer_raw_response.txt"
+    reviewer_normalized_path = output_dir / "reviewer_normalized_output.json"
+    reviewer_validated_path = output_dir / "reviewer_validated_output.json"
+    reviewer_raw_path.write_text(reviewer_raw_response, encoding="utf-8", newline="")
+    reviewer_normalized_path.write_text(reviewer_normalized_text, encoding="utf-8", newline="")
+    reviewer_validated_path.write_text(reviewer_validated_text, encoding="utf-8", newline="")
     _write_json(reviewer_path, reviewer_artifact_envelope)
 
     final_artifact = _build_final_reviewed_repair_artifact(
@@ -635,17 +712,31 @@ def produce_repair_review_chain(
         "context_pack_checksum": context_checksum,
         "primary_output_checksum": primary_checksum,
         "primary_raw_response_checksum": primary_raw_checksum,
+        "primary_normalized_output_checksum": primary_normalized_checksum,
+        "primary_validated_output_checksum": primary_checksum,
         "reviewer_output_checksum": reviewer_checksum,
         "reviewer_raw_response_checksum": reviewer_raw_checksum,
+        "reviewer_normalized_output_checksum": reviewer_normalized_checksum,
+        "reviewer_validated_output_checksum": reviewer_checksum,
         "proposed_diff_checksum": diff_checksum,
+        "raw_diff_bytes_checksum": diff_bytes_checksum,
+        "final_reviewed_diff_checksum": diff_bytes_checksum,
         "proposed_diff_checksum_algorithm": SHA256_UTF8_BYTES_V1,
         "final_artifact_checksum": final_artifact_checksum,
         "reviewer_decision": validated_reviewer_output["decision"],
+        "schema_version": "1.0",
+        "proposal_kind": "llm_repair_review",
         "job_id": context_pack.job_id,
         "stage_index": context_pack.stage_index,
         "deterministic_artifact_ref": str(deterministic_path),
         "primary_output_ref": str(primary_path),
+        "primary_raw_response_ref": str(primary_raw_path),
+        "primary_normalized_output_ref": str(primary_normalized_path),
+        "primary_validated_output_ref": str(primary_validated_path),
         "reviewer_output_ref": str(reviewer_path),
+        "reviewer_raw_response_ref": str(reviewer_raw_path),
+        "reviewer_normalized_output_ref": str(reviewer_normalized_path),
+        "reviewer_validated_output_ref": str(reviewer_validated_path),
         "final_artifact_ref": str(final_artifact_path),
         "final_diff_ref": str(diff_path),
         "model_roles": {
@@ -654,9 +745,25 @@ def produce_repair_review_chain(
         },
         "checksum_algorithms": {
             "raw_model_response_checksum": SHA256_UTF8_BYTES_V1,
+            "normalized_output_checksum": SHA256_UTF8_BYTES_V1,
             "validated_structured_output_checksum": SHA256_CANONICAL_JSON_V1,
             "unified_diff_checksum": SHA256_UTF8_BYTES_V1,
         },
+        "artifact_refs": {
+            "primary_raw_response": str(primary_raw_path),
+            "primary_normalized_output": str(primary_normalized_path),
+            "primary_validated_output": str(primary_validated_path),
+            "reviewer_raw_response": str(reviewer_raw_path),
+            "reviewer_normalized_output": str(reviewer_normalized_path),
+            "reviewer_validated_output": str(reviewer_validated_path),
+            "final_reviewed_diff": str(diff_path),
+        },
+        "primary_provider_source": _safe_provider_source(primary_result),
+        "reviewer_provider_source": _safe_provider_source(reviewer_result),
+        "primary_fallback_used": provider_fallback_used_primary,
+        "reviewer_fallback_used": provider_fallback_used_reviewer,
+        "primary_deterministic_fallback_used": deterministic_fallback_primary,
+        "reviewer_deterministic_fallback_used": deterministic_fallback_reviewer,
     }
     if proposer_invocation_id is not None and reviewer_invocation_id is not None:
         review_chain["proposer_invocation_id"] = proposer_invocation_id
@@ -665,10 +772,36 @@ def produce_repair_review_chain(
     review_chain_path = output_dir / "review_chain.json"
     _write_json(review_chain_path, review_chain)
 
+    try:
+        invocation_ledger.complete_invocation(
+            reviewer_invocation_id,
+            output_checksum=reviewer_checksum,
+            redacted_summary=reviewer_result.redacted_summary,
+            fallback_used=provider_fallback_used_reviewer,
+            raw_response_checksum=reviewer_raw_checksum,
+            normalized_output_checksum=reviewer_normalized_checksum,
+            validated_output_checksum=reviewer_checksum,
+            diff_checksum=diff_bytes_checksum,
+            raw_response_artifact_ref=str(reviewer_raw_path),
+            normalized_output_artifact_ref=str(reviewer_normalized_path),
+            validated_output_artifact_ref=str(reviewer_validated_path),
+            diff_artifact_ref=str(diff_path),
+            accepted_provider_source=_safe_provider_source(reviewer_result),
+            deterministic_fallback_used=deterministic_fallback_reviewer,
+        )
+    except Exception as exc:
+        raise RepairReviewChainProductionError("mandatory reviewer invocation ledger completion failed") from exc
+
     produced_refs = {
         "deterministic_artifact": str(deterministic_path),
         "primary_llm_output": str(primary_path),
+        "primary_raw_response": str(primary_raw_path),
+        "primary_normalized_output": str(primary_normalized_path),
+        "primary_validated_output": str(primary_validated_path),
         "reviewer_llm_output": str(reviewer_path),
+        "reviewer_raw_response": str(reviewer_raw_path),
+        "reviewer_normalized_output": str(reviewer_normalized_path),
+        "reviewer_validated_output": str(reviewer_validated_path),
         "final_reviewed_artifact": str(final_artifact_path),
         "final_reviewed_diff": str(diff_path),
         "review_chain_metadata": str(review_chain_path),
@@ -690,5 +823,5 @@ def _safe_model_role_status(result: Any) -> dict[str, Any]:
         "role": str(getattr(result, "role", "") or ""),
         "available": bool(getattr(result, "success", False)),
         "status": "available" if bool(getattr(result, "success", False)) else "blocked",
-        "fallback_used": str(getattr(result, "source", "") or "") == "azure_openai_fallback",
+        "fallback_used": bool(getattr(result, "fallback_used", False)),
     }

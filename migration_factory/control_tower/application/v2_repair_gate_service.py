@@ -34,6 +34,9 @@ from migration_factory.control_tower.application.v2_phase_gate_service import (
     CreateGateRequest,
     V2PhaseGateService,
 )
+from migration_factory.control_tower.application.v2_llm_invocation_ledger import (
+    V2LLMInvocationLedger,
+)
 from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
 )
@@ -99,6 +102,7 @@ class V2RepairGateService:
         repair_flow: V2RepairFlowService | None = None,
         diagnosis_service: V2FailureDiagnosisService | None = None,
         revision_repo: SqliteArtifactRevisionRepository | None = None,
+        invocation_ledger: V2LLMInvocationLedger | None = None,
         max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
     ) -> None:
         self._gate_service = gate_service
@@ -106,6 +110,7 @@ class V2RepairGateService:
         self._repair_flow = repair_flow
         self._diagnosis_service = diagnosis_service
         self._revision_repo = revision_repo
+        self._invocation_ledger = invocation_ledger
         self._max_repair_attempts = max_repair_attempts
 
         # In-memory attempt tracking: {(job_id, stage_index): attempt_count}
@@ -423,7 +428,7 @@ class V2RepairGateService:
         if base_result.status not in ("executed", "idempotent") or not should_regenerate:
             return base_result
 
-        gate = self._gate_service._gate_repo.get(gate_id) if self._gate_service is not None else None
+        gate = self._gate_service.get_gate(gate_id) if self._gate_service is not None else None
         if gate is None:
             return base_result
 
@@ -566,6 +571,7 @@ class V2RepairGateService:
                 source_profile=source_profile or evidence.source_profile,
                 target_profile=target_profile or evidence.target_profile,
                 model_client=model_client,
+                invocation_ledger=self._invocation_ledger,
             )
         except Exception:
             return RepairGateCreationResult(
@@ -1020,6 +1026,7 @@ class V2RepairGateService:
                 source_profile=source_profile or evidence.source_profile,
                 target_profile=target_profile or evidence.target_profile,
                 model_client=model_client,
+                invocation_ledger=self._invocation_ledger,
             )
         except Exception:
             _write_cycle_artifact(
@@ -1089,10 +1096,10 @@ class V2RepairGateService:
 
     def _get_persisted_attempt_count(self, job_id: str, stage_index: int) -> int:
         """Derive the attempt count from persisted gate history."""
-        if self._gate_service is None or self._gate_service._gate_repo is None:
+        if self._gate_service is None:
             return self._attempt_counts.get((job_id, stage_index), 0)
 
-        gates = self._gate_service._gate_repo.list_by_job_and_stage(job_id, stage_index)
+        gates = self._gate_service.list_gates_for_job_stage(job_id, stage_index)
         if any(g.gate_phase == "stage_completion_review" for g in gates):
             return 0
 

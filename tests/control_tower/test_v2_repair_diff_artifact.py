@@ -42,6 +42,8 @@ class _FakeClient:
         self._call_count += 1
         if role.value == "proposer" or role == V2ModelRole.PROPOSER:
             content = json.dumps({
+                "schema_version": "1.0",
+                "proposal_kind": "llm_repair_primary",
                 "root_cause": "test failure",
                 "fix_strategy": "fix test",
                 "changed_files": ["Test.java"],
@@ -74,6 +76,8 @@ class _FakeClient:
             }
             return V2AssistantModelResult(
                 content=json.dumps({
+                    "schema_version": "1.0",
+                    "proposal_kind": "llm_repair_review",
                     "decision": self._reviewer_decision,
                     "notes": ["ok"],
                     "confidence": 0.9,
@@ -115,6 +119,8 @@ def _make_context_pack(evidence):
 
 def _make_primary_output():
     return {
+        "schema_version": "1.0",
+        "proposal_kind": "llm_repair_primary",
         "root_cause": "missing semicolon",
         "fix_strategy": "add semicolon",
         "changed_files": ["Test.java"],
@@ -128,6 +134,8 @@ def _make_primary_output():
 
 def _make_reviewer_output():
     return {
+        "schema_version": "1.0",
+        "proposal_kind": "llm_repair_review",
         "decision": "accept",
         "notes": ["safe change"],
         "confidence": 0.92,
@@ -137,6 +145,21 @@ def _make_reviewer_output():
         "reviewed_primary_output_checksum": "pri_cs",
         "reviewed_diff_checksum": "diff_cs",
     }
+
+
+class _Ledger:
+    def __init__(self):
+        self.count = 0
+
+    def start_invocation(self, **_):
+        self.count += 1
+        return f"inv-{self.count}"
+
+    def complete_invocation(self, *_, **__):
+        return None
+
+    def fail_invocation(self, *_, **__):
+        return None
 
 
 # ── Test 1 ─────────────────────────────────────────────────────────
@@ -249,6 +272,7 @@ def test_diff_path_written_alongside_artifact(tmp_path):
         context_pack=context_pack,
         output_dir=output_dir,
         model_client=client,
+        invocation_ledger=_Ledger(),
     )
 
     diff_file = output_dir / "final_reviewed_repair.diff"
@@ -271,6 +295,7 @@ def test_review_chain_json_includes_all_checksums(tmp_path):
         context_pack=context_pack,
         output_dir=output_dir,
         model_client=client,
+        invocation_ledger=_Ledger(),
     )
 
     chain_path = output_dir / "review_chain.json"
@@ -312,6 +337,7 @@ def test_produce_repair_review_chain_creates_all_output_files(tmp_path):
         context_pack=context_pack,
         output_dir=output_dir,
         model_client=client,
+        invocation_ledger=_Ledger(),
     )
 
     assert "artifact_refs" in result
@@ -347,6 +373,7 @@ def test_final_diff_identical_to_proposed_on_accept(tmp_path):
         context_pack=context_pack,
         output_dir=output_dir,
         model_client=client,
+        invocation_ledger=_Ledger(),
     )
 
     primary_path = Path(result["artifact_refs"]["primary_llm_output"])
@@ -370,6 +397,7 @@ def test_review_chain_includes_deterministic_artifact_checksum(tmp_path):
         context_pack=context_pack,
         output_dir=output_dir,
         model_client=_FakeClient(),
+        invocation_ledger=_Ledger(),
     )
 
     chain = result["review_chain"]
@@ -391,6 +419,7 @@ def test_review_chain_includes_context_pack_checksum(tmp_path):
         context_pack=context_pack,
         output_dir=output_dir,
         model_client=_FakeClient(),
+        invocation_ledger=_Ledger(),
     )
 
     chain = result["review_chain"]

@@ -347,6 +347,14 @@ class V2PhaseGateService:
 
         return result
 
+    def get_gate(self, gate_id: str) -> Any | None:
+        """Return a gate record through the application service boundary."""
+        return self._gate_repo.get(gate_id)
+
+    def list_gates_for_job_stage(self, job_id: str, stage_index: int) -> tuple[Any, ...]:
+        """Return persisted gate history for a job/stage."""
+        return self._gate_repo.list_by_job_and_stage(job_id, stage_index)
+
     def supersede_gate(self, gate_id: str) -> bool:
         """Supersede an open gate with a newer one.
 

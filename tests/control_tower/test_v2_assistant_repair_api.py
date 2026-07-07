@@ -564,6 +564,61 @@ def _snapshot_directory(root: Path) -> dict[str, str]:
     return snapshot
 
 
+def _table_count(conn: sqlite3.Connection, table_name: str) -> int:
+    row = conn.execute(f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()
+    return int(row["count"])
+
+
+def _assert_legacy_flow_proposal_disabled(
+    client: TestClient,
+    conn: sqlite3.Connection,
+    *,
+    command_id: str,
+    payload: dict[str, object] | None = None,
+    model_client: object | None = None,
+    unchanged_roots: tuple[Path, ...] = (),
+):
+    counts_before = {
+        "proposals": _table_count(conn, "v2_repair_proposals"),
+        "model_invocations": _table_count(conn, "v1_model_invocations"),
+        "llm_invocations": _table_count(conn, "v2_llm_invocations"),
+        "v1_approvals": _table_count(conn, "v1_approvals"),
+        "v2_approvals": _table_count(conn, "v2_approval_decisions"),
+    }
+    snapshots_before = {root: _snapshot_directory(root) for root in unchanged_roots if root.exists()}
+    roles_before = list(getattr(model_client, "roles", [])) if model_client is not None else None
+    prompts_before = list(getattr(model_client, "prompts", [])) if model_client is not None else None
+    request_payload = payload or {
+        "command_id": command_id,
+        "failure_summary": "Build failed",
+        "hypothesis": "Missing import",
+        "patch_summary": "Add import statement",
+        "affected_paths": ["src/main.java"],
+    }
+
+    response = client.post(
+        f"/v1/v2/commands/{command_id}/repair/flow-proposal",
+        json=request_payload,
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 410, response.text
+    assert response.json()["error"]["code"] == "LEGACY_REPAIR_PROPOSAL_DISABLED"
+    assert counts_before == {
+        "proposals": _table_count(conn, "v2_repair_proposals"),
+        "model_invocations": _table_count(conn, "v1_model_invocations"),
+        "llm_invocations": _table_count(conn, "v2_llm_invocations"),
+        "v1_approvals": _table_count(conn, "v1_approvals"),
+        "v2_approvals": _table_count(conn, "v2_approval_decisions"),
+    }
+    if roles_before is not None:
+        assert getattr(model_client, "roles", []) == roles_before
+    if prompts_before is not None:
+        assert getattr(model_client, "prompts", []) == prompts_before
+    assert {root: _snapshot_directory(root) for root in snapshots_before} == snapshots_before
+    return response
+
+
 def _apply_real_fixture_patch(kwargs: dict[str, object], *, expected_file_before: str):
     from migration_factory.repair_loop.patch_apply import PatchApplyResult
 
@@ -1104,37 +1159,12 @@ class TestRepairAPI:
     def test_create_proposal(self, tmp_path: Path) -> None:
         fake_client = _RecordingProposerClient()
         client, conn = _api_client(tmp_path, fake_model_client=fake_client)
-        response = client.post(
-            "/v1/v2/commands/cmd-1/repair/flow-proposal",
-            json={
-                "command_id": "cmd-1",
-                "failure_summary": "Build failed",
-                "hypothesis": "Missing import",
-                "patch_summary": "Add import statement",
-                "affected_paths": ["src/main.java"],
-            },
-            headers=_mutation_headers(),
+        _assert_legacy_flow_proposal_disabled(
+            client,
+            conn,
+            command_id="cmd-1",
+            model_client=fake_client,
         )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["status"] == "draft"
-        assert body["hypothesis"] == "Model-generated hypothesis"
-        assert body["patch_summary"] == "Model-generated patch summary"
-        assert body["proposal_checksum"]
-        assert body["proposal_model"]["status"] == "live_ok"
-        assert body["proposal_model"]["provider"] == "fake"
-        assert body["proposal_model"]["attempted_provider"] == "fake"
-        assert body["proposal_model"]["role"] == "proposer"
-        assert body["proposal_model"]["failure_reason"] == ""
-        assert body["proposal_model"]["primary_failure_reason"] == ""
-        assert body["proposal_model"]["fallback_used"] is False
-        assert body["proposal_model"]["schema_validated"] is True
-        assert body["proposal_model"]["model_invocation_id"]
-        assert fake_client.roles == ["proposer"]
-        invocations = SqliteUnitOfWork(conn).v1_model_invocations.list()
-        assert len(invocations) == 1
-        assert invocations[0].provider_kind == "fake"
-        assert invocations[0].model_name == "proposer"
 
     def test_controlled_r6_demo_route_is_dev_only_and_creates_patch_backed_proposal(
         self,
@@ -1190,62 +1220,7 @@ class TestRepairAPI:
         assert len(records) == 1
         assert records[0].proposal_id == proposal["proposal_id"]
         assert records[0].context_pack_checksum == package["package_checksum"]
-
-        reviewer_client = _RecordingReviewerClient()
-        client.app.state.v2_assistant_model_client = reviewer_client
-        review_response = client.post(
-            f"/v1/v2/commands/{proposal['command_id']}/repair/proposal/{proposal['proposal_id']}/reviewer-critique",
-            json={
-                "proposal_id": proposal["proposal_id"],
-                "proposal_type": "repair_proposal",
-                "proposal_checksum": proposal["proposal_checksum"],
-                "context_pack_checksum": proposal["context_pack_checksum"],
-            },
-            headers=_mutation_headers(),
-        )
-        assert review_response.status_code == 200, review_response.text
-        review_body = review_response.json()
-        assert review_body["decision"] == "accept"
-        assert review_body["context_pack_checksum"] == proposal["context_pack_checksum"]
-        assert review_body["reviewer_model"]["provider"] == "fake"
-        assert review_body["reviewer_model"]["source"] == "fake"
-        assert review_body["reviewer_model"]["status"] == "live_ok"
-        assert review_body["reviewer_model"]["fallback_used"] is False
-        assert reviewer_client.roles == ["reviewer"]
-        assert reviewer_client.prompts
-        assert "controlled_demo_evidence" in reviewer_client.prompts[0]
-        assert "controlled_demo_pre_injection_source" in reviewer_client.prompts[0]
-        persisted = SqliteUnitOfWork(conn).v2_reviewer.list_critiques_by_proposal(proposal["proposal_id"])
-        assert len(persisted) == 1
-        assert persisted[0].context_pack_checksum == proposal["context_pack_checksum"]
-        assert persisted[0].decision == "accept"
-
-        browser_model_payload = client.post(
-            f"/v1/v2/commands/{proposal['command_id']}/repair/proposal/{proposal['proposal_id']}/reviewer-critique",
-            json={
-                "proposal_id": proposal["proposal_id"],
-                "proposal_type": "repair_proposal",
-                "proposal_checksum": proposal["proposal_checksum"],
-                "context_pack_checksum": proposal["context_pack_checksum"],
-                "model_invocation_id": "browser-supplied-model-id",
-            },
-            headers=_mutation_headers(),
-        )
-        assert browser_model_payload.status_code == 422
-
-        browser_decision_payload = client.post(
-            f"/v1/v2/commands/{proposal['command_id']}/repair/proposal/{proposal['proposal_id']}/reviewer-critique",
-            json={
-                "proposal_id": proposal["proposal_id"],
-                "proposal_type": "repair_proposal",
-                "proposal_checksum": proposal["proposal_checksum"],
-                "context_pack_checksum": proposal["context_pack_checksum"],
-                "decision": "accept",
-                "reasoning": "browser says yes",
-            },
-            headers=_mutation_headers(),
-        )
-        assert browser_decision_payload.status_code == 422
+        assert not SqliteUnitOfWork(conn).v1_model_invocations.list()
 
     def test_controlled_r6_reviewer_uses_local_dev_fallback_when_model_unavailable(
         self,
@@ -1256,41 +1231,17 @@ class TestRepairAPI:
         _seed_v2_command_for_model_audit(conn, tmp_path, "cmd-r6-local-reviewer")
         monkeypatch.setenv("CONTROL_TOWER_R6_DEMO_ENABLED", "true")
 
-        response = client.post(
-            "/v1/v2/jobs/job-cmd-r6-local-reviewer/repair/demo/r6-controlled",
-            json={},
-            headers=_mutation_headers(),
-        )
-        assert response.status_code == 200, response.text
-        proposal = response.json()["repair_proposal"]
-
         reviewer_client = _UnavailableReviewerClient()
-        client.app.state.v2_assistant_model_client = reviewer_client
-        review_response = client.post(
-            f"/v1/v2/commands/{proposal['command_id']}/repair/proposal/{proposal['proposal_id']}/reviewer-critique",
-            json={
-                "proposal_id": proposal["proposal_id"],
-                "proposal_type": "repair_proposal",
-                "proposal_checksum": proposal["proposal_checksum"],
-                "context_pack_checksum": proposal["context_pack_checksum"],
-            },
-            headers=_mutation_headers(),
+        _assert_legacy_flow_proposal_disabled(
+            client,
+            conn,
+            command_id="cmd-r6-local-reviewer",
+            model_client=reviewer_client,
+            unchanged_roots=(
+                tmp_path / "out-cmd-r6-local-reviewer" / ".migration" / "runs" / "run-audit" / "workspaces" / "sandbox",
+                tmp_path / "legacy-cmd-r6-local-reviewer",
+            ),
         )
-
-        assert review_response.status_code == 200, review_response.text
-        body = review_response.json()
-        assert body["decision"] == "accept"
-        assert "Controlled local/dev R6 smoke reviewer accepted" in body["reasoning"]
-        assert body["missing_evidence"] == []
-        assert body["reviewer_model"]["provider"] == "local_dev_fake"
-        assert body["reviewer_model"]["source"] == "controlled_r6_smoke"
-        assert body["reviewer_model"]["status"] == "local_dev_fallback"
-        assert body["reviewer_model"]["fallback_used"] is True
-        assert body["reviewer_model"]["model_invocation_id"]
-        assert reviewer_client.roles == ["reviewer"]
-        persisted = SqliteUnitOfWork(conn).v2_reviewer.list_critiques_by_proposal(proposal["proposal_id"])
-        assert len(persisted) == 1
-        assert persisted[0].decision == "accept"
 
     def test_controlled_r6_reviewer_revises_when_namespace_evidence_missing(
         self,
@@ -1301,42 +1252,17 @@ class TestRepairAPI:
         _seed_v2_command_for_model_audit(conn, tmp_path, "cmd-r6-missing-evidence")
         monkeypatch.setenv("CONTROL_TOWER_R6_DEMO_ENABLED", "true")
 
-        response = client.post(
-            "/v1/v2/jobs/job-cmd-r6-missing-evidence/repair/demo/r6-controlled",
-            json={},
-            headers=_mutation_headers(),
-        )
-        assert response.status_code == 200, response.text
-        proposal = response.json()["repair_proposal"]
-        package = proposal["patch_package"]
-        package["failure_evidence"].pop("controlled_demo_evidence", None)
-        package["failure_evidence"].pop("dependency_alignment", None)
-        conn.execute(
-            "UPDATE v2_repair_proposals SET patch_package_json = ? WHERE proposal_id = ?",
-            (json.dumps(package, separators=(",", ":"), sort_keys=True), proposal["proposal_id"]),
-        )
-
         reviewer_client = _RecordingReviewerClient()
-        client.app.state.v2_assistant_model_client = reviewer_client
-        review_response = client.post(
-            f"/v1/v2/commands/{proposal['command_id']}/repair/proposal/{proposal['proposal_id']}/reviewer-critique",
-            json={
-                "proposal_id": proposal["proposal_id"],
-                "proposal_type": "repair_proposal",
-                "proposal_checksum": proposal["proposal_checksum"],
-                "context_pack_checksum": proposal["context_pack_checksum"],
-            },
-            headers=_mutation_headers(),
+        _assert_legacy_flow_proposal_disabled(
+            client,
+            conn,
+            command_id="cmd-r6-missing-evidence",
+            model_client=reviewer_client,
+            unchanged_roots=(
+                tmp_path / "out-cmd-r6-missing-evidence" / ".migration" / "runs" / "run-audit" / "workspaces" / "sandbox",
+                tmp_path / "legacy-cmd-r6-missing-evidence",
+            ),
         )
-
-        assert review_response.status_code == 200, review_response.text
-        body = review_response.json()
-        assert body["decision"] == "revise"
-        assert any(
-            "proposal is missing controlled demo or dependency evidence" in item
-            for item in body["missing_evidence"]
-        )
-        assert reviewer_client.roles == []
 
     def test_controlled_r6_demo_returns_409_before_sandbox_exists(
         self,
@@ -1502,30 +1428,11 @@ class TestRepairAPI:
                 )
 
         client, conn = _api_client(tmp_path, fake_model_client=_SchemaMismatchProposerClient())
-        response = client.post(
-            "/v1/v2/commands/cmd-schema/repair/flow-proposal",
-            json={
-                "command_id": "cmd-schema",
-                "failure_summary": "Build failed",
-                "hypothesis": "Missing import",
-                "patch_summary": "Add import statement",
-                "affected_paths": ["src/main.java"],
-            },
-            headers=_mutation_headers(),
+        _assert_legacy_flow_proposal_disabled(
+            client,
+            conn,
+            command_id="cmd-schema",
         )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["proposal_model"]["provider"] == "deterministic"
-        assert body["proposal_model"]["attempted_provider"] == "fake"
-        assert body["proposal_model"]["fallback_used"] is True
-        assert body["proposal_model"]["primary_failure_reason"].startswith("schema_validation_failed")
-        assert body["proposal_model"]["failure_reason"].startswith("schema_validation_failed")
-        assert body["proposal_model"]["redacted_error_summary"] == "schema mismatch"
-        assert body["proposal_model"]["model_invocation_id"]
-        invocations = SqliteUnitOfWork(conn).v1_model_invocations.list()
-        assert len(invocations) == 1
-        assert invocations[0].provider_kind == "fake"
-        assert invocations[0].model_name == "proposer"
 
     def test_create_proposal_accepts_markdown_fenced_json(
         self,
@@ -1580,31 +1487,11 @@ class TestRepairAPI:
                 )
 
         client, conn = _api_client(tmp_path, fake_model_client=_FencedProposerClient())
-        response = client.post(
-            "/v1/v2/commands/cmd-fenced/repair/flow-proposal",
-            json={
-                "command_id": "cmd-fenced",
-                "failure_summary": "Build failed",
-                "hypothesis": "Missing import",
-                "patch_summary": "Add import statement",
-                "affected_paths": ["src/main.java"],
-            },
-            headers=_mutation_headers(),
+        _assert_legacy_flow_proposal_disabled(
+            client,
+            conn,
+            command_id="cmd-fenced",
         )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["hypothesis"] == "Root cause"
-        assert body["patch_summary"] == "Fix issue"
-        assert body["proposal_model"]["provider"] == "fake"
-        assert body["proposal_model"]["attempted_provider"] == "fake"
-        assert body["proposal_model"]["fallback_used"] is False
-        assert body["proposal_model"]["schema_validated"] is True
-        assert body["proposal_model"]["primary_failure_reason"] == ""
-        assert body["proposal_model"]["model_invocation_id"]
-        invocations = SqliteUnitOfWork(conn).v1_model_invocations.list()
-        assert len(invocations) == 1
-        assert invocations[0].provider_kind == "fake"
-        assert invocations[0].model_name == "proposer"
 
     def test_create_proposal_ignores_extra_field_in_markdown_fenced_json(
         self,
@@ -1657,25 +1544,11 @@ class TestRepairAPI:
                 )
 
         client, conn = _api_client(tmp_path, fake_model_client=_ExtraFieldProposerClient())
-        response = client.post(
-            "/v1/v2/commands/cmd-extra-field/repair/flow-proposal",
-            json={
-                "command_id": "cmd-extra-field",
-                "failure_summary": "Build failed",
-                "hypothesis": "Missing import",
-                "patch_summary": "Add import statement",
-                "affected_paths": ["src/main.java"],
-            },
-            headers=_mutation_headers(),
+        _assert_legacy_flow_proposal_disabled(
+            client,
+            conn,
+            command_id="cmd-extra-field",
         )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["hypothesis"] == "Root cause"
-        assert body["proposal_model"]["provider"] == "fake"
-        assert body["proposal_model"]["attempted_provider"] == "fake"
-        assert body["proposal_model"]["fallback_used"] is False
-        assert body["proposal_model"]["schema_validated"] is True
-        assert body["proposal_model"]["primary_failure_reason"] == ""
 
     def test_create_reviewer_critique(self, tmp_path: Path) -> None:
         target_rel_path = "src/main/java/App.java"
@@ -1688,56 +1561,23 @@ class TestRepairAPI:
             target_rel_path=target_rel_path,
         )
 
-        create_resp = client.post(
-            "/v1/v2/commands/cmd-review/repair/flow-proposal",
-            json={
+        _assert_legacy_flow_proposal_disabled(
+            client,
+            conn,
+            command_id="cmd-review",
+            payload={
                 "command_id": "cmd-review",
                 "failure_summary": "cannot find symbol variable doesNotCompile",
                 "hypothesis": "Undefined controlled symbol",
                 "patch_summary": "Remove controlled undefined symbol",
                 "affected_paths": [target_rel_path],
             },
-            headers=_mutation_headers(),
+            model_client=proposer_client,
+            unchanged_roots=(
+                tmp_path / "out-cmd-review" / ".migration" / "runs" / "run-audit" / "workspaces" / "sandbox",
+                tmp_path / "legacy-cmd-review",
+            ),
         )
-        assert create_resp.status_code == 200, create_resp.text
-        proposal_body = create_resp.json()
-        proposal_id = proposal_body["proposal_id"]
-        proposal_checksum = proposal_body["proposal_checksum"]
-        assert proposal_body["target_files"][0]["relative_path"] == target_rel_path
-        assert proposal_body["target_files"][0]["before_checksum"].startswith("sha256:")
-        assert proposal_body["repair_artifact"]["unified_diff"]
-        assert Path(proposal_body["repair_artifact"]["patch_path"]).is_file()
-
-        reviewer_client = _RecordingReviewerClient()
-        client.app.state.v2_assistant_model_client = reviewer_client
-
-        response = client.post(
-            f"/v1/v2/commands/cmd-review/repair/proposal/{proposal_id}/reviewer-critique",
-            json={
-                "proposal_id": proposal_id,
-                "proposal_type": "repair",
-                "proposal_checksum": proposal_checksum,
-                "context_pack_checksum": "cp-review",
-            },
-            headers=_mutation_headers(),
-        )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["decision"] == "accept"
-        assert body["reviewer_model"]["status"] == "live_ok"
-        assert body["reviewer_model"]["provider"] == "fake"
-        assert body["reviewer_model"]["attempted_provider"] == "fake"
-        assert body["reviewer_model"]["role"] == "reviewer"
-        assert body["reviewer_model"]["failure_reason"] == ""
-        assert body["reviewer_model"]["primary_failure_reason"] == ""
-        assert body["reviewer_model"]["fallback_used"] is False
-        assert body["reviewer_model"]["schema_validated"] is True
-        assert body["reviewer_model"]["model_invocation_id"]
-        assert reviewer_client.roles == ["reviewer"]
-        invocations = SqliteUnitOfWork(conn).v1_model_invocations.list()
-        assert len(invocations) == 2
-        assert {inv.model_name for inv in invocations} == {"proposer", "reviewer"}
-        assert {inv.provider_kind for inv in invocations} == {"fake"}
 
     def test_non_demo_reviewer_model_unavailable_fails_closed_with_revise(self, tmp_path: Path) -> None:
         target_rel_path = "src/main/java/App.java"
@@ -1750,41 +1590,24 @@ class TestRepairAPI:
             target_rel_path=target_rel_path,
         )
 
-        create_resp = client.post(
-            "/v1/v2/commands/cmd-review-unavailable/repair/flow-proposal",
-            json={
+        reviewer_client = _UnavailableReviewerClient()
+        _assert_legacy_flow_proposal_disabled(
+            client,
+            conn,
+            command_id="cmd-review-unavailable",
+            payload={
                 "command_id": "cmd-review-unavailable",
                 "failure_summary": "cannot find symbol variable doesNotCompile",
                 "hypothesis": "Undefined controlled symbol",
                 "patch_summary": "Remove controlled undefined symbol",
                 "affected_paths": [target_rel_path],
             },
-            headers=_mutation_headers(),
+            model_client=reviewer_client,
+            unchanged_roots=(
+                tmp_path / "out-cmd-review-unavailable" / ".migration" / "runs" / "run-audit" / "workspaces" / "sandbox",
+                tmp_path / "legacy-cmd-review-unavailable",
+            ),
         )
-        assert create_resp.status_code == 200, create_resp.text
-        proposal_body = create_resp.json()
-
-        reviewer_client = _UnavailableReviewerClient()
-        client.app.state.v2_assistant_model_client = reviewer_client
-        response = client.post(
-            f"/v1/v2/commands/cmd-review-unavailable/repair/proposal/{proposal_body['proposal_id']}/reviewer-critique",
-            json={
-                "proposal_id": proposal_body["proposal_id"],
-                "proposal_type": "repair",
-                "proposal_checksum": proposal_body["proposal_checksum"],
-                "context_pack_checksum": "cp-review-unavailable",
-            },
-            headers=_mutation_headers(),
-        )
-
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["decision"] == "revise"
-        assert body["reviewer_model"]["provider"] == "deterministic"
-        assert body["reviewer_model"]["source"] == "deterministic"
-        assert body["reviewer_model"]["status"] == "fallback"
-        assert body["reviewer_model"]["failure_reason"] == "missing_endpoint"
-        assert reviewer_client.roles == ["reviewer"]
 
     def test_repair_model_invocations_bind_to_v2_command_without_v1_fk(self, tmp_path: Path) -> None:
         command_id = "cmd-v2-audit"
@@ -1792,47 +1615,16 @@ class TestRepairAPI:
         client, conn = _api_client(tmp_path, fake_model_client=proposer_client)
         _seed_v2_command_for_model_audit(conn, tmp_path, command_id)
 
-        create_resp = client.post(
-            f"/v1/v2/commands/{command_id}/repair/flow-proposal",
-            json={
-                "command_id": command_id,
-                "failure_summary": "Build failed",
-                "hypothesis": "Missing import",
-                "patch_summary": "Add import statement",
-                "affected_paths": ["src/main.java"],
-            },
-            headers=_mutation_headers(),
+        _assert_legacy_flow_proposal_disabled(
+            client,
+            conn,
+            command_id=command_id,
+            model_client=proposer_client,
+            unchanged_roots=(
+                tmp_path / f"out-{command_id}" / ".migration" / "runs" / "run-audit" / "workspaces" / "sandbox",
+                tmp_path / f"legacy-{command_id}",
+            ),
         )
-        assert create_resp.status_code == 200, create_resp.text
-        proposal_id = create_resp.json()["proposal_id"]
-        proposal_checksum = create_resp.json()["proposal_checksum"]
-        proposer_invocation_id = create_resp.json()["proposal_model"]["model_invocation_id"]
-        assert proposer_invocation_id
-
-        reviewer_client = _RecordingReviewerClient()
-        client.app.state.v2_assistant_model_client = reviewer_client
-        review_resp = client.post(
-            f"/v1/v2/commands/{command_id}/repair/proposal/{proposal_id}/reviewer-critique",
-            json={
-                "proposal_id": proposal_id,
-                "proposal_type": "repair",
-                "proposal_checksum": proposal_checksum,
-                "context_pack_checksum": "cp-review",
-            },
-            headers=_mutation_headers(),
-        )
-        assert review_resp.status_code == 200, review_resp.text
-        reviewer_invocation_id = review_resp.json()["reviewer_model"]["model_invocation_id"]
-        assert reviewer_invocation_id
-
-        invocations = SqliteUnitOfWork(conn).v1_model_invocations.list()
-        by_id = {inv.invocation_id: inv for inv in invocations}
-        assert by_id[proposer_invocation_id].job_id is None
-        assert by_id[proposer_invocation_id].v2_job_id == f"job-{command_id}"
-        assert by_id[proposer_invocation_id].v2_command_id == command_id
-        assert by_id[reviewer_invocation_id].job_id is None
-        assert by_id[reviewer_invocation_id].v2_job_id == f"job-{command_id}"
-        assert by_id[reviewer_invocation_id].v2_command_id == command_id
 
     def test_create_reviewer_critique_accepts_markdown_fenced_json(
         self,
@@ -1926,7 +1718,8 @@ class TestRepairAPI:
                     conversation_history=conversation_history,
                 )
 
-        client, conn = _api_client(tmp_path, fake_model_client=_FencedProposerClient())
+        proposer_client = _FencedProposerClient()
+        client, conn = _api_client(tmp_path, fake_model_client=proposer_client)
         _seed_v2_command_for_model_audit(
             conn,
             tmp_path,
@@ -1934,45 +1727,23 @@ class TestRepairAPI:
             target_rel_path=_FencedProposerClient.target_rel_path,
         )
 
-        create_resp = client.post(
-            "/v1/v2/commands/cmd-review-fenced/repair/flow-proposal",
-            json={
+        _assert_legacy_flow_proposal_disabled(
+            client,
+            conn,
+            command_id="cmd-review-fenced",
+            payload={
                 "command_id": "cmd-review-fenced",
                 "failure_summary": "cannot find symbol variable doesNotCompile",
                 "hypothesis": "Undefined controlled symbol",
                 "patch_summary": "Remove controlled undefined symbol",
                 "affected_paths": [_FencedProposerClient.target_rel_path],
             },
-            headers=_mutation_headers(),
+            model_client=proposer_client,
+            unchanged_roots=(
+                tmp_path / "out-cmd-review-fenced" / ".migration" / "runs" / "run-audit" / "workspaces" / "sandbox",
+                tmp_path / "legacy-cmd-review-fenced",
+            ),
         )
-        assert create_resp.status_code == 200, create_resp.text
-        proposal_id = create_resp.json()["proposal_id"]
-        proposal_checksum = create_resp.json()["proposal_checksum"]
-
-        client.app.state.v2_assistant_model_client = _FencedReviewerClient()
-        response = client.post(
-            f"/v1/v2/commands/cmd-review-fenced/repair/proposal/{proposal_id}/reviewer-critique",
-            json={
-                "proposal_id": proposal_id,
-                "proposal_type": "repair",
-                "proposal_checksum": proposal_checksum,
-                "context_pack_checksum": "cp-review-fenced",
-            },
-            headers=_mutation_headers(),
-        )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["decision"] == "accept"
-        assert body["reviewer_model"]["provider"] == "fake"
-        assert body["reviewer_model"]["attempted_provider"] == "fake"
-        assert body["reviewer_model"]["fallback_used"] is False
-        assert body["reviewer_model"]["schema_validated"] is True
-        assert body["reviewer_model"]["primary_failure_reason"] == ""
-        assert body["reviewer_model"]["model_invocation_id"]
-        invocations = SqliteUnitOfWork(conn).v1_model_invocations.list()
-        assert len(invocations) == 2
-        assert {inv.model_name for inv in invocations} == {"proposer", "reviewer"}
-        assert {inv.provider_kind for inv in invocations} == {"fake"}
 
     def test_create_proposal_reports_invalid_json_diagnostics_without_secrets(
         self,
@@ -2019,28 +1790,11 @@ class TestRepairAPI:
                 )
 
         client, conn = _api_client(tmp_path, fake_model_client=_InvalidJsonProposerClient())
-        response = client.post(
-            "/v1/v2/commands/cmd-invalid/repair/flow-proposal",
-            json={
-                "command_id": "cmd-invalid",
-                "failure_summary": "Build failed",
-                "hypothesis": "Missing import",
-                "patch_summary": "Add import statement",
-                "affected_paths": ["src/main.java"],
-            },
-            headers=_mutation_headers(),
+        _assert_legacy_flow_proposal_disabled(
+            client,
+            conn,
+            command_id="cmd-invalid",
         )
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["proposal_model"]["fallback_used"] is True
-        assert body["proposal_model"]["primary_failure_reason"].startswith(
-            "schema_validation_failed:RepairProposal"
-        )
-        assert "invalid JSON output" in body["proposal_model"]["primary_failure_reason"]
-        assert "sk-abc123" not in body["proposal_model"]["primary_failure_reason"]
-        assert "C:\\Users\\ilyas" not in body["proposal_model"]["primary_failure_reason"]
-        assert "sk-abc123" not in body["proposal_model"]["failure_reason"]
-        assert "C:\\Users\\ilyas" not in body["proposal_model"]["failure_reason"]
 
     def test_approve_proposal(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         client, conn = _api_client(tmp_path)
@@ -2624,61 +2378,19 @@ class TestRepairAPI:
         tmp_path: Path,
     ) -> None:
         client, conn = _api_client(tmp_path)
-        create_response = client.post(
-            "/v1/v2/commands/cmd-orphan/repair/flow-proposal",
-            json={
+        _assert_legacy_flow_proposal_disabled(
+            client,
+            conn,
+            command_id="cmd-orphan",
+            payload={
                 "command_id": "cmd-orphan",
                 "failure_summary": "Orphan command",
                 "hypothesis": "No durable command row",
                 "patch_summary": "Do not prepare apply context",
                 "affected_paths": ["pom.xml"],
             },
-            headers=_mutation_headers(),
         )
-        assert create_response.status_code == 200, create_response.text
-        proposal = create_response.json()
-
-        from migration_factory.control_tower.application.v2_reviewer_service import (
-            V2ReviewerService,
-        )
-        from migration_factory.control_tower.infrastructure.sqlite.v2_reviewer_repository import (
-            SqliteV2ReviewerRepository,
-        )
-
-        reviewer_service = V2ReviewerService(
-            reviewer_repo=SqliteV2ReviewerRepository(conn)
-        )
-        reviewer_service.record_critique(
-            proposal_id=proposal["proposal_id"],
-            proposal_type="repair",
-            proposal_checksum=proposal["proposal_checksum"],
-            context_pack_checksum="cp-orphan",
-            decision="accept",
-            reasoning="Technically accepted but not command-bound.",
-            missing_evidence=(),
-            unsafe_assumptions=(),
-        )
-        critique_id = reviewer_service.check_reviewer_gate(
-            proposal_id=proposal["proposal_id"],
-            proposal_checksum=proposal["proposal_checksum"],
-            context_pack_checksum="cp-orphan",
-        ).critique_id
-
-        response = client.post(
-            f"/v1/v2/commands/cmd-orphan/repair/proposal/{proposal['proposal_id']}/prepare-apply-context",
-            json={
-                "proposal_checksum": proposal["proposal_checksum"],
-                "context_pack_checksum": "cp-orphan",
-                "reviewer_critique_id": critique_id,
-                "proposer_invocation_id": "proposer-invoke-1",
-                "reviewer_invocation_id": "reviewer-invoke-1",
-            },
-            headers=_mutation_headers(),
-        )
-
-        assert response.status_code == 400
-        assert "REPAIR_CONTEXT_BINDING_FAILED" in response.text
-        assert "Command 'cmd-orphan' not found" in response.text
+        assert not SqliteV2RepairRepository(conn).list_proposals_by_command("cmd-orphan")
 
     def test_proposal_persistence(self, tmp_path: Path) -> None:
         client, conn = _api_client(tmp_path)

@@ -58,6 +58,7 @@ class V2RoleModelResult:
     provider_retry_path: str = ""
     provider_http_status: str = ""
     provider_error_redacted_preview: str = ""
+    exact_provider_content: str = ""
 
 
 @dataclass(frozen=True)
@@ -105,7 +106,8 @@ class V2ModelRoleRouter:
         )
         if primary_result is not None:
             result = self._coerce_primary_result(primary_result, request)
-            if result.success and self._schema_ok(request, result.content):
+            validation_content = result.exact_provider_content or result.content
+            if result.success and self._schema_ok(request, validation_content):
                 return V2RoleModelResult(
                     content=result.content,
                     role=result.role,
@@ -124,8 +126,9 @@ class V2ModelRoleRouter:
                     provider_retry_path=result.provider_retry_path,
                     provider_http_status=result.provider_http_status,
                     provider_error_redacted_preview=result.provider_error_redacted_preview,
+                    exact_provider_content=result.exact_provider_content,
                 )
-            schema_failure = self._schema_failure_reason(request, result.content) if request.require_schema else ""
+            schema_failure = self._schema_failure_reason(request, validation_content) if request.require_schema else ""
             primary_failure = (
                 result.primary_failure_reason
                 or result.failure_reason
@@ -147,7 +150,8 @@ class V2ModelRoleRouter:
                     request,
                     primary_failure_reason=primary_failure,
                 )
-                if result.success and self._schema_ok(request, result.content):
+                validation_content = result.exact_provider_content or result.content
+                if result.success and self._schema_ok(request, validation_content):
                     return V2RoleModelResult(
                         content=result.content,
                         role=result.role,
@@ -166,11 +170,12 @@ class V2ModelRoleRouter:
                         provider_retry_path=result.provider_retry_path,
                         provider_http_status=result.provider_http_status,
                         provider_error_redacted_preview=result.provider_error_redacted_preview,
+                        exact_provider_content=result.exact_provider_content,
                     )
                 fallback_failure = (
                     result.failure_reason
                     or fallback_failure
-                    or self._schema_failure_reason(request, result.content)
+                    or self._schema_failure_reason(request, validation_content)
                     or "fallback_model_failed"
                 )
             else:
@@ -218,6 +223,9 @@ class V2ModelRoleRouter:
             provider_retry_path=str(getattr(result, "provider_retry_path", "") or ""),
             provider_http_status=str(getattr(result, "provider_http_status", "") or ""),
             provider_error_redacted_preview=str(getattr(result, "provider_error_redacted_preview", "") or ""),
+            exact_provider_content=str(
+                getattr(result, "exact_provider_content", "") or getattr(result, "content", "") or ""
+            ),
         )
 
     def _coerce_fallback_result(
@@ -246,6 +254,7 @@ class V2ModelRoleRouter:
             provider_retry_path=coerced.provider_retry_path,
             provider_http_status=coerced.provider_http_status,
             provider_error_redacted_preview=coerced.provider_error_redacted_preview,
+            exact_provider_content=coerced.exact_provider_content,
         )
 
     def _schema_ok(self, request: V2RoleModelRequest, content: str) -> bool:
@@ -253,6 +262,13 @@ class V2ModelRoleRouter:
             return True
         if not request.output_schema_name:
             return False
+        if _is_governed_repair_schema(request.output_schema_name):
+            try:
+                parsed = _strict_json_object(content)
+                validate_model_output(request.output_schema_name, parsed)
+            except Exception:
+                return False
+            return True
         parsed = extract_json_object(content)
         if parsed is None:
             return False
@@ -281,7 +297,8 @@ class V2ModelRoleRouter:
             success=False,
             failure_reason=fallback_failure_reason or primary_failure_reason or "deterministic_fallback",
             primary_failure_reason=primary_failure_reason,
-            fallback_used=True,
+            fallback_used=bool(fallback_failure_reason)
+            or not str(primary_failure_reason or "").startswith("missing_"),
             schema_validated=schema_validated,
             deployment="",
             endpoint_metadata="",
@@ -292,6 +309,7 @@ class V2ModelRoleRouter:
             provider_error_redacted_preview=redact_model_summary(
                 fallback_failure_reason or primary_failure_reason or "model_unavailable"
             )[:500],
+            exact_provider_content=content,
         )
 
     def _deterministic_content(
@@ -354,6 +372,36 @@ class V2ModelRoleRouter:
         if not request.require_schema:
             return ""
         if request.output_schema_name:
+            if _is_governed_repair_schema(request.output_schema_name):
+                try:
+                    parsed = _strict_json_object(content)
+                    validate_model_output(request.output_schema_name, parsed)
+                except Exception as exc:
+                    return redact_model_summary(
+                        f"schema_validation_failed:{request.output_schema_name} {exc}"
+                    )
+                return ""
             reason = describe_model_output_validation_failure(request.output_schema_name, content)
             return reason or f"schema_validation_failed:{request.output_schema_name}"
         return "schema_validation_failed"
+
+
+def _is_governed_repair_schema(schema_name: str | None) -> bool:
+    return str(schema_name or "") in {"RepairPrimaryOutput", "RepairReviewerOutput"}
+
+
+def _strict_json_object(content: Any) -> dict[str, Any]:
+    if isinstance(content, dict):
+        return content
+    if not isinstance(content, str):
+        raise ValueError("output must be a JSON object string")
+    text = content.strip()
+    if not text:
+        raise ValueError("output must not be empty")
+    decoder = json.JSONDecoder()
+    parsed, end = decoder.raw_decode(text)
+    if text[end:].strip():
+        raise ValueError("output must contain exactly one JSON object")
+    if not isinstance(parsed, dict):
+        raise ValueError("output root must be a JSON object")
+    return parsed
