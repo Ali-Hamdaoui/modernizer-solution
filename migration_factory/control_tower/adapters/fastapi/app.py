@@ -7978,8 +7978,60 @@ def _maybe_auto_approve_open_approval_gate(
             "safe_to_approve": safe_to_approve,
         })
 
-        # Gate approval and skip-event handling are added in subsequent commits.
-        _ = (approval_service, action_service, commands, safe_to_approve)
+        if not safe_to_approve:
+            skip_reason = (
+                "checkpoint_profile_metadata_missing"
+                if profile_metadata is None
+                else "missing_accepted_analysis_or_plan"
+                if (accepted_analysis is None or accepted_plan is None)
+                else "checksum_missing"
+            )
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=stage_index,
+                event_type="approval_auto_approved_skipped",
+                status="blocked",
+                message="Auto Approval skipped: safety checks failed for the open gate.",
+                payload={
+                    "gate_id": gate.gate_id,
+                    "card_id": card.card_id,
+                    "gate_checksum": gate_checksum_value,
+                    "decision_source": "auto_approval",
+                    "reason": skip_reason,
+                },
+            )
+            continue
+
+        gate_result = action_service.approve_transformation(
+            gate_id=gate.gate_id,
+            job_id=job_id,
+            decided_by="system:auto-approval",
+            idempotency_key=f"auto-approval:{gate.gate_id}:{gate_checksum_value}",
+            expected_gate_checksum=gate_checksum_value,
+            actor_type="system",
+            profile_metadata=profile_metadata,
+        )
+        if gate_result.status not in {"executed", "idempotent"}:
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=stage_index,
+                event_type="approval_auto_approved_skipped",
+                status="blocked",
+                message="Auto Approval skipped: gate action rejected the decision.",
+                payload={
+                    "gate_id": gate.gate_id,
+                    "card_id": card.card_id,
+                    "gate_checksum": gate_checksum_value,
+                    "decision_source": "auto_approval",
+                    "reason": gate_result.reason or gate_result.status,
+                },
+            )
+            continue
+
+        # Resume creation and success event are added in the next commit.
+        _ = (approval_service, commands, gate_result, safe_to_approve)
 
     return None
 
