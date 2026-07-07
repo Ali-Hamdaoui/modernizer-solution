@@ -53,6 +53,8 @@ import type {
   PomRollbackResult,
   PomProposeRequest,
   PomApplyRequest,
+  Stage4TargetVersionApplyResponse,
+  Stage4TargetVersionChangeRequest,
   // PR-C types
   RepairProposalCurrentResponse,
   RepairProposalDetailResponse,
@@ -718,6 +720,17 @@ export async function applyPomRepairPlan(
   return postJson<PomApplyResult>(
     `/v1/v2/jobs/${encodeURIComponent(jobId)}/stage/3/pom/repair`,
     { repair_plan_id: repairPlanId, idempotency_key: idempotencyKey }
+  );
+}
+
+export async function applyStage4TargetVersionChanges(
+  jobId: string,
+  request: { changes: Stage4TargetVersionChangeRequest[]; idempotency_key?: string }
+): Promise<Stage4TargetVersionApplyResponse> {
+  const safeJobId = requireJobId(jobId);
+  return postJson<Stage4TargetVersionApplyResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/stage/4/pom/apply-target-version-changes`,
+    request
   );
 }
 
