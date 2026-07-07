@@ -274,6 +274,10 @@ from migration_factory.control_tower.application.pom_change_models import (
     PomRepairApplyRequest,
     PomRollbackRequest,
 )
+from migration_factory.control_tower.application.target_version_update import (
+    PomTargetVersionChange,
+    apply_target_version_updates,
+)
 
 
 UnitOfWorkFactory = Any
@@ -747,6 +751,19 @@ class PomApplyRequestSchema(BaseModel):
     user_request: str | None = None
     idempotency_key: str | None = None
     plan_preview: dict[str, Any] | None = None  # Advisory only, never trusted
+
+
+class TargetVersionChangeSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    group_id: str = Field(min_length=1, max_length=300, pattern=r"^[A-Za-z0-9_.-]+$")
+    artifact_id: str = Field(min_length=1, max_length=300, pattern=r"^[A-Za-z0-9_.-]+$")
+    target_version: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9][A-Za-z0-9._+\-]*$")
+
+
+class TargetVersionApplyRequestSchema(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    changes: list[TargetVersionChangeSchema] = Field(min_length=1, max_length=500)
+    idempotency_key: str | None = None
 
 
 class PomRepairApplyRequestSchema(BaseModel):
@@ -2229,7 +2246,7 @@ def create_app(
     def get_v2_job_root_pom_file(
         request: Request,
         job_id: str,
-        stage: int = Query(default=1, ge=1, le=3),
+        stage: int = Query(default=1, ge=1, le=4),
         mode: str = Query(default="preview", pattern="^(preview|download)$"),
     ) -> Any:
         """Return the backend-resolved root pom.xml for a completed stage.
@@ -4199,6 +4216,66 @@ def create_app(
             raise _error(status.HTTP_400_BAD_REQUEST, "INVALID_REQUEST", "proposal_id or user_request is required")
 
         return result.to_public_dict()
+
+    @app.post("/v1/v2/jobs/{job_id}/stage/4/pom/apply-target-version-changes")
+    def apply_stage4_target_version_changes(
+        job_id: str,
+        payload: TargetVersionApplyRequestSchema,
+        request: Request,
+    ) -> dict[str, Any]:
+        """Apply CSV target dependency versions to the backend-resolved Stage 4 POM."""
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            events = tuple(uow.v2_events.list_by_job(job_id))
+            commands = tuple(uow.v2_commands.list_by_job(job_id))
+
+        preview = _resolve_root_pom_file_alias_preview(
+            job_id=job_id,
+            stage_index=4,
+            events=events,
+            commands=commands,
+            max_bytes=32768,
+        )
+        if not preview.get("exists"):
+            raise _error(
+                status.HTTP_400_BAD_REQUEST,
+                "ROOT_POM_NOT_AVAILABLE",
+                f"Stage 4 root pom.xml is not available: {preview.get('reason') or 'not_available'}",
+            )
+        pom_path = preview.get("_path")
+        if not isinstance(pom_path, Path) or not pom_path.is_file():
+            raise _error(status.HTTP_400_BAD_REQUEST, "ROOT_POM_NOT_AVAILABLE", "Stage 4 root pom.xml is not readable")
+
+        try:
+            pom_text = pom_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise _error(status.HTTP_400_BAD_REQUEST, "ROOT_POM_NOT_READABLE", str(exc)) from exc
+
+        result = apply_target_version_updates(
+            pom_text,
+            [
+                PomTargetVersionChange(
+                    group_id=change.group_id,
+                    artifact_id=change.artifact_id,
+                    target_version=change.target_version,
+                )
+                for change in payload.changes
+            ],
+        )
+        if result["applied_count"] > 0:
+            try:
+                pom_path.write_text(str(result["pom_content"]), encoding="utf-8")
+            except OSError as exc:
+                raise _error(status.HTTP_500_INTERNAL_SERVER_ERROR, "ROOT_POM_WRITE_FAILED", str(exc)) from exc
+
+        public_result = {key: value for key, value in result.items() if key != "pom_content"}
+        return {
+            "job_id": job_id,
+            "stage": 4,
+            "idempotency_key": payload.idempotency_key,
+            "message": "Target dependency versions applied to Stage 4 pom.xml." if result["applied_count"] else "No Stage 4 pom.xml changes were applied.",
+            **public_result,
+        }
 
     @app.get("/v1/v2/jobs/{job_id}/stage/3/pom/changes")
     def list_pom_changes(job_id: str) -> dict[str, Any]:
@@ -8890,7 +8967,7 @@ def _resolve_root_pom_file_alias_preview(
         "source_ref": None,
         "reason": "not_available",
     }
-    if stage_index not in (1, 2, 3):
+    if stage_index not in (1, 2, 3, 4):
         response["reason"] = "invalid_stage"
         return response
 
