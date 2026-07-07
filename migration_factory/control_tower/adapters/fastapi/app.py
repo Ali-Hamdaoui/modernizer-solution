@@ -1374,6 +1374,10 @@ def create_app(
         job_id: str,
         payload: ApprovalModeRequest,
     ) -> dict[str, Any]:
+        print("[approval-mode-updated]", {
+            "job_id": job_id,
+            "auto_approval_enabled": payload.auto_approval_enabled,
+        })
         auto_approval_outcome: dict[str, Any] | None = None
         with unit_of_work_factory() as uow:
             job = _require_v2_job(uow, job_id)
