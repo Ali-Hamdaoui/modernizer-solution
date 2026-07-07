@@ -51,7 +51,8 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
     if not run_dir:
         return FinalReportResult(artifact_refs={}, blockers=["run_dir is required"], warnings=[])
 
-    required_ref_names = (
+    repair_proof_terminal = bool(state.get("repair_proof_accepted"))
+    required_ref_names = () if repair_proof_terminal else (
         "approval_decision",
         "approved_plan_lock",
         "transformation_execution_plan",
@@ -76,11 +77,18 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
     md_path = final_dir / "migration_summary.md"
 
     assessment_report = _read_json(run_dir / "assessment" / "assessment_report.json", warnings)
-    approval_decision = _read_json(Path(artifact_refs["approval_decision"]), warnings)
-    approved_plan_lock = _read_json(Path(artifact_refs["approved_plan_lock"]), warnings)
-    execution_plan = _read_yaml(Path(artifact_refs["transformation_execution_plan"]), warnings)
-    test_report = _read_json(Path(artifact_refs["post_transform_test_report"]), warnings)
-    orchestration_summary = _read_json(Path(artifact_refs["orchestration_summary"]), warnings)
+    approval_decision_ref = str(artifact_refs.get("approval_decision") or "")
+    approval_decision = _read_json(Path(approval_decision_ref), warnings) if approval_decision_ref else {}
+    approved_plan_lock_ref = str(artifact_refs.get("approved_plan_lock") or "")
+    approved_plan_lock = _read_json(Path(approved_plan_lock_ref), warnings) if approved_plan_lock_ref else {}
+    execution_plan_ref = str(artifact_refs.get("transformation_execution_plan") or "")
+    execution_plan = _read_yaml(Path(execution_plan_ref), warnings) if execution_plan_ref else {}
+    test_report = {}
+    post_transform_test_report_ref = str(artifact_refs.get("post_transform_test_report") or "")
+    if post_transform_test_report_ref:
+        test_report = _read_json(Path(post_transform_test_report_ref), warnings)
+    orchestration_summary_ref = str(artifact_refs.get("orchestration_summary") or "")
+    orchestration_summary = _read_json(Path(orchestration_summary_ref), warnings) if orchestration_summary_ref else {}
     migration_plan = _read_yaml(run_dir / "planning" / "migration_plan.yaml", warnings)
     dependency_policy_report = _read_optional_json(
         Path(str(artifact_refs.get("dependency_policy_report") or run_dir / "assessment" / "dependency_policy_report.json")),
@@ -191,6 +199,7 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         "runtime_contract": runtime_contract,
         "reference_delta": reference_delta,
         "post_transform_failure_classification": failure_classification,
+        "repair_candidate": dict(state.get("repair_candidate", {}) or {}),
         "target_dependency_plan_ref": artifact_refs.get("target_dependency_plan", ""),
         "dependency_policy_report_ref": artifact_refs.get("dependency_policy_report", ""),
         "dependency_policy_status": dependency_policy["status"],

@@ -6693,15 +6693,14 @@ def create_app(
         V2FinalReportService,
         REPORT_ARTIFACT_KINDS,
         REPORT_CONTENT_TYPES,
+        V2FinalReportResult,
+        _load_report_artifact_manifest_for_job,
     )
 
     _report_service = V2FinalReportService(unit_of_work_factory)
 
     @app.get("/v1/v2/jobs/{job_id}/report")
     def get_v2_final_report(job_id: str) -> dict[str, Any]:
-        from migration_factory.control_tower.application.v2_final_report_service import (
-            V2FinalReportResult,
-        )
         try:
             result = _report_service.get_report_status(job_id)
         except ValueError as exc:
@@ -6727,40 +6726,26 @@ def create_app(
             if job is None:
                 raise _error(404, "V2_JOB_NOT_FOUND", "V2 job not found.")
 
-            # Resolve artifact from artifact repository
-            from migration_factory.control_tower.domain.entities import ArtifactRecord
-            artifact = None
-            if hasattr(uow, "artifacts") and hasattr(uow.artifacts, "list_for_job"):
-                for art in uow.artifacts.list_for_job(job_id):
-                    if art.artifact_id == artifact_id:
-                        artifact = art
-                        break
+            artifact = _resolve_v2_report_artifact(uow, job_id, artifact_id)
             if artifact is None:
                 raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
-            if artifact.artifact_type not in REPORT_ARTIFACT_KINDS:
+            artifact_path_ref = str(getattr(artifact, "absolute_path", "") or getattr(artifact, "relative_path", "") or "")
+            checksum_sha256 = str(getattr(artifact, "checksum_sha256", "") or getattr(artifact, "checksum", "") or "")
+            artifact_kind = str(getattr(artifact, "kind", "") or getattr(artifact, "artifact_type", "") or "")
+            if not artifact_path_ref or not checksum_sha256 or not artifact_kind:
                 raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
-            if artifact.job_id != job_id:
-                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
-
-            # Resolve file path from artifact record
-            file_path = Path(artifact.relative_path).resolve()
-
-            # Containment check: ensure the resolved path is within
-            # a reports/ directory or the sandbox final directory
+            file_path = Path(artifact_path_ref).resolve()
             file_path_str = str(file_path).replace("\\", "/")
             if not any(marker in file_path_str for marker in ("/reports/", "/final/", "\\reports\\", "\\final\\")):
                 raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
-
             if not file_path.is_file():
                 raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact file not found.")
-
             actual_sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
-            if actual_sha256 != artifact.checksum:
+            if actual_sha256 != checksum_sha256:
                 raise _error(409, "V2_REPORT_ARTIFACT_CHECKSUM_MISMATCH", "Artifact integrity check failed.")
-
-            ext = REPORT_CONTENT_TYPES.get(artifact.artifact_type, "application/octet-stream").split("/")[-1]
-            filename = f"{job_id}_{artifact.artifact_type}.{ext}"
-            media_type = REPORT_CONTENT_TYPES.get(artifact.artifact_type, "application/octet-stream")
+            ext = REPORT_CONTENT_TYPES.get(artifact_kind, "application/octet-stream").split("/")[-1]
+            filename = f"{job_id}_{artifact_kind}.{ext}"
+            media_type = REPORT_CONTENT_TYPES.get(artifact_kind, "application/octet-stream")
 
             return StreamingResponse(
                 content=open(file_path, "rb"),
@@ -6770,6 +6755,20 @@ def create_app(
                     "Content-Length": str(file_path.stat().st_size),
                 },
             )
+
+    def _resolve_v2_report_artifact(uow: Any, job_id: str, artifact_id: str) -> Any | None:
+        artifact = None
+        if hasattr(uow, "artifacts") and hasattr(uow.artifacts, "list_for_job"):
+            for art in uow.artifacts.list_for_job(job_id):
+                if art.artifact_id == artifact_id:
+                    artifact = art
+                    break
+        if artifact is None:
+            for snapshot in _load_report_artifact_manifest_for_job(uow, job_id):
+                if snapshot.artifact_id == artifact_id:
+                    artifact = snapshot
+                    break
+        return artifact
 
     return app
 

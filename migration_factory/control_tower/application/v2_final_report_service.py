@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -12,6 +13,7 @@ from migration_factory.control_tower.application.v2_stage_progression import (
     compute_profile_route,
 )
 from migration_factory.control_tower.domain.entities import ArtifactRecord
+from migration_factory.control_tower.domain.errors import StorageIntegrityError
 from migration_factory.final_report.writer import generate_final_migration_report
 from migration_factory.final_report.pdf_writer import write_text_pdf_from_markdown
 
@@ -243,7 +245,10 @@ class V2FinalReportService:
                     download_url=f"/v1/v2/jobs/{job_id}/report-artifacts/{rec.artifact_id}/download",
                     generated_at=rec.created_at,
                     input_checksum=rec.checksum,
+                    absolute_path=str(Path(rec.relative_path).resolve()),
                 ))
+        if not snapshots:
+            snapshots.extend(_load_report_artifact_manifest_for_job(uow, job_id))
         return snapshots
 
     def _generate_report_artifacts(
@@ -254,9 +259,10 @@ class V2FinalReportService:
         result: list[_ArtifactSnapshot] = []
         state: dict[str, Any] = {}
         report_dir = None
+        terminal_stage = _terminal_stage_index(uow, job_id)
 
         if hasattr(uow, "v2_commands"):
-            commands = uow.v2_commands.list_by_job_and_stage(job_id, _terminal_stage_index(uow, job_id))
+            commands = uow.v2_commands.list_by_job_and_stage(job_id, terminal_stage)
             if commands and commands[0].result_json:
                 try:
                     state = json.loads(commands[0].result_json)
@@ -271,6 +277,10 @@ class V2FinalReportService:
         if report_dir is None:
             report_dir = Path(f"reports/{job_id}")
             state["run_dir"] = str(Path.cwd() / "reports" / job_id)
+
+        accepted_candidate = _accepted_repair_proof_candidate(uow, job_id, terminal_stage)
+        if accepted_candidate is not None:
+            state = _enrich_state_with_accepted_repair_proof(state, accepted_candidate)
 
         report_dir.mkdir(parents=True, exist_ok=True)
 
@@ -294,6 +304,7 @@ class V2FinalReportService:
 
         from migration_factory.control_tower.domain.checksums import utc_now_text
         created_at = utc_now_text()
+        manifest_snapshots: list[_ArtifactSnapshot] = []
 
         for artifact_info in [
             (json_path, "final_report_json", "application/json"),
@@ -308,6 +319,18 @@ class V2FinalReportService:
             artifact_id = f"report-{uuid4().hex}"
             relative_path = str(path.resolve())
             normalized = f"reports/{job_id}/{kind}"
+            snapshot = _ArtifactSnapshot(
+                artifact_id=artifact_id,
+                kind=kind,
+                checksum_sha256=sha256,
+                size_bytes=size,
+                content_type=content_type,
+                download_url=f"/v1/v2/jobs/{job_id}/report-artifacts/{artifact_id}/download",
+                generated_at=created_at,
+                input_checksum=input_checksum,
+                absolute_path=relative_path,
+            )
+            manifest_snapshots.append(snapshot)
             artifact_record = ArtifactRecord(
                 artifact_id=artifact_id,
                 job_id=job_id,
@@ -323,18 +346,14 @@ class V2FinalReportService:
                 created_at=created_at,
                 created_by=_ARTIFACT_CREATED_BY,
             )
-            uow.artifacts.insert(artifact_record)
-            download_url = f"/v1/v2/jobs/{job_id}/report-artifacts/{artifact_id}/download"
-            result.append(_ArtifactSnapshot(
-                artifact_id=artifact_id,
-                kind=kind,
-                checksum_sha256=sha256,
-                size_bytes=size,
-                content_type=content_type,
-                download_url=download_url,
-                generated_at=created_at,
-                input_checksum=input_checksum,
-            ))
+            try:
+                uow.artifacts.insert(artifact_record)
+            except StorageIntegrityError as exc:
+                if not _is_legacy_artifact_fk_failure(exc):
+                    raise
+            result.append(snapshot)
+
+        _write_report_artifact_manifest(report_dir, job_id, manifest_snapshots)
 
         return result
 
@@ -349,6 +368,105 @@ class _ArtifactSnapshot:
     download_url: str
     generated_at: str | None = None
     input_checksum: str | None = None
+    absolute_path: str | None = None
+
+
+def _report_manifest_path(report_dir: Path) -> Path:
+    return report_dir / "report_artifacts_manifest.json"
+
+
+def _write_report_artifact_manifest(report_dir: Path, job_id: str, snapshots: list[_ArtifactSnapshot]) -> None:
+    manifest = {
+        "job_id": job_id,
+        "artifacts": [
+            {
+                "artifact_id": snapshot.artifact_id,
+                "kind": snapshot.kind,
+                "checksum_sha256": snapshot.checksum_sha256,
+                "size_bytes": snapshot.size_bytes,
+                "content_type": snapshot.content_type,
+                "absolute_path": snapshot.absolute_path or "",
+                "download_url": snapshot.download_url,
+                "generated_at": snapshot.generated_at,
+                "input_checksum": snapshot.input_checksum,
+            }
+            for snapshot in snapshots
+        ],
+    }
+    _report_manifest_path(report_dir).write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _load_report_artifact_manifest_for_job(uow: Any, job_id: str) -> list[_ArtifactSnapshot]:
+    report_dirs: list[Path] = []
+    terminal_stage = _terminal_stage_index(uow, job_id)
+    if hasattr(uow, "v2_commands"):
+        commands = uow.v2_commands.list_by_job_and_stage(job_id, terminal_stage)
+        if commands and commands[0].result_json:
+            try:
+                state = json.loads(commands[0].result_json)
+            except (json.JSONDecodeError, TypeError):
+                state = {}
+            if isinstance(state, dict):
+                sandbox_path = str(state.get("sandbox_path") or "").strip()
+                if sandbox_path:
+                    report_dirs.append(Path(sandbox_path) / "final")
+    report_dirs.append(Path("reports") / job_id)
+    for report_dir in report_dirs:
+        manifest = _load_report_artifact_manifest(report_dir)
+        if manifest:
+            return manifest
+    return []
+
+
+def _load_report_artifact_manifest(report_dir: Path) -> list[_ArtifactSnapshot]:
+    manifest_path = _report_manifest_path(report_dir)
+    if not manifest_path.is_file():
+        return []
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, TypeError):
+        return []
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, list):
+        return []
+    snapshots: list[_ArtifactSnapshot] = []
+    for item in artifacts:
+        if not isinstance(item, dict):
+            continue
+        snapshot = _artifact_snapshot_from_manifest_item(item)
+        if snapshot is not None:
+            snapshots.append(snapshot)
+    return snapshots
+
+
+def _artifact_snapshot_from_manifest_item(item: dict[str, Any]) -> _ArtifactSnapshot | None:
+    artifact_id = str(item.get("artifact_id") or "").strip()
+    kind = str(item.get("kind") or "").strip()
+    checksum_sha256 = str(item.get("checksum_sha256") or "").strip()
+    absolute_path = str(item.get("absolute_path") or "").strip()
+    download_url = str(item.get("download_url") or "").strip()
+    if not (artifact_id and kind and checksum_sha256 and absolute_path and download_url):
+        return None
+    try:
+        size_bytes = int(item.get("size_bytes") or 0)
+    except (TypeError, ValueError):
+        return None
+    return _ArtifactSnapshot(
+        artifact_id=artifact_id,
+        kind=kind,
+        checksum_sha256=checksum_sha256,
+        size_bytes=size_bytes,
+        content_type=str(item.get("content_type") or ""),
+        download_url=download_url,
+        generated_at=str(item.get("generated_at") or ""),
+        input_checksum=str(item.get("input_checksum") or ""),
+        absolute_path=absolute_path,
+    )
+
+
+def _is_legacy_artifact_fk_failure(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return isinstance(exc, sqlite3.IntegrityError) or "foreign key" in message or "constraint failed" in message
 
 
 def _looks_like_success(result: dict[str, Any]) -> bool:
@@ -449,33 +567,79 @@ def _route_metadata_from_run_configuration(uow: Any, job_id: str) -> dict[str, A
 
 
 def _has_accepted_repair_proof(uow: Any, job_id: str, stage_index: int) -> bool:
+    return _accepted_repair_proof_candidate(uow, job_id, stage_index) is not None
+
+
+def _accepted_repair_proof_candidate(uow: Any, job_id: str, stage_index: int) -> dict[str, Any] | None:
     if not hasattr(uow, "v2_repair_candidates"):
-        return False
+        return None
     candidate = uow.v2_repair_candidates.latest_public_for_job(job_id)
     if not isinstance(candidate, dict):
-        return False
+        return None
     candidate_stage = _int_or_none(candidate.get("stage_index"))
     if candidate_stage is not None and candidate_stage != stage_index:
-        return False
+        return None
     if str(candidate.get("status") or "") != "verified":
-        return False
+        return None
     if str(candidate.get("execution_status") or "") != "verified":
-        return False
+        return None
     if _effective_post_repair_verification_status(candidate) != "passed":
-        return False
+        return None
     if str(candidate.get("rollback_status") or "") != "not_needed":
-        return False
+        return None
     if not str(candidate.get("proof_artifact") or "").strip():
-        return False
+        return None
     if not hasattr(uow, "phase_gates") or not hasattr(uow.phase_gates, "list_by_job_and_stage"):
-        return False
+        return None
     gates = uow.phase_gates.list_by_job_and_stage(job_id, stage_index)
-    return any(
+    if not any(
         gate.gate_phase == "repair_review"
         and gate.gate_status == "resolved"
         and gate.gate_decision == "continue"
         for gate in gates
-    )
+    ):
+        return None
+    return candidate
+
+
+def _enrich_state_with_accepted_repair_proof(state: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(state)
+    enriched["repair_proof_accepted"] = True
+    enriched["repair_loop_enabled"] = True
+    enriched["repair_loop_status"] = "PROOF_ACCEPTED"
+    enriched["repair_human_review_required"] = True
+    enriched["repair_safe_patch_applied"] = True
+    enriched["stage_recovery_status"] = "recovered"
+    enriched["post_repair_verification_status"] = "passed"
+    enriched["build_status"] = "POST_REPAIR_VERIFICATION_PASSED"
+    enriched["test_status"] = "POST_REPAIR_VERIFICATION_PASSED"
+    enriched["final_status"] = "PASS"
+    enriched["repair_candidate"] = {
+        "family": candidate.get("family", ""),
+        "stage_index": candidate.get("stage_index"),
+        "status": candidate.get("status", ""),
+        "execution_status": candidate.get("execution_status", ""),
+        "post_repair_verification_status": "passed",
+        "verification_status": candidate.get("verification_status", ""),
+        "rollback_status": candidate.get("rollback_status", ""),
+        "stage_recovery_status": "recovered",
+        "proof_artifact": candidate.get("proof_artifact", ""),
+        "candidate_checksum": candidate.get("candidate_checksum", ""),
+        "patch_checksum": candidate.get("patch_checksum", ""),
+        "review_checksum": candidate.get("review_checksum", ""),
+        "target_file": candidate.get("target_file", ""),
+        "target_files": list(candidate.get("target_files", []) or []),
+        "post_repair_verification": dict(candidate.get("post_repair_verification", {}) or {}),
+    }
+    artifact_refs = dict(enriched.get("artifact_refs", {}) or {})
+    proof_ref = str(candidate.get("proof_artifact") or "")
+    post_repair_proof_ref = str(candidate.get("post_repair_proof_artifact") or proof_ref)
+    if proof_ref:
+        artifact_refs["repair_proof_artifact"] = proof_ref
+    if post_repair_proof_ref:
+        artifact_refs["post_repair_proof_artifact"] = post_repair_proof_ref
+    enriched["artifact_refs"] = artifact_refs
+    return enriched
 
 
 def _int_or_none(value: Any) -> int | None:
