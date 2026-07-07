@@ -11,6 +11,7 @@ import MigrationCockpitPage from "../app/migrations/[jobId]/page";
 import {
   MigrationCockpit,
   ApprovalDecisionsPanel,
+  ApprovalModePanel,
   AssistantPanelContent,
   GatePanelContent,
   MigrationRoutePanel,
@@ -25,7 +26,7 @@ import {
   reduceStageStatus,
   type CockpitData,
 } from "../app/migrations/[jobId]/MigrationCockpit";
-import { approveV2Card, askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, postV2GateAction, requireJobId, resolveReportDownloadUrl, v2EventStreamUrl } from "../lib/controlTowerApi";
+import { approveV2Card, askV2Assistant, CONTROL_TOWER_API_BASE_URL, getV2ArtifactPreview, postV2GateAction, requireJobId, resolveReportDownloadUrl, updateV2ApprovalMode, v2EventStreamUrl } from "../lib/controlTowerApi";
 import type { GateDetailResponse, GateRepresentation, GateEvidencePack, V2ApprovalResponse, V2FailureSummaryItem, V2JobEvent, V2MigrationJobResponse, V2RouteStepEntry } from "../lib/contracts";
 
 describe("V2 Migration Cockpit contract", () => {
@@ -441,6 +442,72 @@ describe("V2 Migration Cockpit contract", () => {
     }
   });
 
+  it("Auto Approval toggle displays current backend mode", () => {
+    const manualMarkup = renderToStaticMarkup(
+      <ApprovalModePanel enabled={false} busy={false} error={null} onToggle={() => undefined} />,
+    );
+    expect(manualMarkup).toContain("Manual");
+    expect(manualMarkup).toContain("Off");
+
+    const autoMarkup = renderToStaticMarkup(
+      <ApprovalModePanel enabled={true} busy={false} error={null} onToggle={() => undefined} />,
+    );
+    expect(autoMarkup).toContain("Auto Approval ON");
+    expect(autoMarkup).toContain("On");
+  });
+
+  it("turning Auto Approval ON requires confirmation in cockpit source", () => {
+    const source = MigrationCockpit.toString();
+    expect(source).toContain("window.confirm");
+    expect(source).toContain("Auto Approval will automatically approve future successful");
+    expect(source).toContain("setApprovalModeBusy(true)");
+  });
+
+  it("updateV2ApprovalMode sends PATCH with the correct job id and value", async () => {
+    const originalFetch = global.fetch;
+    const calls: { url: string; method?: string; body: string | null }[] = [];
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(input), method: init?.method, body: typeof init?.body === "string" ? init.body : null });
+      return new Response(JSON.stringify({
+        job_id: "job-123",
+        auto_approval_enabled: true,
+        job: { job_id: "job-123", setup_id: "setup", setup_checksum: "chk", pipeline_id: "pipe", stages: [], created_at: "now", auto_approval_enabled: true },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }) as typeof fetch;
+    try {
+      await updateV2ApprovalMode("job-123", true);
+      expect(calls[0].url).toBe(`${CONTROL_TOWER_API_BASE_URL}/v1/v2/migration-jobs/job-123/approval-mode`);
+      expect(calls[0].method).toBe("PATCH");
+      expect(JSON.parse(calls[0].body ?? "{}")).toEqual({ auto_approval_enabled: true });
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("auto-approved approval decisions show AUTO APPROVED without action buttons", () => {
+    const autoApproved: V2ApprovalResponse = {
+      card_id: "card-auto",
+      job_id: "job-123",
+      interrupt_id: "run-auto",
+      request_checksum: "checksum-auto",
+      stage_index: 2,
+      summary: "Pre-transform review required before sandbox transform.",
+      status: "auto_approved",
+      created_at: "2026-07-07T00:00:00Z",
+    };
+    const markup = renderToStaticMarkup(
+      <ApprovalDecisionsPanel
+        approvals={[autoApproved]}
+        approvalReviewOpen={false}
+        approvalBusy={null}
+        onApprove={() => {}}
+        onReject={() => {}}
+      />,
+    );
+    expect(markup).toContain("AUTO APPROVED");
+    expect(markup).toContain("Mode: Auto Approval");
+    expect(markup).not.toContain("<button");
+  });
   it("pending approval card renders Approve/Reject buttons even when approvalReviewOpen is true", () => {
     // Regression: the global approvalReviewOpen flag used to swap ALL cards'
     // buttons for "Review in chatbot" copy. Pending gates must always show
