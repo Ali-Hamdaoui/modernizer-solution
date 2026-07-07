@@ -458,6 +458,75 @@ def _seed_approval_resume_command(
     return command_id
 
 
+def _seed_accepted_revisions(
+    conn: sqlite3.Connection,
+    *,
+    job_id: str,
+    stage_index: int = 2,
+) -> None:
+    now = utc_now_text()
+    for revision_kind in ("analysis", "planning"):
+        SqliteUnitOfWork(conn).artifact_revisions.save(
+            ArtifactRevisionRecord(
+                revision_id=f"accepted-{revision_kind}-{job_id}-{stage_index}",
+                job_id=job_id,
+                stage_index=stage_index,
+                revision_kind=revision_kind,
+                revision_status="accepted",
+                revision_order=1,
+                evidence_checksum=f"sha256:{revision_kind}",
+                prior_revision_checksum=None,
+                artifact_refs_json="[]",
+                prior_revision_id=None,
+                superseded_by_revision_id=None,
+                accepted_at_gate_id=f"gate-{revision_kind}",
+                created_at=now,
+                created_by="test",
+                accepted_at=now,
+                accepted_by="test",
+            )
+        )
+
+
+class _AutoApprovalLaunchRunner:
+    """Fake runner that records start_resume and emits transform-start events."""
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self.connection = connection
+        self.started: list[str] = []
+
+    def start_resume(self, *, job_id: str, resume_id: str) -> V2OrchestratorStart:
+        self.started.append(resume_id)
+        with SqliteUnitOfWork(self.connection) as uow:
+            uow.v2_events.save(
+                job_id=job_id,
+                stage=2,
+                event_type="resume_started",
+                status="running",
+                message="Stage resume started after auto approval.",
+                payload={"command_id": resume_id},
+            )
+            uow.v2_events.save(
+                job_id=job_id,
+                stage=2,
+                event_type="sandbox_transform_started",
+                status="running",
+                message="Transform started after auto approval.",
+                payload={"command_id": resume_id},
+            )
+        return V2OrchestratorStart(
+            command_id=resume_id,
+            job_id=job_id,
+            stage_index=2,
+            pid=None,
+            status="started",
+            message="",
+        )
+
+    def start(self, *, job_id: str, command_id: str) -> V2OrchestratorStart:
+        raise AssertionError("transform launch is not expected during auto approval")
+
+
 def test_v2_approval_mode_preflight_allows_patch_from_local_frontend(tmp_path: Path) -> None:
     client, conn = _api_client(tmp_path)
     setup_id = _ready_setup(conn)
@@ -510,6 +579,146 @@ def test_v2_approval_mode_endpoint_defaults_false_and_toggles(tmp_path: Path) ->
     events = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
     mode_events = [event for event in events if event.type == "approval_mode_updated"]
     assert [json.loads(event.payload_json)["auto_approval_enabled"] for event in mode_events] == [True, False]
+
+
+def test_v2_approval_mode_enabling_with_no_open_gate_does_not_continue(tmp_path: Path) -> None:
+    """Backend Test 1: enabling Auto Approval with no open gate updates the mode only."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+
+    response = client.patch(
+        f"/v1/v2/migration-jobs/{job_id}/approval-mode",
+        json={"autoApprovalEnabled": True},
+        headers=_mutation_headers(),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["auto_approval_enabled"] is True
+    assert body["autoApprovalEnabled"] is True
+    # No open gate -> no auto-approval outcome and no resume queued.
+    assert body["auto_approved"] is None
+    assert SqliteUnitOfWork(conn).v2_jobs.get_auto_approval_enabled(job_id) is True
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
+    event_types = [event.type for event in events]
+    assert "approval_mode_updated" in event_types
+    assert "approval_auto_approved" not in event_types
+    assert "approval_resume_queued" not in event_types
+
+
+def test_v2_approval_mode_enabling_auto_approves_already_open_valid_gate(tmp_path: Path) -> None:
+    """Backend Test 2: enabling Auto Approval with an already-open valid gate auto-approves it."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    _seed_accepted_revisions(conn, job_id=job_id, stage_index=2)
+    _seed_approval_resume_command(conn, job_id=job_id, stage_index=2, run_id="run-1")
+    gate_id = _create_gate(conn, job_id)
+    checksum = client.get(f"/v1/v2/jobs/{job_id}/gates/{gate_id}").json()["checksum"]
+    card_id = _seed_approval_card(conn, job_id=job_id, checksum=checksum)
+
+    # Sanity: gate is open and card is pending before enabling Auto Approval.
+    uow_before = SqliteUnitOfWork(conn)
+    assert uow_before.phase_gates.get(gate_id).gate_status == "open"
+    assert uow_before.v2_approvals.get_card(card_id).status == "pending"
+
+    runner = _AutoApprovalLaunchRunner(conn)
+    client.app.state.v2_orchestrator_runner = runner
+
+    response = client.patch(
+        f"/v1/v2/migration-jobs/{job_id}/approval-mode",
+        json={"autoApprovalEnabled": True},
+        headers=_mutation_headers(),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["auto_approval_enabled"] is True
+    assert body["auto_approved"] is not None
+    assert body["auto_approved"]["gate_id"] == gate_id
+    assert body["auto_approved"]["resume_id"]
+
+    # The open gate was auto-approved (resolved) and the card is auto_approved.
+    uow_after = SqliteUnitOfWork(conn)
+    gate_after = uow_after.phase_gates.get(gate_id)
+    assert gate_after.gate_status == "resolved"
+    assert gate_after.gate_decision == "approve"
+    card_after = uow_after.v2_approvals.get_card(card_id)
+    assert card_after.status == "auto_approved"
+
+    # A system auto-approval decision was recorded.
+    decisions = uow_after.gate_decisions.list_by_job(job_id)
+    assert len(decisions) == 1
+    assert decisions[0].actor_type == "system"
+    assert decisions[0].decided_by == "system:auto-approval"
+
+    # Events show auto-approval + resume continuation toward transform.
+    events = uow_after.v2_events.list_by_job(job_id)
+    event_types = [event.type for event in events]
+    assert "approval_auto_approved" in event_types
+    assert "approval_resume_queued" in event_types
+    auto_event = next(event for event in events if event.type == "approval_auto_approved")
+    auto_payload = json.loads(auto_event.payload_json)
+    assert auto_payload["decision_source"] == "auto_approval"
+    assert auto_payload["approval_mode"] == "auto"
+    assert auto_payload["gate_id"] == gate_id
+
+    # The resume command was launched (transform phase starts).
+    assert runner.started == [body["auto_approved"]["resume_id"]]
+    assert "resume_started" in event_types
+    assert "sandbox_transform_started" in event_types
+
+    # The stage_blocked_for_approval event must NOT appear after auto-approval.
+    blocked_events = [event for event in events if event.type == "stage_blocked_for_approval"]
+    assert blocked_events == []
+
+
+def test_v2_auto_approval_skips_unsafe_open_gate_without_accepted_evidence(tmp_path: Path) -> None:
+    """Backend Test 4: Auto Approval must not approve a gate with no accepted analysis/plan."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+    seed_job(conn, job_id=job_id)
+    # NOTE: intentionally no _seed_accepted_revisions -> unsafe gate.
+    _seed_approval_resume_command(conn, job_id=job_id, stage_index=2, run_id="run-1")
+    gate_id = _create_gate(conn, job_id)
+    checksum = client.get(f"/v1/v2/jobs/{job_id}/gates/{gate_id}").json()["checksum"]
+    card_id = _seed_approval_card(conn, job_id=job_id, checksum=checksum)
+
+    runner = _AutoApprovalLaunchRunner(conn)
+    client.app.state.v2_orchestrator_runner = runner
+
+    response = client.patch(
+        f"/v1/v2/migration-jobs/{job_id}/approval-mode",
+        json={"autoApprovalEnabled": True},
+        headers=_mutation_headers(),
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["auto_approval_enabled"] is True
+    # Unsafe gate -> no auto-approval outcome.
+    assert body["auto_approved"] is None
+
+    # The gate remains open and the card remains pending (still blocked).
+    uow_after = SqliteUnitOfWork(conn)
+    assert uow_after.phase_gates.get(gate_id).gate_status == "open"
+    assert uow_after.v2_approvals.get_card(card_id).status == "pending"
+
+    # No resume was launched.
+    assert runner.started == []
+
+    events = uow_after.v2_events.list_by_job(job_id)
+    event_types = [event.type for event in events]
+    assert "approval_auto_approved" not in event_types
+    assert "approval_resume_queued" not in event_types
+    # A skip event records the safety reason.
+    assert "approval_auto_approved_skipped" in event_types
+    skip_event = next(event for event in events if event.type == "approval_auto_approved_skipped")
+    skip_payload = json.loads(skip_event.payload_json)
+    assert skip_payload["decision_source"] == "auto_approval"
+    assert skip_payload["reason"]
+
 
 def test_v2_gate_list_open_detail_and_legacy_proof_route(tmp_path: Path) -> None:
     client, conn = _api_client(tmp_path)
