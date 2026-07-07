@@ -1274,6 +1274,23 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           },
         };
       });
+      // When the backend auto-approved the currently open gate, proactively
+      // refresh approvals, pipeline status, and the open-gate panel so the UI
+      // reflects AUTO APPROVED + Transform running without waiting for SSE.
+      if (response.auto_approved) {
+        console.log("[approval-mode-auto-approved]", {
+          jobId: normalizedJobId,
+          gateId: response.auto_approved.gate_id,
+          stageId: response.auto_approved.stage_index,
+          decisionSource: "auto_approval",
+        });
+        void refreshLiveState().catch(() => {
+          setLiveRefreshWarning("Live refresh temporarily failed. Retrying...");
+        });
+        void refreshGateState().catch(() => {
+          // keep existing gate state on refresh failure
+        });
+      }
     } catch (e) {
       console.error("[approval-mode-error]", e);
       setApprovalModeError(
