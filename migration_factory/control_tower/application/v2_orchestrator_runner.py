@@ -775,6 +775,19 @@ class V2OrchestratorRunner:
                 auto_resume_id = ""
                 auto_decision_id = ""
                 auto_approval_error = ""
+                print("[approval-mode-read-at-gate-creation]", {
+                    "job_id": job_id,
+                    "auto_approval_enabled": auto_approval_enabled,
+                    "gate_id": approval_gate.gate_id,
+                    "stage_id": stage_index,
+                })
+                print("[approval-gate-created]", {
+                    "job_id": job_id,
+                    "gate_id": approval_gate.gate_id,
+                    "gate_type": approval_gate.gate_phase,
+                    "gate_status": approval_gate.gate_status,
+                    "checksum_present": bool(approval_gate.source_artifact_checksum),
+                })
                 if auto_approval_enabled:
                     profile_metadata: dict[str, Any] | None = None
                     route = _current_route_for_job(uow, job_id)
@@ -783,6 +796,11 @@ class V2OrchestratorRunner:
                         profile_metadata["stage_index"] = stage_index
                     if profile_metadata is None:
                         auto_approval_error = "checkpoint_profile_metadata_missing"
+                        print("[auto-approval-skipped]", {
+                            "job_id": job_id,
+                            "gate_id": approval_gate.gate_id,
+                            "reason": auto_approval_error,
+                        })
                     else:
                         action_service = V2GateActionService(
                             uow.phase_gates,
@@ -791,7 +809,26 @@ class V2OrchestratorRunner:
                             revision_repo=uow.artifact_revisions,
                             command_repo=uow.v2_commands,
                         )
-                        gate_result = action_service.approve_transformation(
+                        print("[auto-approval-check]", {
+                            "job_id": job_id,
+                            "gate_id": approval_gate.gate_id,
+                            "auto_approval_enabled": True,
+                            "safe_to_approve": True,
+                        })
+                        print("[auto-approval-calling-manual-path]", {
+                            "job_id": job_id,
+                            "gate_id": approval_gate.gate_id,
+                            "checksum": approval_gate_checksum,
+                            "decision_source": "auto_approval",
+                        })
+                        # Use approve_from_gate — the EXACT same method used by:
+                        #   - POST /approvals/{card_id}/approve (Approve button)
+                        #   - assistant "confirm checksum <checksum>" command
+                        # approve_transformation was previously used but it
+                        # requires accepted analysis/plan revision records
+                        # that may not exist in real jobs, causing silent
+                        # failures (no_accepted_analysis / no_accepted_plan).
+                        gate_result = action_service.approve_from_gate(
                             gate_id=approval_gate.gate_id,
                             job_id=job_id,
                             decided_by="system:auto-approval",
@@ -811,8 +848,19 @@ class V2OrchestratorRunner:
                             uow.v2_approvals.update_card_status(card.card_id, "auto_approved")
                             auto_resume_id = resume.resume_id
                             auto_decision_id = gate_result.decision_id
+                            print("[auto-approval-applied]", {
+                                "job_id": job_id,
+                                "gate_id": approval_gate.gate_id,
+                                "stage_id": stage_index,
+                                "decision_source": "auto_approval",
+                            })
                         else:
                             auto_approval_error = gate_result.reason or gate_result.status
+                            print("[auto-approval-skipped]", {
+                                "job_id": job_id,
+                                "gate_id": approval_gate.gate_id,
+                                "reason": auto_approval_error,
+                            })
             if auto_resume_id:
                 self._event(
                     job_id=job_id,
@@ -828,9 +876,15 @@ class V2OrchestratorRunner:
                         "decision_id": auto_decision_id,
                         "resume_id": auto_resume_id,
                         "approval_mode": "auto",
+                        "decision_source": "auto_approval",
                         "reason": "Auto approval enabled for this migration job",
                     },
                 )
+                print("[workflow-resumed-after-auto-approval]", {
+                    "job_id": job_id,
+                    "next_phase": "transform",
+                    "resume_id": auto_resume_id,
+                })
                 self.start_resume(job_id=job_id, resume_id=auto_resume_id)
                 return
 

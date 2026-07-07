@@ -544,6 +544,13 @@ def test_v2_runner_maps_approval_interrupt_to_card_and_blocked_events(tmp_path: 
 
 
 def test_v2_runner_auto_approves_human_approval_when_enabled(tmp_path: Path) -> None:
+    """Auto Approval ON before gate creation should auto-approve immediately.
+
+    This test does NOT seed accepted analysis/planning revisions because the
+    orchestrator auto-approval path uses approve_from_gate (same as the manual
+    Approve button and `confirm checksum`), which does NOT require accepted
+    revision records.  The UI shows PASS based on events, not revision records.
+    """
     conn = _conn(tmp_path)
     _seed_stage_pipeline(conn)
     now = utc_now_text()
@@ -554,27 +561,6 @@ def test_v2_runner_auto_approves_human_approval_when_enabled(tmp_path: Path) -> 
             updated_at=now,
             updated_by="test",
         )
-        for revision_kind in ("analysis", "planning"):
-            uow.artifact_revisions.save(
-                ArtifactRevisionRecord(
-                    revision_id=f"accepted-{revision_kind}",
-                    job_id="job-1",
-                    stage_index=1,
-                    revision_kind=revision_kind,
-                    revision_status="accepted",
-                    revision_order=1,
-                    evidence_checksum=f"sha256:{revision_kind}",
-                    prior_revision_checksum=None,
-                    artifact_refs_json="[]",
-                    prior_revision_id=None,
-                    superseded_by_revision_id=None,
-                    accepted_at_gate_id=f"gate-{revision_kind}",
-                    created_at=now,
-                    created_by="test",
-                    accepted_at=now,
-                    accepted_by="test",
-                )
-            )
 
     approval_required = {
         "status": "human_approval_required",
@@ -615,6 +601,169 @@ def test_v2_runner_auto_approves_human_approval_when_enabled(tmp_path: Path) -> 
     assert "approval_required" not in event_types
     assert "stage_blocked_for_approval" not in event_types
     assert len(popen.calls) == 2
+
+
+def test_v2_runner_auto_approval_persists_across_multiple_stages(tmp_path: Path) -> None:
+    """Backend Test 3: Auto Approval stays ON and auto-approves gates in every stage.
+
+    The orchestrator reads auto_approval_enabled from the DB at every gate
+    creation, so the flag persists across stages without re-toggling.
+    This test verifies the flag is read fresh at gate creation time by
+    running two separate stages and confirming both are auto-approved.
+    """
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn)
+    now = utc_now_text()
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_jobs.set_auto_approval_enabled(
+            "job-1", True, updated_at=now, updated_by="test",
+        )
+
+    approval_required = {
+        "status": "human_approval_required",
+        "run_id": "run-stage1",
+        "summary": {"analysis_status": "PASS"},
+        "artifact_refs": {
+            "analysis_report": "C:/out/.migration/runs/run-stage1/analysis/report.json",
+            "migration_plan.yaml": "C:/out/.migration/runs/run-stage1/planning/migration-plan.yaml",
+            "assessment_report": "C:/out/.migration/runs/run-stage1/assessment/report.json",
+            "approval_request.json": "C:/out/.migration/runs/run-stage1/planning/approval-request.json",
+        },
+        "decision_options": ["approved", "rejected", "replan_required"],
+    }
+
+    # Stage 1: approval required -> auto-approved -> resume -> success
+    popen1 = _SequentialFakePopen([
+        ([json.dumps(approval_required) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/sandbox/s1")) + "\n"], [], 0),
+    ])
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen1,
+        cwd=tmp_path,
+    )
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "approval_auto_approved")
+    _wait_for_event(conn, "job-1", "stage_completed")
+
+    # The flag must still be ON after the first auto-approval.
+    assert SqliteUnitOfWork(conn).v2_jobs.get_auto_approval_enabled("job-1") is True
+
+    # Stage 2: a new approval gate is created and must also be auto-approved.
+    # Use a different run_id AND stage_index so the gate checksum and revision
+    # lookup differ from stage 1.  In a real multi-stage migration each stage
+    # has a different stage_index, so there is no revision conflict.
+    approval_required_stage2 = {
+        **approval_required,
+        "run_id": "run-stage2",
+        "artifact_refs": {
+            "analysis_report": "C:/out/.migration/runs/run-stage2/analysis/report.json",
+            "migration_plan.yaml": "C:/out/.migration/runs/run-stage2/planning/migration-plan.yaml",
+            "assessment_report": "C:/out/.migration/runs/run-stage2/assessment/report.json",
+            "approval_request.json": "C:/out/.migration/runs/run-stage2/planning/approval-request.json",
+        },
+    }
+    now = utc_now_text()
+    SqliteUnitOfWork(conn).v2_commands.save(
+        V2StageCommandRecord(
+            command_id="cmd-2",
+            job_id="job-1",
+            stage_index=2,
+            manifest_checksum="checksum-2",
+            argv_json=json.dumps(["python", "-m", "migration_factory.orchestrator.runner", "--run-id", "run-stage2"]),
+            env_json=json.dumps({
+                "JAVA_HOME": "C:/jdk17",
+                "JAVA11_HOME": "C:/jdk11",
+                "JAVA17_HOME": "C:/jdk17",
+                "JAVA21_HOME": "C:/jdk21",
+                "MAVEN_CMD": "C:/maven/bin/mvn.cmd",
+                "PATH_PREPEND": "C:/jdk17/bin",
+            }),
+            status="manifest_ready",
+            created_at=now,
+            updated_at=now,
+            result_json=None,
+        )
+    )
+    popen2 = _SequentialFakePopen([
+        ([json.dumps(approval_required_stage2) + "\n"], [], 0),
+        ([json.dumps(_success_result(sandbox_path="/tmp/sandbox/s2")) + "\n"], [], 0),
+    ])
+    runner2 = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen2,
+        cwd=tmp_path,
+    )
+    runner2.start(job_id="job-1", command_id="cmd-2")
+
+    # Wait for the SECOND approval_auto_approved event (stage 2).
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            events = SqliteUnitOfWork(conn).v2_events.list_by_job("job-1")
+        except (sqlite3.Error, IndexError):
+            time.sleep(0.05)
+            continue
+        auto_count = sum(1 for e in events if e.type == "approval_auto_approved")
+        if auto_count >= 2:
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError("second approval_auto_approved event not emitted")
+
+    uow = SqliteUnitOfWork(conn)
+    events = uow.v2_events.list_by_job("job-1")
+    auto_events = [event for event in events if event.type == "approval_auto_approved"]
+    assert len(auto_events) >= 2
+    blocked_events = [event for event in events if event.type == "stage_blocked_for_approval"]
+    assert blocked_events == []
+    assert SqliteUnitOfWork(conn).v2_jobs.get_auto_approval_enabled("job-1") is True
+
+
+def test_v2_runner_auto_approval_off_returns_to_manual_mode(tmp_path: Path) -> None:
+    """Backend Test 4: turning Auto Approval OFF makes the next gate manual."""
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn)
+    now = utc_now_text()
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_jobs.set_auto_approval_enabled(
+            "job-1", False, updated_at=now, updated_by="test",
+        )
+
+    approval_required = {
+        "status": "human_approval_required",
+        "run_id": "run-1",
+        "summary": {"analysis_status": "PASS"},
+        "artifact_refs": {
+            "analysis_report": "C:/out/.migration/runs/run-1/analysis/report.json",
+            "migration_plan.yaml": "C:/out/.migration/runs/run-1/planning/migration-plan.yaml",
+            "assessment_report": "C:/out/.migration/runs/run-1/assessment/report.json",
+            "approval_request.json": "C:/out/.migration/runs/run-1/planning/approval-request.json",
+        },
+        "decision_options": ["approved", "rejected", "replan_required"],
+    }
+    popen = _SequentialFakePopen([
+        ([json.dumps(approval_required) + "\n"], [], 0),
+    ])
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        popen_factory=popen,
+        cwd=tmp_path,
+    )
+
+    runner.start(job_id="job-1", command_id="cmd-1")
+    _wait_for_event(conn, "job-1", "stage_blocked_for_approval")
+
+    uow = SqliteUnitOfWork(conn)
+    event_types = [event.type for event in uow.v2_events.list_by_job("job-1")]
+    assert "approval_required" in event_types
+    assert "stage_blocked_for_approval" in event_types
+    assert "approval_auto_approved" not in event_types
+    cards = uow.v2_approvals.list_cards_by_job("job-1")
+    assert len(cards) == 1
+    assert cards[0].status == "pending"
+
+
 def test_v2_runner_does_not_forward_copilot_env_to_product_subprocess(monkeypatch, tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _save_command(conn)
