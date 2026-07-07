@@ -1275,7 +1275,12 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         };
       });
     } catch (e) {
-      setApprovalModeError(e instanceof Error ? e.message : "Approval mode update failed");
+      console.error("[approval-mode-error]", e);
+      setApprovalModeError(
+        e instanceof Error
+          ? `Could not update approval mode. Please check backend connection or CORS configuration. ${e.message}`
+          : "Could not update approval mode. Please check backend connection or CORS configuration."
+      );
     } finally {
       setApprovalModeBusy(false);
     }
