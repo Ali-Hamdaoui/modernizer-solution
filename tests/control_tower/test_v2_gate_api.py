@@ -608,12 +608,18 @@ def test_v2_approval_mode_enabling_with_no_open_gate_does_not_continue(tmp_path:
 
 
 def test_v2_approval_mode_enabling_auto_approves_already_open_valid_gate(tmp_path: Path) -> None:
-    """Backend Test 2: enabling Auto Approval with an already-open valid gate auto-approves it."""
+    """Backend Test 2: enabling Auto Approval with an already-open valid gate auto-approves it.
+
+    This test does NOT seed accepted analysis/planning revisions because the
+    auto-approval path uses approve_from_gate (same as the manual Approve
+    button and the `confirm checksum` assistant command), which does NOT
+    require accepted revision records.  The UI shows PASS based on events,
+    not on revision records.
+    """
     client, conn = _api_client(tmp_path)
     setup_id = _ready_setup(conn)
     job_id = _create_job(client, setup_id)
     seed_job(conn, job_id=job_id)
-    _seed_accepted_revisions(conn, job_id=job_id, stage_index=2)
     _seed_approval_resume_command(conn, job_id=job_id, stage_index=2, run_id="run-1")
     gate_id = _create_gate(conn, job_id)
     checksum = client.get(f"/v1/v2/jobs/{job_id}/gates/{gate_id}").json()["checksum"]
@@ -674,17 +680,28 @@ def test_v2_approval_mode_enabling_auto_approves_already_open_valid_gate(tmp_pat
     assert blocked_events == []
 
 
-def test_v2_auto_approval_skips_unsafe_open_gate_without_accepted_evidence(tmp_path: Path) -> None:
-    """Backend Test 4: Auto Approval must not approve a gate with no accepted analysis/plan."""
+def test_v2_auto_approval_skips_unsafe_gate_when_job_already_failed(tmp_path: Path) -> None:
+    """Backend Test 4: Auto Approval must not approve a gate when the job is already failed."""
     client, conn = _api_client(tmp_path)
     setup_id = _ready_setup(conn)
     job_id = _create_job(client, setup_id)
     seed_job(conn, job_id=job_id)
-    # NOTE: intentionally no _seed_accepted_revisions -> unsafe gate.
     _seed_approval_resume_command(conn, job_id=job_id, stage_index=2, run_id="run-1")
     gate_id = _create_gate(conn, job_id)
     checksum = client.get(f"/v1/v2/jobs/{job_id}/gates/{gate_id}").json()["checksum"]
     card_id = _seed_approval_card(conn, job_id=job_id, checksum=checksum)
+
+    # Mark the job as failed via a stage_failed event so the terminal-status
+    # guard blocks auto-approval.
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=2,
+            event_type="stage_failed",
+            status="failed",
+            message="Stage failed before auto approval was enabled.",
+            payload={},
+        )
 
     runner = _AutoApprovalLaunchRunner(conn)
     client.app.state.v2_orchestrator_runner = runner
@@ -697,7 +714,7 @@ def test_v2_auto_approval_skips_unsafe_open_gate_without_accepted_evidence(tmp_p
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["auto_approval_enabled"] is True
-    # Unsafe gate -> no auto-approval outcome.
+    # Failed job -> no auto-approval outcome.
     assert body["auto_approved"] is None
 
     # The gate remains open and the card remains pending (still blocked).
@@ -712,12 +729,6 @@ def test_v2_auto_approval_skips_unsafe_open_gate_without_accepted_evidence(tmp_p
     event_types = [event.type for event in events]
     assert "approval_auto_approved" not in event_types
     assert "approval_resume_queued" not in event_types
-    # A skip event records the safety reason.
-    assert "approval_auto_approved_skipped" in event_types
-    skip_event = next(event for event in events if event.type == "approval_auto_approved_skipped")
-    skip_payload = json.loads(skip_event.payload_json)
-    assert skip_payload["decision_source"] == "auto_approval"
-    assert skip_payload["reason"]
 
 
 def test_v2_gate_list_open_detail_and_legacy_proof_route(tmp_path: Path) -> None:
