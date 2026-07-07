@@ -7876,6 +7876,76 @@ def _is_sqlite_locked_error(exc: BaseException) -> bool:
     return "database is locked" in lowered or "database table is locked" in lowered or "locked" in lowered
 
 
+def _maybe_auto_approve_open_approval_gate(
+    uow: Any,
+    *,
+    job_id: str,
+) -> dict[str, Any] | None:
+    """Evaluate the currently open approval_review gate when Auto Approval is ON.
+
+    When Auto Approval is enabled while a valid approval gate is already open
+    and blocked, approve it immediately so the workflow continues to the
+    Transform phase without waiting for a manual click.
+
+    Reuses the same gate-resolution path (approve_transformation) as the
+    orchestrator auto-approval flow and the same resume creation path
+    (V2ApprovalMappingService.approve) as the manual approve endpoint.
+
+    Returns a dict with resume launch details when the gate was auto-approved,
+    or None when there is no eligible open gate or safety checks failed.
+    """
+    open_gates = uow.phase_gates.list_open(job_id)
+    approval_gates = [g for g in open_gates if g.gate_phase == "approval_review"]
+    if not approval_gates:
+        return None
+
+    events = uow.v2_events.list_by_job(job_id)
+    terminal_status = _v2_cancel_terminal_status(events)
+    if terminal_status is not None:
+        return None
+
+    commands = uow.v2_commands.list_by_job(job_id)
+    approval_service = V2ApprovalMappingService(uow.v2_approvals)
+    action_service = V2GateActionService(
+        uow.phase_gates,
+        uow.gate_decisions,
+        V2PhaseGateService(uow.phase_gates),
+        revision_repo=uow.artifact_revisions,
+        command_repo=uow.v2_commands,
+    )
+
+    for gate in approval_gates:
+        stage_index = gate.stage_index
+        try:
+            refs = json.loads(gate.source_artifact_refs_json or "[]")
+        except (json.JSONDecodeError, TypeError):
+            refs = []
+        gate_checksum_value = gate_checksum(
+            gate_id=gate.gate_id,
+            job_id=gate.job_id,
+            gate_phase=gate.gate_phase,
+            stage_index=gate.stage_index,
+            source_artifact_checksum=gate.source_artifact_checksum,
+            source_artifact_refs=refs if isinstance(refs, list) else [],
+        )
+
+        pending_cards = [
+            existing_card
+            for existing_card in uow.v2_approvals.list_cards_by_job(job_id)
+            if existing_card.stage_index == stage_index
+            and existing_card.status == "pending"
+            and existing_card.request_checksum == gate_checksum_value
+        ]
+        if not pending_cards:
+            continue
+        card = pending_cards[0]
+
+        # Safety checks and gate approval are added in subsequent commits.
+        _ = (approval_service, action_service, commands, stage_index, card, gate_checksum_value)
+
+    return None
+
+
 def _approval_review_revision_payload(
     *,
     job_id: str,
