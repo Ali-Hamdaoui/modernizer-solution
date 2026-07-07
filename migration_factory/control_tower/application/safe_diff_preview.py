@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import logging
+import shutil
+import subprocess
+import tempfile
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 from typing import Any
 
@@ -12,6 +16,8 @@ from migration_factory.control_tower.application.redaction import (
     redact_model_summary,
 )
 from migration_factory.control_tower.domain.checksums import sha256_hex
+
+logger = logging.getLogger(__name__)
 
 
 MAX_FILES = 20
@@ -560,3 +566,120 @@ def _strip_control_chars(text: str) -> str:
             continue
         result.append(ch)
     return "".join(result)
+
+
+@dataclass(frozen=True)
+class CanonicalizationResult:
+    success: bool
+    canonical_diff: str = ""
+    canonical_checksum: str = ""
+    reason: str = ""
+
+
+def canonicalize_with_recount(
+    *,
+    diff_text: str,
+    sandbox_path: str | Path,
+) -> CanonicalizationResult:
+    git_exe = shutil.which("git")
+    if git_exe is None:
+        return CanonicalizationResult(success=False, reason="git executable not found")
+    sandbox = Path(sandbox_path).resolve()
+    if not sandbox.is_dir():
+        return CanonicalizationResult(success=False, reason="sandbox not found")
+
+    normalized = diff_text.replace("\r\n", "\n").replace("\r", "\n")
+    if not normalized.endswith("\n"):
+        normalized += "\n"
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".diff", delete=False, encoding="utf-8"
+    ) as tmp:
+        tmp.write(normalized)
+        diff_path = Path(tmp.name)
+
+    try:
+        check_result = subprocess.run(
+            [git_exe, "apply", "--check", "--recount", str(diff_path)],
+            cwd=str(sandbox),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if check_result.returncode != 0:
+            stderr_summary = (check_result.stderr or check_result.stdout or "").strip()
+            reason = _apply_stderr_summary(stderr_summary, 400)
+            return CanonicalizationResult(
+                success=False,
+                reason=f"git apply --check --recount failed: {reason}",
+            )
+
+        with tempfile.TemporaryDirectory(suffix="_recount_canonical") as tmp_dir:
+            tmp_sandbox = Path(tmp_dir) / "sandbox_copy"
+            _mirror_files(sandbox, tmp_sandbox)
+
+            apply_result = subprocess.run(
+                [git_exe, "apply", "--recount", str(diff_path)],
+                cwd=str(tmp_sandbox),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            if apply_result.returncode != 0:
+                stderr_summary = (apply_result.stderr or apply_result.stdout or "").strip()
+                reason = _apply_stderr_summary(stderr_summary, 400)
+                return CanonicalizationResult(
+                    success=False,
+                    reason="git apply --recount passed check but apply failed: " + reason,
+                )
+
+            diff_result = subprocess.run(
+                [git_exe, "diff", "--binary"],
+                cwd=str(tmp_sandbox),
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            canonical_diff = diff_result.stdout or ""
+            if not canonical_diff.strip():
+                return CanonicalizationResult(
+                    success=False,
+                    reason="git diff produced empty output after recount apply",
+                )
+
+            canonical_checksum = sha256_hex(canonical_diff.encode("utf-8"))
+            return CanonicalizationResult(
+                success=True,
+                canonical_diff=canonical_diff,
+                canonical_checksum=canonical_checksum,
+            )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        return CanonicalizationResult(
+            success=False,
+            reason=f"canonicalization error: {type(exc).__name__}: {str(exc)[:200]}",
+        )
+    finally:
+        try:
+            diff_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _mirror_files(src: Path, dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    for item in src.iterdir():
+        target = dest / item.name
+        if item.is_dir():
+            if item.name in {".git"}:
+                continue
+            _mirror_files(item, target)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(item, target)
+
+
+def _apply_stderr_summary(stderr: str, max_chars: int = 400) -> str:
+    text = stderr.replace("\r\n", "\n").strip()
+    text = re.sub(r"[A-Za-z]:[\\/][^\s]+", "[redacted-path]", text)
+    text = re.sub(r"(?<!\w)/(?:Users|home)/[^\s]+", "[redacted-path]", text)
+    return text[:max_chars]

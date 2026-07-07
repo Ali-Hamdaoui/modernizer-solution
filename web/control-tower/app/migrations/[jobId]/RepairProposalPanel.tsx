@@ -403,6 +403,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
   const isCandidateDiff = proposal.kind === "direct_candidate_diff";
   const isApproveFailed = proposal.status === "approve_failed";
   const isApplyCheckFailed = proposal.reason_code === "PATCH_CHECK_FAILED";
+  const isPatchApplyFailed = proposal.reason_code === "PATCH_APPLY_FAILED";
 
   const approveAllowed = !isApproveFailed && proposal.allowed_actions.includes("approve_sandbox_apply");
   const revisionAllowed =
@@ -459,11 +460,19 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
 
           {isApproveFailed && (
             <div className="failure-summary" data-testid="approve-failed-summary">
-              <strong>{isApplyCheckFailed ? "Reviewed Repair Apply-Check Failed" : "Reviewed Repair Apply Failed"}</strong>
+              <strong>
+                {isApplyCheckFailed
+                  ? "Reviewed Repair Apply-Check Failed"
+                  : isPatchApplyFailed
+                    ? "Reviewed Repair Patch Apply Failed"
+                    : "Reviewed Repair Validation Failed"}
+              </strong>
               <p className="meta">
                 {isApplyCheckFailed
                   ? "Backend apply-check failed; new proposal required. No build/test rerun was started."
-                  : "Reviewer accepted and backend tried to apply, but the sandbox apply failed. The reviewed diff is still viewable. No build/test rerun was started."}
+                  : isPatchApplyFailed
+                    ? "Backend patch apply failed after review approval. No build/test rerun was started."
+                    : "Reviewer accepted and backend applied the diff, but validation failed after apply. The reviewed diff is still viewable."}
               </p>
               {proposal.reason_code && (
                 <p className="meta warning-text" data-testid="apply-reason-code">Reason code: {proposal.reason_code}</p>

@@ -1161,7 +1161,7 @@ export type SafeDiffPreview = {
   truncated: boolean;
   checksum_mismatch: boolean;
   redactions: string[];
-  parse_status: "parsed" | "unparseable" | "no_content";
+  parse_status: "parsed" | "unparseable" | "no_content" | "hunk_count_mismatch";
 };
 
 export type ReviewerVerdictProjection = {

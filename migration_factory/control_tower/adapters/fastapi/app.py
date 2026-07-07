@@ -1361,6 +1361,24 @@ def _reviewed_repair_stale_reason(
     return None
 
 
+def _direct_proposal_stale_reason(
+    *,
+    preview: Any | None,
+    record_status: str,
+) -> str | None:
+    if preview is None:
+        return "diff_preview_unavailable"
+    if getattr(preview, "parse_status", "") not in {"parsed", ""}:
+        return f"diff_unparseable_{getattr(preview, 'parse_status', 'unknown')}"
+    if bool(getattr(preview, "checksum_mismatch", False)):
+        return "diff_checksum_mismatch"
+    if getattr(preview, "truncated", False):
+        return "diff_truncated"
+    if not getattr(preview, "can_approve", False):
+        return "diff_not_approvable"
+    return None
+
+
 def _reviewed_repair_projection_evidence(
     *,
     uow: Any,
@@ -4072,8 +4090,14 @@ def create_app(
                         diff_ref=getattr(record, "diff_ref", None),
                         stored_diff_checksum=getattr(record, "diff_checksum", None),
                     )
+                    preview = build_safe_diff_preview(
+                        proposal_id=record.proposal_id,
+                        diff_ref=getattr(record, "diff_ref", None),
+                        stored_diff_checksum=getattr(record, "diff_checksum", None),
+                    )
                     # AMF-252: Direct proposals have no gate — skip gate-based evidence.
                     direct_proposal = gate_id is None
+                    direct_stale_reason: str | None = None
                     evidence = None
                     if not direct_proposal:
                         evidence = _reviewed_repair_projection_evidence(
@@ -4083,6 +4107,11 @@ def create_app(
                             gate=gate,
                             preview=preview,
                         )
+                    else:
+                        direct_stale_reason = _direct_proposal_stale_reason(
+                            preview=preview,
+                            record_status=record.status,
+                        )
                     record_status_reason = getattr(record, "status_reason", None) or ""
                     reason_code = None
                     if record_status_reason.startswith("["):
@@ -4091,7 +4120,12 @@ def create_app(
                             reason_code = record_status_reason[1:close]
                     actions = evidence.allowed_actions if evidence else READ_ONLY_REPAIR_ACTIONS + (("approve_sandbox_apply",) if direct_proposal else ("approve_sandbox_apply", "request_revision"))
                     if direct_proposal:
-                        actions = tuple(a for a in actions if a not in {"request_revision", "request_repair_revision", "revise_repair_proposal"})
+                        if direct_stale_reason is not None:
+                            actions = READ_ONLY_REPAIR_ACTIONS
+                        elif record.status != "approve_failed":
+                            actions = tuple(a for a in actions if a not in {"request_revision", "request_repair_revision", "revise_repair_proposal"})
+                    if record.status == "approve_failed":
+                        actions = READ_ONLY_REPAIR_ACTIONS
                     projection = build_reviewed_diff_proposal_from_record(
                         proposal_id=record.proposal_id,
                         status=record.status,
@@ -4115,7 +4149,7 @@ def create_app(
                         allowed_actions=actions,
                         final_diff_text=None,
                         reviewer_decision=evidence.reviewer_decision if evidence else getattr(record, "reviewer_decision", "accept"),
-                        stale_reason="stale_apply_check_failed" if reason_code == "PATCH_CHECK_FAILED" else (evidence.stale_reason if evidence else None),
+                        stale_reason="stale_apply_check_failed" if reason_code == "PATCH_CHECK_FAILED" else (evidence.stale_reason if evidence else direct_stale_reason),
                         current_gate_id=getattr(gate, "gate_id", None) if gate is not None else None,
                         gate_status=evidence.gate_status if evidence else None,
                         gate_decision=evidence.gate_decision if evidence else None,
@@ -4186,7 +4220,13 @@ def create_app(
                         diff_ref=getattr(record, "diff_ref", None),
                         stored_diff_checksum=getattr(record, "diff_checksum", None),
                     )
+                    preview = build_safe_diff_preview(
+                        proposal_id=record.proposal_id,
+                        diff_ref=getattr(record, "diff_ref", None),
+                        stored_diff_checksum=getattr(record, "diff_checksum", None),
+                    )
                     direct_proposal = gate_id is None
+                    direct_stale_reason: str | None = None
                     evidence = None
                     if not direct_proposal:
                         evidence = _reviewed_repair_projection_evidence(
@@ -4196,6 +4236,11 @@ def create_app(
                             gate=gate,
                             preview=preview,
                         )
+                    else:
+                        direct_stale_reason = _direct_proposal_stale_reason(
+                            preview=preview,
+                            record_status=record.status,
+                        )
                     record_status_reason = getattr(record, "status_reason", None) or ""
                     reason_code = None
                     if record_status_reason.startswith("["):
@@ -4204,7 +4249,12 @@ def create_app(
                             reason_code = record_status_reason[1:close]
                     actions = evidence.allowed_actions if evidence else READ_ONLY_REPAIR_ACTIONS + (("approve_sandbox_apply",) if direct_proposal else ("approve_sandbox_apply", "request_revision"))
                     if direct_proposal:
-                        actions = tuple(a for a in actions if a not in {"request_revision", "request_repair_revision", "revise_repair_proposal"})
+                        if direct_stale_reason is not None:
+                            actions = READ_ONLY_REPAIR_ACTIONS
+                        elif record.status != "approve_failed":
+                            actions = tuple(a for a in actions if a not in {"request_revision", "request_repair_revision", "revise_repair_proposal"})
+                    if record.status == "approve_failed":
+                        actions = READ_ONLY_REPAIR_ACTIONS
                     projection = build_reviewed_diff_proposal_from_record(
                         proposal_id=record.proposal_id,
                         status=record.status,
@@ -4227,7 +4277,7 @@ def create_app(
                         status_reason=record_status_reason,
                         allowed_actions=actions,
                         reviewer_decision=evidence.reviewer_decision if evidence else getattr(record, "reviewer_decision", "accept"),
-                        stale_reason="stale_apply_check_failed" if reason_code == "PATCH_CHECK_FAILED" else (evidence.stale_reason if evidence else None),
+                        stale_reason="stale_apply_check_failed" if reason_code == "PATCH_CHECK_FAILED" else (evidence.stale_reason if evidence else direct_stale_reason),
                         current_gate_id=getattr(gate, "gate_id", None) if gate is not None else None,
                         gate_status=evidence.gate_status if evidence else None,
                         gate_decision=evidence.gate_decision if evidence else None,
@@ -4864,18 +4914,21 @@ def create_app(
                 completed_at = utc_now_text()
                 stale_apply_check = reason_code == "PATCH_CHECK_FAILED"
                 is_true_apply_failure = reason_code == "PATCH_APPLY_FAILED"
-                reason_status = (
-                    f"[{reason_code}] Proposal stale/apply-check failed; new proposal required: {apply_reason}"
-                    if stale_apply_check
-                    else (f"[{reason_code}] Sandbox apply failed: {apply_reason}" if reason_code else f"Sandbox apply failed: {apply_reason}")
-                )
+                if stale_apply_check:
+                    reason_status = f"[{reason_code}] Proposal stale/apply-check failed; new proposal required: {apply_reason}"
+                elif is_true_apply_failure:
+                    reason_status = f"[{reason_code}] Patch apply failed after review approval; no rebuild/test was started: {apply_reason}"
+                elif reason_code:
+                    reason_status = f"[{reason_code}] Sandbox apply failed: {apply_reason}"
+                else:
+                    reason_status = f"Sandbox apply failed: {apply_reason}"
                 uow.v2_repairs.update_proposal_prf_fields(
                     proposal_id,
                     status="approve_failed",
                     status_reason=reason_status,
                     apply_status=apply_status,
-                    rerun_status="not_started" if stale_apply_check else "",
-                    rollback_status="not_started" if stale_apply_check else "",
+                    rerun_status="not_started" if (stale_apply_check or is_true_apply_failure) else "",
+                    rollback_status="not_started" if (stale_apply_check or is_true_apply_failure) else "",
                     remaining_attempts=0,
                     completed_at=completed_at,
                 )
@@ -4886,8 +4939,8 @@ def create_app(
                     "reason_code": reason_code,
                     "apply_classifier": reason_code,
                     "stale_reason": "stale_apply_check_failed" if stale_apply_check else "",
-                    "rerun_status": "not_started" if stale_apply_check else "",
-                    "rollback_status": "not_started" if stale_apply_check else "",
+                    "rerun_status": "not_started" if (stale_apply_check or is_true_apply_failure) else "",
+                    "rollback_status": "not_started" if (stale_apply_check or is_true_apply_failure) else "",
                     "stage_index": int(stage_index) if proposal_is_direct else getattr(gate, "stage_index", None),
                     "route_step_index": _route_step_index,
                     "command_id": command_id,
@@ -4897,17 +4950,22 @@ def create_app(
                     event_payload["target_files"] = tuple(
                         getattr(apply_result, "touched_paths", ()) or ()
                     )
+                if stale_apply_check:
+                    event_type = "repair_approve_apply_check_failed"
+                    message = f"Backend apply-check failed for proposal {proposal_id}; new proposal required."
+                elif is_true_apply_failure:
+                    event_type = "repair_approve_patch_apply_failed"
+                    message = f"Patch apply failed for proposal {proposal_id} after review approval; no build/test rerun started."
+                else:
+                    event_type = "repair_approve_apply_failed"
+                    message = f"Sandbox apply failed for proposal {proposal_id}: {apply_reason}"
                 _append_v2_event(
                     uow,
                     job_id=job_id,
                     stage=getattr(gate, "stage_index", None),
-                    event_type="repair_approve_apply_check_failed" if stale_apply_check else "repair_approve_apply_failed",
+                    event_type=event_type,
                     status="failed",
-                    message=(
-                        f"Backend apply-check failed for proposal {proposal_id}; new proposal required."
-                        if stale_apply_check
-                        else f"Sandbox apply failed for proposal {proposal_id}: {apply_reason}"
-                    ),
+                    message=message,
                     payload=event_payload,
                 )
                 return RepairProposalApproveResponse(
@@ -4915,8 +4973,8 @@ def create_app(
                     proposal_id=proposal_id,
                     status="approve_failed",
                     apply_status=apply_status,
-                    rerun_status="not_started" if stale_apply_check else "",
-                    rollback_status="not_started" if stale_apply_check else "",
+                    rerun_status="not_started" if (stale_apply_check or is_true_apply_failure) else "",
+                    rollback_status="not_started" if (stale_apply_check or is_true_apply_failure) else "",
                     reason_code=reason_code,
                     status_reason=reason_status,
                 ).model_dump()
@@ -5037,17 +5095,99 @@ def create_app(
                     rollback_status = "rolled_back" if rollback_ok else "rollback_failed"
                 # V1 direct flow: keep applied patch, capture failure evidence, allow next repair loop
                 if proposal_is_direct:
+                    build_error_contract_ref = str(validation.artifact_refs.get("repair_build_error_contract", "") or "")
+                    build_error_contract_content: dict[str, Any] | str = ""
+                    if build_error_contract_ref:
+                        try:
+                            build_error_contract_content = json.loads(Path(build_error_contract_ref).read_text(encoding="utf-8"))
+                        except (OSError, json.JSONDecodeError, TypeError):
+                            try:
+                                build_error_contract_content = Path(build_error_contract_ref).read_text(encoding="utf-8")
+                            except OSError:
+                                build_error_contract_content = ""
+                    rerun_result = {
+                        "proposal_id": proposal_id,
+                        "attempt": int(getattr(record, "attempt_number", None) or 1),
+                        "passed": validation.passed,
+                        "build_status": validation.build_status,
+                        "test_status": validation.test_status,
+                        "h2_status": validation.h2_status,
+                        "validation_commands": list(validation.validation_commands),
+                        "warnings": list(validation.warnings),
+                        "errors": list(validation.errors),
+                        "artifact_refs": dict(validation.artifact_refs),
+                        "repair_build_error_contract": {
+                            "artifact_ref": build_error_contract_ref,
+                            "artifact_content": build_error_contract_content,
+                        },
+                    }
                     completed_at = utc_now_text()
+                    prior_evidence_checksum = str(getattr(record, "failure_evidence_ref", "") or "")
+                    prior_context_checksum = str(getattr(record, "repair_context_ref", "") or getattr(record, "context_pack_checksum", "") or "")
+                    prior_primary_output_checksum = str(getattr(record, "proposal_checksum", "") or getattr(record, "diff_checksum", "") or "")
+                    prior_reviewer_output_checksum = str(getattr(record, "reviewer_output_checksum", "") or "")
+                    prior_final_diff_checksum = str(getattr(record, "diff_checksum", "") or "")
+                    prior_policy_validation_checksum = str(getattr(record, "policy_validation_checksum", "") or "")
+                    prior_base_repo_state_checksum = str(getattr(record, "validation_result_ref", "") or "")
+                    transition = None
+                    try:
+                        repair_gate_svc = V2RepairGateService(
+                            gate_service=V2PhaseGateService(uow.phase_gates),
+                        )
+                        transition = repair_gate_svc.create_next_repair_cycle_from_rerun_failure(
+                            job_id=job_id,
+                            stage_index=stage_index_for_route,
+                            command_id=command_id,
+                            prior_evidence_checksum=prior_evidence_checksum,
+                            prior_context_checksum=prior_context_checksum,
+                            prior_primary_output_checksum=prior_primary_output_checksum,
+                            prior_reviewer_output_checksum=prior_reviewer_output_checksum,
+                            prior_final_diff_checksum=prior_final_diff_checksum,
+                            prior_policy_validation_checksum=prior_policy_validation_checksum,
+                            prior_base_repo_state_checksum=prior_base_repo_state_checksum,
+                            apply_result={
+                                "status": apply_status,
+                                "reason": apply_reason,
+                                "reason_code": reason_code,
+                                "snapshot_dir": str(getattr(apply_result, "snapshot_dir", "") or ""),
+                                "touched_paths": list(getattr(apply_result, "touched_paths", ()) or ()),
+                                "created_paths": list(getattr(apply_result, "created_paths", ()) or ()),
+                                "reviewer_notes": list(getattr(apply_result, "reviewer_notes", ()) or ()),
+                            },
+                            rerun_result=rerun_result,
+                            rollback_result=None,
+                            user_comments="",
+                            sandbox_path=sandbox_path,
+                            run_dir=run_dir_path,
+                            legacy_path=legacy_path,
+                            deterministic_rule_id=str(apply_context.get("deterministic_rule_id", "") or ""),
+                            source_profile=str(apply_context.get("source_profile", "") or getattr(record, "source_profile", "") or ""),
+                            target_profile=str(apply_context.get("target_profile", "") or getattr(record, "target_profile", "") or ""),
+                            previous_repair_review_checksums=(),
+                            max_cycles=getattr(repair_gate_svc, "_max_repair_attempts", None),
+                            model_client=getattr(app.state, "model_client", None),
+                            h2_required=apply_context.get("h2_required", False),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "direct_validation_repair_cycle_failed job=%s proposal=%s: %s",
+                            job_id,
+                            proposal_id,
+                            exc,
+                        )
                     uow.v2_repairs.update_proposal_prf_fields(
                         proposal_id,
                         status="approve_failed",
-                        status_reason=f"Validation failed after sandbox apply: {'; '.join(validation.errors)}",
+                        status_reason=f"Validation failed after apply: {'; '.join(validation.errors)}",
                         apply_status=apply_status,
                         rerun_status=rerun_status,
                         rollback_status=rollback_status,
-                        remaining_attempts=0,
+                        remaining_attempts=0 if transition and transition.status == "attempts_exhausted" else None,
                         completed_at=completed_at,
+                        next_gate_id=(transition.gate_id or None) if transition else None,
+                        next_gate_status=(transition.status or None) if transition else None,
                     )
+                    allowed_next_actions = ("view_result",)
                     # Always emit repair_validation_failed
                     _append_v2_event(
                         uow,
@@ -5055,7 +5195,7 @@ def create_app(
                         stage=stage_index_for_route,
                         event_type="repair_validation_failed",
                         status="failed",
-                        message=f"Repair validation failed for proposal {proposal_id}",
+                        message=f"Repair validation failed after apply for proposal {proposal_id}",
                         payload={
                             "proposal_id": proposal_id,
                             "rerun_status": rerun_status,
@@ -5066,6 +5206,8 @@ def create_app(
                             "errors": validation.errors,
                             "warnings": validation.warnings,
                             "artifact_refs": validation.artifact_refs,
+                            "repair_build_error_contract": rerun_result["repair_build_error_contract"],
+                            "validation_commands": rerun_result["validation_commands"],
                         },
                     )
                     # Emit build_failed if build did not pass
@@ -5083,6 +5225,8 @@ def create_app(
                                 "command_id": command_id,
                                 "build_status": validation.build_status,
                                 "errors": validation.errors,
+                                "artifact_refs": validation.artifact_refs,
+                                "repair_build_error_contract": rerun_result["repair_build_error_contract"],
                             },
                         )
                     # Emit test_failed if tests did not pass
@@ -5100,6 +5244,7 @@ def create_app(
                                 "command_id": command_id,
                                 "test_status": validation.test_status,
                                 "errors": validation.errors,
+                                "artifact_refs": validation.artifact_refs,
                             },
                         )
                     # Emit h2_startup_failed if h2 failed
@@ -5117,8 +5262,13 @@ def create_app(
                                 "command_id": command_id,
                                 "h2_status": validation.h2_status,
                                 "errors": validation.errors,
+                                "artifact_refs": validation.artifact_refs,
                             },
                         )
+                    if transition and transition.status == "created":
+                        next_gate_id = transition.gate_id or None
+                        next_gate_status = transition.status or None
+                        allowed_next_actions = ("view_result",)
                 else:
                     # Gated path: create next repair cycle
                     repair_gate_svc = V2RepairGateService(
@@ -5137,7 +5287,7 @@ def create_app(
                     uow.v2_repairs.update_proposal_prf_fields(
                         proposal_id,
                         status="approve_failed",
-                        status_reason=f"Validation failed after sandbox apply: {'; '.join(validation.errors)}",
+                        status_reason=f"Validation failed after apply: {'; '.join(validation.errors)}",
                         apply_status=apply_status,
                         rerun_status=rerun_status,
                         rollback_status=rollback_status,

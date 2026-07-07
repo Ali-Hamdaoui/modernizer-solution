@@ -41,6 +41,10 @@ from migration_factory.control_tower.application.v2_phase_gate_service import (
 from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
 )
+from migration_factory.control_tower.application.safe_diff_preview import (
+    build_safe_diff_preview,
+    canonicalize_with_recount,
+)
 from migration_factory.control_tower.domain.checksums import (
     sha256_canonical_json,
     sha256_hex,
@@ -71,6 +75,7 @@ from migration_factory.repair_loop.failure_evidence import (
 from migration_factory.repair_loop.patch_gate import evaluate_patch_proposal
 from migration_factory.repair_loop.patch_apply import (
     REASON_CODE_PATCH_CHECK_FAILED,
+    REASON_CODE_PATCH_APPLY_FAILED,
     check_patch_applicability,
     validate_unified_diff_structure,
 )
@@ -378,7 +383,44 @@ class V2RepairGateService:
         final_diff_exists = bool(review_chain.get("final_diff_exists"))
         proposed_diff_exists = bool(review_chain.get("proposed_diff_exists"))
         reviewer_decision = str(review_chain.get("reviewer_decision") or "")
+        context_checksum = str(payload["_repair_context_pack_checksum"])
+        direct_sandbox = str(payload.get("_repair_sandbox_path", "")).strip() or sandbox_path_for_chain or ""
+
         if final_diff_exists and reviewer_decision == "accept":
+            if direct_sandbox:
+                resolved_diff, resolved_checksum, diff_valid, diff_gate_reason = (
+                    self._validate_direct_proposal_diff(
+                        chain_result=chain_result,
+                        sandbox_path=direct_sandbox,
+                        output_dir=output_dir,
+                    )
+                )
+                if not diff_valid:
+                    self._emit_reviewed_repair_materialization_failed(
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        context_checksum=context_checksum,
+                        reason_code=_materialization_reason_code(diff_gate_reason),
+                        chain=review_chain,
+                        detail=diff_gate_reason,
+                    )
+                    logger.warning(
+                        "direct_proposal_diff_gate_failed job=%s stage=%d reason=%s",
+                        job_id, stage_index, diff_gate_reason,
+                    )
+                    self._emit_reviewed_repair_unavailable(
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        context_checksum=context_checksum,
+                        reason_code=_materialization_reason_code(diff_gate_reason),
+                    )
+                    return RepairGateCreationResult(
+                        gate_id="",
+                        gate_checksum="",
+                        diagnosis=None,
+                        status="skipped",
+                        reason=f"direct proposal diff validation failed: {diff_gate_reason}",
+                    )
             try:
                 proposal_id, proposal_diff_checksum = self._persist_direct_reviewed_repair_proposal(
                     job_id=job_id,
@@ -429,6 +471,38 @@ class V2RepairGateService:
 
         # ── V1 direct candidate path (reviewer did not accept, but main proposed diff exists) ──
         if proposed_diff_exists and not final_diff_exists:
+            if direct_sandbox:
+                _cand_valid, _cand_reason = self._validate_direct_candidate_diff(
+                    chain_result=chain_result,
+                    sandbox_path=direct_sandbox,
+                    output_dir=output_dir,
+                )
+                if not _cand_valid:
+                    self._emit_reviewed_repair_materialization_failed(
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        context_checksum=context_checksum,
+                        reason_code=_materialization_reason_code(_cand_reason),
+                        chain=review_chain,
+                        detail=_cand_reason,
+                    )
+                    logger.warning(
+                        "direct_candidate_diff_gate_failed job=%s stage=%d reason=%s",
+                        job_id, stage_index, _cand_reason,
+                    )
+                    self._emit_reviewed_repair_unavailable(
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        context_checksum=context_checksum,
+                        reason_code=_materialization_reason_code(_cand_reason),
+                    )
+                    return RepairGateCreationResult(
+                        gate_id="",
+                        gate_checksum="",
+                        diagnosis=None,
+                        status="skipped",
+                        reason=f"direct candidate diff validation failed: {_cand_reason}",
+                    )
             try:
                 proposal_id, proposal_diff_checksum = self._persist_direct_candidate_repair_proposal(
                     job_id=job_id,
@@ -1503,6 +1577,82 @@ class V2RepairGateService:
             )
         return proposal_id
 
+    def _validate_direct_proposal_diff(
+        self,
+        *,
+        chain_result: dict[str, Any],
+        sandbox_path: str,
+        output_dir: Path,
+    ) -> tuple[str, str, bool, str]:
+        """Validate and potentially canonicalize a direct proposal diff.
+
+        Returns (resolved_diff_text, resolved_checksum, valid, reason).
+        If valid is True, the diff passes parse, checksum, and apply-check.
+        """
+        chain = dict(chain_result.get("review_chain") or {})
+        final_diff_ref = str(chain.get("final_diff_ref") or "")
+        if not final_diff_ref:
+            return "", "", False, "missing_final_diff_ref"
+
+        diff_path = Path(final_diff_ref)
+        if not diff_path.is_file():
+            return "", "", False, "final_diff_file_not_found"
+
+        diff_text = diff_path.read_text(encoding="utf-8")
+        diff_checksum = sha256_hex(diff_text.encode("utf-8"))
+        canonical_diff_text = diff_text
+        canonical_checksum = diff_checksum
+
+        preview = build_safe_diff_preview(
+            proposal_id="pre-materialization",
+            diff_ref=final_diff_ref,
+            stored_diff_checksum=diff_checksum,
+        )
+
+        if preview.parse_status == "hunk_count_mismatch":
+            recount_result = canonicalize_with_recount(
+                diff_text=diff_text,
+                sandbox_path=sandbox_path,
+            )
+            if recount_result.success:
+                canonical_diff_text = recount_result.canonical_diff
+                canonical_checksum = recount_result.canonical_checksum
+                canonical_diff_path = output_dir / "final_reviewed_repair_canonical.diff"
+                canonical_diff_path.write_text(canonical_diff_text, encoding="utf-8")
+                chain["final_diff_ref"] = str(canonical_diff_path)
+                chain["final_diff_canonicalized"] = True
+                chain_result["review_chain"] = chain
+                diff_path = canonical_diff_path
+                logger.info(
+                    "direct_proposal_canonicalized diff_checksum=%s canonical_checksum=%s",
+                    diff_checksum, canonical_checksum,
+                )
+            else:
+                return "", "", False, f"hunk_count_mismatch_recount_failed: {recount_result.reason}"
+
+        if preview.parse_status not in {"parsed", "hunk_count_mismatch"}:
+            return canonical_diff_text, canonical_checksum, False, f"parse_status_{preview.parse_status}"
+
+        if preview.parse_status == "hunk_count_mismatch" and canonical_diff_text == diff_text:
+            return canonical_diff_text, canonical_checksum, False, "hunk_count_mismatch_unresolved"
+
+        if preview.checksum_mismatch:
+            return canonical_diff_text, canonical_checksum, False, "checksum_mismatch"
+
+        applicability_result = check_patch_applicability(
+            sandbox_path=sandbox_path,
+            unified_diff=canonical_diff_text,
+            run_dir=str(output_dir.parent),
+            attempt="direct_preproposal",
+        )
+        if applicability_result.status != "CHECKED":
+            reason_code = getattr(applicability_result, "reason_code", "")
+            if reason_code == REASON_CODE_PATCH_CHECK_FAILED:
+                return canonical_diff_text, canonical_checksum, False, "PATCH_CHECK_FAILED"
+            return canonical_diff_text, canonical_checksum, False, reason_code or "PATCH_CHECK_FAILED"
+
+        return canonical_diff_text, canonical_checksum, True, ""
+
     def _persist_direct_reviewed_repair_proposal(
         self,
         *,
@@ -1577,6 +1727,54 @@ class V2RepairGateService:
                 )
             )
         return proposal_id, public_diff_checksum
+
+    def _validate_direct_candidate_diff(
+        self,
+        *,
+        chain_result: dict[str, Any],
+        sandbox_path: str,
+        output_dir: Path,
+    ) -> tuple[bool, str]:
+        """Validate a direct candidate diff (proposed_diff from primary output).
+
+        Returns (valid, reason).
+        """
+        chain = dict(chain_result.get("review_chain") or {})
+        primary = _read_json_ref(chain.get("primary_output_ref"))
+        proposed_diff = str(primary.get("proposed_diff", ""))
+        if not proposed_diff:
+            return False, "empty_proposed_diff"
+
+        diff_checksum = sha256_hex(proposed_diff.encode("utf-8"))
+        candidate_path = output_dir / "candidate_diff_precheck.diff"
+        candidate_path.write_text(proposed_diff, encoding="utf-8")
+
+        preview = build_safe_diff_preview(
+            proposal_id="pre-materialization-candidate",
+            diff_ref=candidate_path,
+            stored_diff_checksum=diff_checksum,
+        )
+
+        if preview.parse_status == "hunk_count_mismatch":
+            return False, "hunk_count_mismatch"
+
+        if preview.parse_status not in {"parsed", "hunk_count_mismatch"}:
+            return False, f"parse_status_{preview.parse_status}"
+
+        if preview.checksum_mismatch:
+            return False, "checksum_mismatch"
+
+        applicability_result = check_patch_applicability(
+            sandbox_path=sandbox_path,
+            unified_diff=proposed_diff,
+            run_dir=str(output_dir.parent),
+            attempt="candidate_preproposal",
+        )
+        if applicability_result.status != "CHECKED":
+            reason_code = getattr(applicability_result, "reason_code", "")
+            return False, reason_code or "PATCH_CHECK_FAILED"
+
+        return True, ""
 
     def _persist_direct_candidate_repair_proposal(
         self,
