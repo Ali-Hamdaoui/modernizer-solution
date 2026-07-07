@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -54,6 +54,17 @@ def test_pdf_handles_table_with_long_cells() -> None:
         assert content.startswith(b"%PDF-1.4")
 
 
+def test_pdf_creates_missing_output_directory() -> None:
+    markdown = "# Report\n\nGenerated content.\n"
+    with TemporaryDirectory() as tmpdir:
+        md_path = Path(tmpdir) / "input.md"
+        pdf_path = Path(tmpdir) / "nested" / "reports" / "output.pdf"
+        md_path.write_text(markdown, encoding="utf-8")
+
+        write_text_pdf_from_markdown(str(md_path), str(pdf_path))
+
+        assert pdf_path.is_file()
+        assert pdf_path.read_bytes().startswith(b"%PDF-1.4")
 def test_wrap_text_splits_long_lines() -> None:
     text = "A" * 200
     wrapped = _wrap_text(text, max_chars=80)
@@ -80,3 +91,21 @@ def test_split_long_word_returns_none_for_short_text() -> None:
     text = "short"
     result = _split_long_word(text, max_chars=80)
     assert result is None
+
+
+def test_pdf_paginates_long_report() -> None:
+    sections = [
+        f"## Section {index}\n\n" + "This line is intentionally repeated to force the report renderer to add another PDF page. " * 3
+        for index in range(80)
+    ]
+    markdown = "# Long Report\n\n" + "\n".join(sections)
+    with TemporaryDirectory() as tmpdir:
+        md_path = Path(tmpdir) / "input.md"
+        pdf_path = Path(tmpdir) / "output.pdf"
+        md_path.write_text(markdown, encoding="utf-8")
+
+        write_text_pdf_from_markdown(str(md_path), str(pdf_path))
+
+        content = pdf_path.read_bytes()
+        assert content.startswith(b"%PDF-1.4")
+        assert content.count(b"/Type /Page /Parent") > 1
