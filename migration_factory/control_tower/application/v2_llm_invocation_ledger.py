@@ -69,6 +69,8 @@ class V2LLMInvocationLedger:
         responsibility: str,
         proposal_id: str | None = None,
         gate_id: str | None = None,
+        stage_index: int | None = None,
+        attempt_number: int | None = None,
         context_checksum: str | None = None,
         input_checksum: str | None = None,
         schema_name: str | None = None,
@@ -88,6 +90,8 @@ class V2LLMInvocationLedger:
             created_at=created_at,
             proposal_id=proposal_id,
             gate_id=gate_id,
+            stage_index=stage_index,
+            attempt_number=attempt_number,
             context_checksum=context_checksum,
             input_checksum=input_checksum,
             schema_name=schema_name,
@@ -120,6 +124,7 @@ class V2LLMInvocationLedger:
         deterministic_fallback_used: bool = False,
     ) -> None:
         """Record successful completion of a model invocation."""
+        self._ensure_started(invocation_id)
         if output_checksum is None and output is not None:
             output_checksum = compute_content_checksum(output)
         safe_summary = str(redact_model_summary(redacted_summary or ""))[:500] if redacted_summary else None
@@ -154,8 +159,11 @@ class V2LLMInvocationLedger:
         redacted_summary: str | None = None,
         latency_ms: int | None = None,
         fallback_used: bool = False,
+        accepted_provider_source: str | None = None,
+        deterministic_fallback_used: bool = False,
     ) -> None:
         """Record failure of a model invocation."""
+        self._ensure_started(invocation_id)
         safe_error = str(redact_model_summary(redacted_error or ""))[:500] if redacted_error else None
         safe_summary = str(redact_model_summary(redacted_summary or ""))[:500] if redacted_summary else None
         self._repository.update_status(
@@ -166,7 +174,18 @@ class V2LLMInvocationLedger:
             latency_ms=latency_ms,
             completed_at=utc_now_text(),
             fallback_used=1 if fallback_used else 0,
+            accepted_provider_source=accepted_provider_source,
+            deterministic_fallback_used=1 if deterministic_fallback_used else 0,
         )
+
+    def _ensure_started(self, invocation_id: str) -> None:
+        record = self._repository.get(invocation_id)
+        if record is None:
+            raise RuntimeError(f"Invocation {invocation_id} not found")
+        if record.status != "started":
+            raise RuntimeError(
+                f"Invocation {invocation_id} is already terminal with status {record.status!r}"
+            )
 
     def get_invocation(self, invocation_id: str) -> V2LLMInvocationRecord | None:
         return self._repository.get(invocation_id)

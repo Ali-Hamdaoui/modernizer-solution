@@ -211,6 +211,127 @@ class _Ledger:
         return None
 
 
+class RecordingLedger:
+    def __init__(self) -> None:
+        self.count = 0
+        self.rows: dict[str, dict[str, Any]] = {}
+
+    def start_invocation(self, **kwargs: Any) -> str:
+        self.count += 1
+        invocation_id = f"inv-{self.count}"
+        self.rows[invocation_id] = {"invocation_id": invocation_id, "status": "started", **kwargs}
+        return invocation_id
+
+    def complete_invocation(self, invocation_id: str, **kwargs: Any) -> None:
+        row = self.rows[invocation_id]
+        assert row["status"] == "started"
+        row.update(kwargs)
+        row["status"] = "fallback" if kwargs.get("fallback_used") else "completed"
+
+    def fail_invocation(self, invocation_id: str, **kwargs: Any) -> None:
+        row = self.rows[invocation_id]
+        assert row["status"] == "started"
+        row.update(kwargs)
+        row["status"] = "fallback" if kwargs.get("fallback_used") else "failed"
+
+
+class SequenceRepairClient:
+    def __init__(self, results: list[V2AssistantModelResult]) -> None:
+        self.results = list(results)
+        self.calls: list[V2ModelRole] = []
+        self.prompts: list[str] = []
+
+    def answer_with_role(
+        self, *, role: V2ModelRole, prompt: str, fallback: str, **_: Any
+    ) -> V2AssistantModelResult:
+        self.calls.append(role)
+        self.prompts.append(prompt)
+        if not self.results:
+            raise AssertionError("No queued model result")
+        result = self.results.pop(0)
+        if role == V2ModelRole.REVIEWER and result.content in {"__ACCEPT__", "__MISMATCH_CONTEXT__", "__REVISE__", "__REJECT__"}:
+            decision = {
+                "__ACCEPT__": "accept",
+                "__MISMATCH_CONTEXT__": "accept",
+                "__REVISE__": "revise",
+                "__REJECT__": "reject",
+            }[result.content]
+            return V2AssistantModelResult(
+                content=_accept_reviewer_json(
+                    prompt,
+                    decision=decision,
+                    context_checksum="mismatched-checksum" if result.content == "__MISMATCH_CONTEXT__" else None,
+                ),
+                source=result.source,
+                model_status=result.model_status,
+                provider=result.provider,
+                role=role.value,
+                success=result.success,
+                redacted_summary=result.redacted_summary,
+                failure_reason=result.failure_reason,
+                fallback_used=result.fallback_used,
+            )
+        return result
+
+
+def _model_result(
+    content: str,
+    *,
+    role: str,
+    success: bool = True,
+    source: str = "fake",
+    provider: str = "fake",
+    model_status: str = "live_ok",
+    failure_reason: str = "",
+    fallback_used: bool = False,
+) -> V2AssistantModelResult:
+    return V2AssistantModelResult(
+        content=content,
+        source=source,
+        model_status=model_status,
+        provider=provider,
+        role=role,
+        success=success,
+        redacted_summary="safe summary",
+        failure_reason=failure_reason,
+        fallback_used=fallback_used,
+    )
+
+
+def _run_chain(
+    tmp_path: Path,
+    client: Any,
+    ledger: RecordingLedger,
+    *,
+    output_name: str = "chain",
+    proposal_id: str | None = "proposal-123",
+    gate_id: str | None = "gate-123",
+    attempt_number: int | None = 7,
+) -> dict[str, Any]:
+    evidence = _make_evidence(job_id="job-corr", stage_index=3)
+    context = _make_context(evidence, cycle_number=5)
+    return produce_repair_review_chain(
+        failure_evidence=evidence,
+        context_pack=context,
+        output_dir=tmp_path / output_name,
+        model_client=client,
+        invocation_ledger=ledger,
+        proposal_id=proposal_id,
+        gate_id=gate_id,
+        attempt_number=attempt_number,
+    )
+
+
+def _assert_fail_closed(output_dir: Path, ledger: RecordingLedger) -> None:
+    assert ledger.rows
+    assert all(row["status"] != "started" for row in ledger.rows.values())
+    assert not (output_dir / "final_reviewed_repair_artifact.json").exists()
+    assert not (output_dir / "final_reviewed_repair.diff").exists()
+    assert not list(output_dir.glob("*candidate*"))
+    assert not list(output_dir.glob("*approval*"))
+    assert not list(output_dir.glob("*apply*"))
+
+
 # ── F5-T3: _is_unified_diff ──────────────────────────────────────────
 
 
@@ -466,6 +587,220 @@ def test_produce_success_with_accept_decision(tmp_path: Path) -> None:
     assert result["review_chain"]["model_roles"]["reviewer"]["available"] is True
     assert "deployment" not in json.dumps(result["review_chain"]["model_roles"]).lower()
     assert "endpoint" not in json.dumps(result["review_chain"]["model_roles"]).lower()
+
+
+def test_invocation_correlation_and_provider_fallback_statuses(tmp_path: Path) -> None:
+    ledger = RecordingLedger()
+    client = SequenceRepairClient(
+        [
+            _model_result(
+                _valid_primary_json(),
+                role="proposer",
+                provider="azure_secondary",
+                source="azure_secondary",
+                fallback_used=True,
+            ),
+            _model_result(
+                "__ACCEPT__",
+                role="reviewer",
+                provider="azure_secondary",
+                source="azure_secondary",
+                fallback_used=True,
+            ),
+        ]
+    )
+
+    result = _run_chain(tmp_path, client, ledger)
+
+    proposer_id = result["review_chain"]["proposer_invocation_id"]
+    reviewer_id = result["review_chain"]["reviewer_invocation_id"]
+    assert proposer_id != reviewer_id
+    proposer = ledger.rows[proposer_id]
+    reviewer = ledger.rows[reviewer_id]
+    for row in (proposer, reviewer):
+        assert row["job_id"] == "job-corr"
+        assert row["stage_index"] == 3
+        assert row["attempt_number"] == 7
+        assert row["proposal_id"] == "proposal-123"
+        assert row["gate_id"] == "gate-123"
+        assert row["status"] == "fallback"
+        assert row["accepted_provider_source"] == "azure_secondary"
+        assert row["deterministic_fallback_used"] is False
+    assert proposer["responsibility"] == "repair_proposal"
+    assert reviewer["responsibility"] == "repair_review"
+    assert (tmp_path / "chain" / "final_reviewed_repair_artifact.json").exists()
+    assert not list((tmp_path / "chain").glob("*candidate*"))
+    assert not list((tmp_path / "chain").glob("*approval*"))
+    assert not list((tmp_path / "chain").glob("*apply*"))
+
+
+@pytest.mark.parametrize(
+    ("name", "results", "expected_status", "expected_reason"),
+    [
+        (
+            "primary_invalid_json",
+            [_model_result("not json", role="proposer")],
+            ["failed"],
+            "valid JSON",
+        ),
+        (
+            "primary_schema_invalid",
+            [_model_result(json.dumps({"schema_version": "1.0"}), role="proposer")],
+            ["failed"],
+            "schema invalid",
+        ),
+        (
+            "primary_invalid_diff_path",
+            [
+                _model_result(
+                    json.dumps(
+                        {
+                            **json.loads(_valid_primary_json()),
+                            "changed_files": ["../escape.java"],
+                            "proposed_diff": "plain text",
+                        },
+                        sort_keys=True,
+                    ),
+                    role="proposer",
+                )
+            ],
+            ["failed"],
+            "invalid primary repair output",
+        ),
+        (
+            "reviewer_invalid_json",
+            [_model_result(_valid_primary_json(), role="proposer"), _model_result("not json", role="reviewer")],
+            ["completed", "failed"],
+            "valid JSON",
+        ),
+        (
+            "reviewer_checksum_mismatch",
+            [_model_result(_valid_primary_json(), role="proposer"), _model_result("__MISMATCH_CONTEXT__", role="reviewer")],
+            ["completed", "failed"],
+            "checksum mismatch",
+        ),
+        (
+            "reviewer_revise",
+            [
+                _model_result(_valid_primary_json(), role="proposer"),
+                _model_result("__REVISE__", role="reviewer"),
+            ],
+            ["completed", "failed"],
+            "reviewer decision failed closed: revise",
+        ),
+        (
+            "reviewer_reject",
+            [
+                _model_result(_valid_primary_json(), role="proposer"),
+                _model_result("__REJECT__", role="reviewer"),
+            ],
+            ["completed", "failed"],
+            "reviewer decision failed closed: reject",
+        ),
+        (
+            "deterministic_proposer_fallback",
+            [
+                _model_result(
+                    "fallback",
+                    role="proposer",
+                    success=False,
+                    source="deterministic",
+                    provider="deterministic",
+                    model_status="fallback",
+                    failure_reason="missing_deployment",
+                    fallback_used=True,
+                )
+            ],
+            ["fallback"],
+            "primary repair model failed closed",
+        ),
+        (
+            "deterministic_reviewer_fallback",
+            [
+                _model_result(_valid_primary_json(), role="proposer"),
+                _model_result(
+                    "fallback",
+                    role="reviewer",
+                    success=False,
+                    source="deterministic",
+                    provider="deterministic",
+                    model_status="fallback",
+                    failure_reason="missing_deployment",
+                    fallback_used=True,
+                ),
+            ],
+            ["completed", "fallback"],
+            "reviewer repair model failed closed",
+        ),
+    ],
+)
+def test_terminal_ledger_failure_states(
+    tmp_path: Path,
+    name: str,
+    results: list[V2AssistantModelResult],
+    expected_status: list[str],
+    expected_reason: str,
+) -> None:
+    ledger = RecordingLedger()
+    output_dir = tmp_path / name
+    with pytest.raises(RepairReviewChainProductionError) as exc_info:
+        _run_chain(tmp_path, SequenceRepairClient(results), ledger, output_name=name)
+
+    assert expected_reason in str(exc_info.value)
+    assert [row["status"] for row in ledger.rows.values()] == expected_status
+    _assert_fail_closed(output_dir, ledger)
+    if "deterministic" in name:
+        terminal = list(ledger.rows.values())[-1]
+        assert terminal["deterministic_fallback_used"] is True
+        assert terminal["accepted_provider_source"] == "deterministic"
+
+
+def test_primary_artifact_write_failure_gets_terminal_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import migration_factory.orchestrator.repair_review_chain as module
+
+    ledger = RecordingLedger()
+    real_write_json = module._write_json
+
+    def fail_primary_artifact(path: Path, payload: Any) -> None:
+        if path.name == "primary_repair_llm_output.json":
+            raise OSError("artifact write blocked")
+        real_write_json(path, payload)
+
+    monkeypatch.setattr(module, "_write_json", fail_primary_artifact)
+    output_dir = tmp_path / "primary_artifact_write"
+    with pytest.raises(RepairReviewChainProductionError):
+        _run_chain(tmp_path, SequenceRepairClient([_model_result(_valid_primary_json(), role="proposer")]), ledger, output_name="primary_artifact_write")
+
+    assert [row["status"] for row in ledger.rows.values()] == ["failed"]
+    _assert_fail_closed(output_dir, ledger)
+
+
+def test_reviewer_final_artifact_write_failure_gets_terminal_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import migration_factory.orchestrator.repair_review_chain as module
+
+    ledger = RecordingLedger()
+    real_write_json = module._write_json
+
+    def fail_final_artifact(path: Path, payload: Any) -> None:
+        if path.name == "final_reviewed_repair_artifact.json":
+            raise OSError("final artifact write blocked")
+        real_write_json(path, payload)
+
+    monkeypatch.setattr(module, "_write_json", fail_final_artifact)
+    output_dir = tmp_path / "reviewer_final_artifact_write"
+    with pytest.raises(RepairReviewChainProductionError):
+        _run_chain(
+            tmp_path,
+            SequenceRepairClient([
+                _model_result(_valid_primary_json(), role="proposer"),
+                _model_result("__ACCEPT__", role="reviewer"),
+            ]),
+            ledger,
+            output_name="reviewer_final_artifact_write",
+        )
+
+    assert [row["status"] for row in ledger.rows.values()] == ["completed", "failed"]
+    _assert_fail_closed(output_dir, ledger)
 
 
 def test_produce_accepts_real_provider_fallback(tmp_path: Path) -> None:

@@ -459,6 +459,8 @@ class V2RepairGateService:
             cycle_number=cycle_number,
             model_client=model_client,
             h2_required=h2_required,
+            proposal_id=proposal_id,
+            gate_id=gate_id,
         )
         if reviewed_result.status == "created":
             return GateActionResult(
@@ -510,6 +512,8 @@ class V2RepairGateService:
         cycle_number: int = 1,
         model_client: Any | None = None,
         h2_required: bool = False,
+        proposal_id: str | None = None,
+        gate_id: str | None = None,
     ) -> RepairGateCreationResult:
         """Regenerate a full Azure repair review chain after user revision request.
 
@@ -572,6 +576,9 @@ class V2RepairGateService:
                 target_profile=target_profile or evidence.target_profile,
                 model_client=model_client,
                 invocation_ledger=self._invocation_ledger,
+                proposal_id=proposal_id,
+                gate_id=gate_id,
+                attempt_number=cycle_number,
             )
         except Exception:
             return RepairGateCreationResult(
@@ -1027,6 +1034,7 @@ class V2RepairGateService:
                 target_profile=target_profile or evidence.target_profile,
                 model_client=model_client,
                 invocation_ledger=self._invocation_ledger,
+                attempt_number=current_cycle,
             )
         except Exception:
             _write_cycle_artifact(

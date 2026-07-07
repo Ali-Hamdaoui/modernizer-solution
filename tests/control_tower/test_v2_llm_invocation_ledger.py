@@ -870,6 +870,43 @@ class TestTokenAndLatency:
         assert record.latency_ms == 1234
         conn.close()
 
+    def test_correlation_and_failure_audit_survive_repository_restart(self, tmp_path: Path) -> None:
+        conn = _apply_migration_only(tmp_path)
+        ledger = _make_ledger(conn)
+        inv_id = ledger.start_invocation(
+            job_id="job-corr",
+            role="main",
+            responsibility="repair_proposal",
+            proposal_id="proposal-corr",
+            gate_id="gate-corr",
+            stage_index=4,
+            attempt_number=2,
+        )
+        ledger.fail_invocation(
+            inv_id,
+            redacted_error="deterministic fallback reached; endpoint secret=redacted",
+            fallback_used=True,
+            accepted_provider_source="deterministic",
+            deterministic_fallback_used=True,
+        )
+        db_path = Path(conn.execute("PRAGMA database_list").fetchone()["file"])
+        conn.commit()
+        conn.close()
+
+        reopened = sqlite3.connect(str(db_path))
+        reopened.row_factory = sqlite3.Row
+        record = _make_ledger(reopened).get_invocation(inv_id)
+        assert record is not None
+        assert record.job_id == "job-corr"
+        assert record.stage_index == 4
+        assert record.attempt_number == 2
+        assert record.proposal_id == "proposal-corr"
+        assert record.gate_id == "gate-corr"
+        assert record.status == "fallback"
+        assert record.accepted_provider_source == "deterministic"
+        assert record.deterministic_fallback_used == 1
+        reopened.close()
+
 
 # ── API integration test ──────────────────────────────────────────────
 
