@@ -575,6 +575,7 @@ export type V2DraftActionResponse = {
 export type V2ApprovalModeResponse = {
   job_id: string;
   auto_approval_enabled: boolean;
+  autoApprovalEnabled?: boolean;
   job: V2MigrationJobResponse | null;
 };
 
