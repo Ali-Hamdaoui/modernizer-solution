@@ -458,6 +458,25 @@ def _seed_approval_resume_command(
     return command_id
 
 
+def test_v2_approval_mode_preflight_allows_patch_from_local_frontend(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+
+    response = client.options(
+        f"/v1/v2/migration-jobs/{job_id}/approval-mode",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "PATCH",
+            "Access-Control-Request-Headers": "content-type,x-control-tower-client",
+        },
+    )
+
+    assert response.status_code in {200, 204}, response.text
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert "PATCH" in response.headers["access-control-allow-methods"]
+    assert "content-type" in response.headers["access-control-allow-headers"].lower()
+
 def test_v2_approval_mode_endpoint_defaults_false_and_toggles(tmp_path: Path) -> None:
     client, conn = _api_client(tmp_path)
     setup_id = _ready_setup(conn)
@@ -469,11 +488,12 @@ def test_v2_approval_mode_endpoint_defaults_false_and_toggles(tmp_path: Path) ->
 
     enable_response = client.patch(
         f"/v1/v2/migration-jobs/{job_id}/approval-mode",
-        json={"auto_approval_enabled": True},
+        json={"autoApprovalEnabled": True},
         headers=_mutation_headers(),
     )
     assert enable_response.status_code == 200, enable_response.text
     assert enable_response.json()["auto_approval_enabled"] is True
+    assert enable_response.json()["autoApprovalEnabled"] is True
     assert enable_response.json()["job"]["auto_approval_enabled"] is True
     assert SqliteUnitOfWork(conn).v2_jobs.get_auto_approval_enabled(job_id) is True
 
@@ -484,6 +504,7 @@ def test_v2_approval_mode_endpoint_defaults_false_and_toggles(tmp_path: Path) ->
     )
     assert disable_response.status_code == 200, disable_response.text
     assert disable_response.json()["auto_approval_enabled"] is False
+    assert disable_response.json()["autoApprovalEnabled"] is False
     assert SqliteUnitOfWork(conn).v2_jobs.get_auto_approval_enabled(job_id) is False
 
     events = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
