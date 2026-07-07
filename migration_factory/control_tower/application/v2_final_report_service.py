@@ -270,6 +270,7 @@ class V2FinalReportService:
             state["run_dir"] = str(Path.cwd() / "reports" / job_id)
 
         report_dir.mkdir(parents=True, exist_ok=True)
+        state = _state_with_migration_history(uow, job_id, state)
 
         input_checksum = _compute_input_checksum(state)
 
@@ -334,6 +335,208 @@ class V2FinalReportService:
             ))
 
         return result
+
+
+def _state_with_migration_history(uow: Any, job_id: str, state: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(state)
+    history = _build_pipeline_history(uow, job_id)
+    stages = history.get("stages", [])
+    if isinstance(stages, list) and stages:
+        existing = enriched.get("pipeline_history")
+        if not isinstance(existing, list) or len(stages) >= len(existing):
+            enriched["pipeline_history"] = stages
+    source_stack = history.get("source_stack")
+    if isinstance(source_stack, dict) and source_stack and not isinstance(enriched.get("full_migration_source_stack"), dict):
+        enriched["full_migration_source_stack"] = source_stack
+    elif isinstance(source_stack, dict) and source_stack and not enriched.get("full_migration_source_stack"):
+        enriched["full_migration_source_stack"] = source_stack
+    target_stack = history.get("target_stack")
+    if isinstance(target_stack, dict) and target_stack and not isinstance(enriched.get("full_migration_target_stack"), dict):
+        enriched["full_migration_target_stack"] = target_stack
+    elif isinstance(target_stack, dict) and target_stack and not enriched.get("full_migration_target_stack"):
+        enriched["full_migration_target_stack"] = target_stack
+    return enriched
+
+
+def _build_pipeline_history(uow: Any, job_id: str) -> dict[str, Any]:
+    commands = _list_stage_commands(uow, job_id)
+    if not commands:
+        return {"source_stack": {}, "target_stack": {}, "stages": []}
+
+    events_by_stage = _events_by_stage(uow, job_id)
+    latest_by_stage: dict[int, Any] = {}
+    for command in sorted(commands, key=lambda item: (_int_or_zero(getattr(item, "stage_index", 0)), str(getattr(item, "created_at", "")), str(getattr(item, "updated_at", "")))):
+        stage_index = _int_or_zero(getattr(command, "stage_index", 0))
+        if stage_index <= 0:
+            continue
+        latest_by_stage[stage_index] = command
+
+    stages: list[dict[str, Any]] = []
+    for stage_index in sorted(latest_by_stage):
+        command = latest_by_stage[stage_index]
+        result = _json_dict(getattr(command, "result_json", None))
+        stage_def = _stage_definition(stage_index)
+        source_stack = _stack_from_result(result, "source_stack", stage_def["source_stack"])
+        target_stack = _stack_from_result(result, "target_stack", stage_def["target_stack"])
+        artifact_refs = result.get("artifact_refs") if isinstance(result.get("artifact_refs"), dict) else {}
+        warnings = result.get("warnings") if isinstance(result.get("warnings"), list) else []
+        errors = result.get("errors") if isinstance(result.get("errors"), list) else []
+        blockers = result.get("blockers") if isinstance(result.get("blockers"), list) else []
+        stages.append({
+            "stage_index": stage_index,
+            "pipeline_stage": str(result.get("pipeline_stage") or f"Stage {stage_index}"),
+            "profile": str(result.get("profile") or result.get("profile_id") or stage_def["profile"]),
+            "source_stack": source_stack,
+            "target_stack": target_stack,
+            "chain_status": str(result.get("final_status") or result.get("status") or getattr(command, "status", "")),
+            "transform_status": str(result.get("transform_status") or ""),
+            "build_status": str(result.get("build_status") or ""),
+            "test_status": str(result.get("test_status") or ""),
+            "run_id": str(result.get("run_id") or ""),
+            "duration_seconds": _duration_from_result(result),
+            "artifact_refs": {str(key): str(value) for key, value in artifact_refs.items() if value},
+            "warnings": [str(item) for item in warnings],
+            "blockers": [str(item) for item in blockers],
+            "errors": [str(item) for item in errors],
+            "events": events_by_stage.get(stage_index, []),
+        })
+
+    return {
+        "source_stack": dict(stages[0].get("source_stack", {})) if stages else {},
+        "target_stack": _last_success_target_stack(stages) or (dict(stages[-1].get("target_stack", {})) if stages else {}),
+        "stages": stages,
+    }
+
+
+def _list_stage_commands(uow: Any, job_id: str) -> tuple[Any, ...]:
+    repo = getattr(uow, "v2_commands", None)
+    if repo is None:
+        return ()
+    list_by_job = getattr(repo, "list_by_job", None)
+    if callable(list_by_job):
+        records = list_by_job(job_id)
+        if isinstance(records, (list, tuple)):
+            return tuple(records)
+    list_by_stage = getattr(repo, "list_by_job_and_stage", None)
+    if not callable(list_by_stage):
+        return ()
+    commands: list[Any] = []
+    for stage_index in range(1, TERMINAL_STAGE_INDEX + 1):
+        records = list_by_stage(job_id, stage_index)
+        if isinstance(records, (list, tuple)):
+            commands.extend(records)
+    return tuple(commands)
+
+
+def _events_by_stage(uow: Any, job_id: str) -> dict[int, list[dict[str, Any]]]:
+    repo = getattr(uow, "v2_events", None)
+    list_by_job = getattr(repo, "list_by_job", None) if repo is not None else None
+    if not callable(list_by_job):
+        return {}
+    records = list_by_job(job_id)
+    if not isinstance(records, (list, tuple)):
+        return {}
+    grouped: dict[int, list[dict[str, Any]]] = {}
+    for record in records:
+        stage_index = _int_or_zero(getattr(record, "stage", 0))
+        if stage_index <= 0:
+            continue
+        grouped.setdefault(stage_index, []).append({
+            "type": str(getattr(record, "type", "")),
+            "status": str(getattr(record, "status", "")),
+            "message": str(getattr(record, "message", "")),
+            "created_at": str(getattr(record, "created_at", "")),
+        })
+    return grouped
+
+
+def _stage_definition(stage_index: int) -> dict[str, Any]:
+    definitions = {
+        1: {
+            "profile": "springboot-2.1.6-to-2.7-java11",
+            "source_stack": {"spring_boot": "2.1.6", "java": "11"},
+            "target_stack": {"spring_boot": "2.7.x", "java": "11"},
+        },
+        2: {
+            "profile": "springboot-2.7-to-3.5-java17",
+            "source_stack": {"spring_boot": "2.7.x", "java": "11"},
+            "target_stack": {"spring_boot": "3.5.x", "java": "17"},
+        },
+        3: {
+            "profile": "springboot-3.5-java17-to-3.5-java21",
+            "source_stack": {"spring_boot": "3.5.x", "java": "17"},
+            "target_stack": {"spring_boot": "3.5.x", "java": "21"},
+        },
+        4: {
+            "profile": "springboot-3.5-java21-to-4.0-java21",
+            "source_stack": {"spring_boot": "3.5.x", "java": "21"},
+            "target_stack": {"spring_boot": "4.0.x", "java": "21"},
+        },
+    }
+    return definitions.get(stage_index, {"profile": f"stage-{stage_index}", "source_stack": {}, "target_stack": {}})
+
+
+def _json_dict(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(str(raw))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _stack_from_result(result: dict[str, Any], key: str, fallback: dict[str, Any]) -> dict[str, Any]:
+    value = result.get(key)
+    if isinstance(value, dict) and value:
+        return {str(k): v for k, v in value.items()}
+    return dict(fallback)
+
+
+def _duration_from_result(result: dict[str, Any]) -> float | None:
+    for key in ("duration_seconds", "total_duration_seconds"):
+        duration = _float_or_none(result.get(key))
+        if duration is not None:
+            return duration
+    timing = result.get("timing") if isinstance(result.get("timing"), dict) else {}
+    duration = _float_or_none(timing.get("total_duration_seconds"))
+    if duration is not None:
+        return duration
+    phase_durations = timing.get("phase_durations_seconds") if isinstance(timing, dict) else None
+    if isinstance(phase_durations, dict):
+        return _float_or_none(phase_durations.get("total_run"))
+    return None
+
+
+def _last_success_target_stack(stages: list[dict[str, Any]]) -> dict[str, Any]:
+    for stage in reversed(stages):
+        status = str(stage.get("chain_status") or "")
+        if status in {"PASS", "completed", "TRANSFORM_APPLIED_IN_SANDBOX"}:
+            target = stage.get("target_stack")
+            if isinstance(target, dict) and target:
+                return dict(target)
+    return {}
+
+
+def _float_or_none(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def _int_or_zero(value: Any) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return 0
 
 
 @dataclass
