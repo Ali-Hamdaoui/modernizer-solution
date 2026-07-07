@@ -591,6 +591,10 @@ class StageProgressRequest(BaseModel):
     setup_id: str
     current_stage: int
 
+class ApprovalModeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    auto_approval_enabled: bool
+
 
 class AssistantMessageRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -1358,6 +1362,50 @@ def create_app(
             )
         return service.result_to_dict(result)
 
+    @app.patch(
+        "/v1/v2/jobs/{job_id}/approval-mode",
+        include_in_schema=False,
+        operation_id="patch_v2_job_approval_mode_alias",
+    )
+    @app.patch("/v1/v2/migration-jobs/{job_id}/approval-mode")
+    def patch_v2_job_approval_mode(
+        job_id: str,
+        payload: ApprovalModeRequest,
+    ) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            job = _require_v2_job(uow, job_id)
+            enabled = uow.v2_jobs.set_auto_approval_enabled(
+                job_id,
+                payload.auto_approval_enabled,
+                updated_at=utc_now_text(),
+                updated_by="control-tower-frontend",
+            )
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=None,
+                event_type="approval_mode_updated",
+                status="updated",
+                message=(
+                    "Auto Approval enabled." if enabled else "Auto Approval disabled."
+                ),
+                payload={"job_id": job_id, "auto_approval_enabled": enabled},
+            )
+            service = V2MigrationJobService(
+                setup_repo=uow.v2_setups,
+                job_repo=uow.v2_jobs,
+                run_config_repo=uow.run_configurations,
+                runner_profile_repo=uow.runner_profiles,
+                pipeline_repo=uow.pipeline_definitions,
+            )
+            result = service.get_job(job.job_id)
+        asyncio.run(app.state.public_event_notifier.notify())
+        return {
+            "job_id": job_id,
+            "auto_approval_enabled": enabled,
+            "job": service.result_to_dict(result) if result is not None else None,
+        }
+
     @app.get(
         "/v1/v2/jobs/{job_id}/stages",
         include_in_schema=False,
@@ -1707,6 +1755,12 @@ def create_app(
 
         actor_type = payload.actor_type.value if hasattr(payload.actor_type, "value") else str(payload.actor_type)
         action_value = payload.action.value if hasattr(payload.action, "value") else str(payload.action)
+        if actor_type == GateActorType.SYSTEM.value:
+            raise _error(
+                status.HTTP_403_FORBIDDEN,
+                "SYSTEM_ACTOR_FORBIDDEN",
+                "System gate actions are backend-owned and cannot be submitted by API clients.",
+            )
         if action_value == GateDecision.OVERRIDE_SOURCE_PROFILE.value:
             result = action_service.override_source_profile(
                 gate_id=gate_id,
@@ -11472,7 +11526,7 @@ def _build_status_answer(
     latest = events[-1] if events else None
     failures = [event for event in events if event.status == "failed" or event.type in {"stage_failed", "transform_failed", "build_failed"}]
     pending_approvals = [card for card in approvals if card.status == "pending"]
-    approved_cards = [card for card in approvals if card.status == "approved"]
+    approved_cards = [card for card in approvals if card.status in {"approved", "auto_approved"}]
     completed = [event for event in events if event.type == "stage_completed"]
     repair_events = [event for event in events if event.type in {"repair_started", "repair_fallback_generated"}]
     running_events = [event for event in events if event.status == "running"]
@@ -11662,7 +11716,7 @@ def _build_v2_assistant_prompt(
     approved_cards = [
         {"card_id": card.card_id, "stage_index": card.stage_index, "status": card.status}
         for card in approvals
-        if card.status == "approved"
+        if card.status in {"approved", "auto_approved"}
     ]
     # Build grouped failure summary (one card per root cause, with collapsed repair events)
     grouped_failure_summary = _v2_failure_summary(job_id="", events=events)
