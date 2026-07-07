@@ -52,6 +52,7 @@ import type {
 } from "../../../lib/contracts";
 import { MIGRATION_PROFILE_OPTIONS } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
+import Stage4TargetVersionComparison from "./Stage4TargetVersionComparison";
 import { RepairProposalPanel } from "./RepairProposalPanel";
 
 export function formatGateArtifactRefLabel(ref: string): string {
@@ -1847,6 +1848,20 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
               type: e.type,
               payload: (e as Record<string, unknown>).payload as Record<string, unknown> | undefined,
             }))}
+          />
+        </section>
+      )}
+
+      {/* Stage 4 target dependency version CSV comparison */}
+      {data && (
+        <section style={{ gridColumn: "1 / -1" }}>
+          <Stage4TargetVersionComparison
+            jobId={normalizedJobId || jobId || ""}
+            stage4Completed={
+              (data.stages || []).some(
+                (s) => s.stage_index === 4 && s.chain_status === "completed"
+              )
+            }
           />
         </section>
       )}
