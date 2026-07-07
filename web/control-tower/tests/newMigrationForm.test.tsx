@@ -309,16 +309,16 @@ describe("F3/F4 Profile selectors and route preview", () => {
     expect(MIGRATION_PROFILE_OPTIONS.find((p) => p.id === "springboot-2.7-java11")?.selectableAsTarget).toBe(true);
   });
 
-  it("defaults are springboot-2.7-java11 source and springboot-4.0-java21 target", () => {
+  it("defaults are springboot-2.1-java11 source and springboot-4.0-java21 target", () => {
     const defaults = {
-      sourceProfile: "springboot-2.7-java11" as MigrationProfileId,
+      sourceProfile: "springboot-2.1-java11" as MigrationProfileId,
       targetProfile: "springboot-4.0-java21" as MigrationProfileId,
     };
     const sourceOption = MIGRATION_PROFILE_OPTIONS.find((p) => p.id === defaults.sourceProfile);
     const targetOption = MIGRATION_PROFILE_OPTIONS.find((p) => p.id === defaults.targetProfile);
     expect(sourceOption).toBeDefined();
     expect(sourceOption!.selectableAsSource).toBe(true);
-    expect(sourceOption!.selectableAsTarget).toBe(true);
+    expect(sourceOption!.selectableAsTarget).toBe(false);
     expect(targetOption).toBeDefined();
     expect(targetOption!.selectableAsSource).toBe(false);
     expect(targetOption!.selectableAsTarget).toBe(true);
