@@ -7940,8 +7940,46 @@ def _maybe_auto_approve_open_approval_gate(
             continue
         card = pending_cards[0]
 
-        # Safety checks and gate approval are added in subsequent commits.
-        _ = (approval_service, action_service, commands, stage_index, card, gate_checksum_value)
+        profile_metadata = _approval_review_profile_metadata_for_resume(
+            uow,
+            job_id=job_id,
+            stage_index=stage_index,
+        )
+        revision_repo = getattr(uow, "artifact_revisions", None)
+        accepted_analysis = (
+            revision_repo.find_accepted(job_id, stage_index, "analysis")
+            if revision_repo is not None
+            else None
+        )
+        accepted_plan = (
+            revision_repo.find_accepted(job_id, stage_index, "planning")
+            if revision_repo is not None
+            else None
+        )
+        checksum_present = bool(gate.source_artifact_checksum)
+        safe_to_approve = (
+            profile_metadata is not None
+            and checksum_present
+            and accepted_analysis is not None
+            and accepted_plan is not None
+        )
+        print("[auto-approval-check]", {
+            "job_id": job_id,
+            "auto_approval_enabled": True,
+            "has_open_gate": True,
+            "gate_id": gate.gate_id,
+            "gate_type": gate.gate_phase,
+            "gate_status": gate.gate_status,
+            "checksum_present": checksum_present,
+            "card_id": card.card_id,
+            "analysis_status": "PASS" if accepted_analysis else "MISSING",
+            "planning_status": "PASS" if accepted_plan else "MISSING",
+            "assessment_status": "PASS" if profile_metadata else "MISSING",
+            "safe_to_approve": safe_to_approve,
+        })
+
+        # Gate approval and skip-event handling are added in subsequent commits.
+        _ = (approval_service, action_service, commands, safe_to_approve)
 
     return None
 
