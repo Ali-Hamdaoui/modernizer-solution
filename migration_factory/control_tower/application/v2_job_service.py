@@ -77,6 +77,7 @@ class V2MigrationJobResult:
     excluded_stages: tuple[int, ...] = ()
     skipped_stages: tuple[int, ...] = ()
     route_steps: tuple[dict[str, Any], ...] = ()
+    auto_approval_enabled: bool = False
 
 
 class V2MigrationJobService:
@@ -245,6 +246,7 @@ class V2MigrationJobService:
             excluded_stages=route.excluded_stages,
             skipped_stages=route.skipped_stages,
             route_steps=projected_route_steps,
+            auto_approval_enabled=False,
         )
 
     def _validate_run_configuration_dependencies(self, run_config: RunConfiguration) -> None:
@@ -323,6 +325,7 @@ class V2MigrationJobService:
                 route_step_to_dict(step)
                 for step in project_route_steps(route, stages=tuple(stages))
             ),
+            auto_approval_enabled=self._job_repo.get_auto_approval_enabled(job_id),
         )
 
     def list_jobs(self) -> tuple[V2MigrationJobResult, ...]:
@@ -379,6 +382,7 @@ class V2MigrationJobService:
                     route_step_to_dict(step)
                     for step in project_route_steps(route, stages=tuple(stages))
                 ),
+                auto_approval_enabled=self._job_repo.get_auto_approval_enabled(r.job_id),
             ))
         return tuple(results)
 
@@ -409,6 +413,7 @@ class V2MigrationJobService:
             "created_at": result.created_at,
             "stage_continuation_policy": result.stage_continuation_policy,
             "run_configuration_id": result.run_configuration_id,
+            "auto_approval_enabled": result.auto_approval_enabled,
         }
 
 
