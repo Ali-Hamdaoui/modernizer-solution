@@ -458,6 +458,38 @@ def _seed_approval_resume_command(
     return command_id
 
 
+def test_v2_approval_mode_endpoint_defaults_false_and_toggles(tmp_path: Path) -> None:
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client, setup_id)
+
+    job_response = client.get(f"/v1/v2/migration-jobs/{job_id}")
+    assert job_response.status_code == 200, job_response.text
+    assert job_response.json()["auto_approval_enabled"] is False
+
+    enable_response = client.patch(
+        f"/v1/v2/migration-jobs/{job_id}/approval-mode",
+        json={"auto_approval_enabled": True},
+        headers=_mutation_headers(),
+    )
+    assert enable_response.status_code == 200, enable_response.text
+    assert enable_response.json()["auto_approval_enabled"] is True
+    assert enable_response.json()["job"]["auto_approval_enabled"] is True
+    assert SqliteUnitOfWork(conn).v2_jobs.get_auto_approval_enabled(job_id) is True
+
+    disable_response = client.patch(
+        f"/v1/v2/jobs/{job_id}/approval-mode",
+        json={"auto_approval_enabled": False},
+        headers=_mutation_headers(),
+    )
+    assert disable_response.status_code == 200, disable_response.text
+    assert disable_response.json()["auto_approval_enabled"] is False
+    assert SqliteUnitOfWork(conn).v2_jobs.get_auto_approval_enabled(job_id) is False
+
+    events = SqliteUnitOfWork(conn).v2_events.list_by_job(job_id)
+    mode_events = [event for event in events if event.type == "approval_mode_updated"]
+    assert [json.loads(event.payload_json)["auto_approval_enabled"] for event in mode_events] == [True, False]
+
 def test_v2_gate_list_open_detail_and_legacy_proof_route(tmp_path: Path) -> None:
     client, conn = _api_client(tmp_path)
     setup_id = _ready_setup(conn)
