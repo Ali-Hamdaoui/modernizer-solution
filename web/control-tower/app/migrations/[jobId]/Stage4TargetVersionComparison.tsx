@@ -1,6 +1,6 @@
-﻿"use client";
+"use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { applyStage4TargetVersionChanges, getV2RootPomPreview } from "../../../lib/controlTowerApi";
 import type { Stage4TargetVersionApplyResponse } from "../../../lib/contracts";
 
@@ -24,7 +24,8 @@ export type TargetVersionComparisonRow = TargetVersionRow & {
 
 type Props = {
   jobId: string;
-  stage4Completed: boolean;
+  comparisonAvailable: boolean;
+  rootPomStageIndex?: number;
 };
 
 type PomVersion = {
@@ -33,7 +34,17 @@ type PomVersion = {
   duplicate: boolean;
 };
 
-export default function Stage4TargetVersionComparison({ jobId, stage4Completed }: Props) {
+type ZipEntry = {
+  name: string;
+  compressionMethod: number;
+  compressedData: Uint8Array;
+};
+
+const TARGET_VERSION_FILE_ACCEPT =
+  ".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+export default function Stage4TargetVersionComparison({ jobId, comparisonAvailable, rootPomStageIndex = 1 }: Props) {
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [fileName, setFileName] = useState("");
   const [rows, setRows] = useState<TargetVersionComparisonRow[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -42,12 +53,16 @@ export default function Stage4TargetVersionComparison({ jobId, stage4Completed }
   const [applyResult, setApplyResult] = useState<Stage4TargetVersionApplyResponse | null>(null);
 
   async function loadComparison(targetRows: TargetVersionRow[]) {
-    const pomPreview = await getV2RootPomPreview(jobId, 4);
+    const pomPreview = await getV2RootPomPreview(jobId, rootPomStageIndex);
     const pomText = pomPreview.content ?? pomPreview.preview;
     if (!pomPreview.exists || !pomText.trim()) {
-      throw new Error("Stage 4 root pom.xml is not available yet.");
+      throw new Error(`Stage ${rootPomStageIndex} root pom.xml is not available yet.`);
     }
-    setRows(compareTargetVersionsToPom(targetRows, pomText));
+    const comparisonRows = compareTargetVersionsToPom(targetRows, pomText);
+    if (comparisonRows.length === 0) {
+      throw new Error(`No uploaded dependencies matched the Stage ${rootPomStageIndex} root pom.xml.`);
+    }
+    setRows(comparisonRows);
   }
 
   async function handleFileSelected(file: File | null) {
@@ -56,19 +71,19 @@ export default function Stage4TargetVersionComparison({ jobId, stage4Completed }
     setApplyResult(null);
     setFileName(file?.name ?? "");
     if (!file) return;
-    if (!stage4Completed) {
-      setError("Stage 4 must complete before comparing target versions.");
+    if (!comparisonAvailable) {
+      setError("The latest migration stage must complete before comparing target versions.");
       return;
     }
-    if (!file.name.toLowerCase().endsWith(".csv")) {
-      setError("Upload a CSV file with groupId, artifactId, and targetVersion columns.");
+    if (!isSupportedTargetVersionFile(file.name)) {
+      setError("Upload a CSV or Excel .xlsx file with groupId, artifactId, and targetVersion columns.");
       return;
     }
     setLoading(true);
     try {
-      const targetRows = parseTargetVersionsCsv(await file.text());
+      const targetRows = await parseTargetVersionsFile(file);
       if (targetRows.length === 0) {
-        throw new Error("CSV did not contain any dependency rows.");
+        throw new Error("Uploaded file did not contain any dependency rows.");
       }
       await loadComparison(targetRows);
     } catch (err) {
@@ -85,7 +100,7 @@ export default function Stage4TargetVersionComparison({ jobId, stage4Completed }
     setApplyResult(null);
     setApplying(true);
     try {
-      const result = await applyStage4TargetVersionChanges(jobId, {
+      const result = await applyStage4TargetVersionChanges(jobId, rootPomStageIndex, {
         idempotency_key: createIdempotencyKey(),
         changes: candidates.map((row) => ({
           group_id: row.groupId,
@@ -106,28 +121,40 @@ export default function Stage4TargetVersionComparison({ jobId, stage4Completed }
 
   const summary = useMemo(() => summarizeComparison(rows), [rows]);
   const applyableCount = rows.filter((row) => row.canApply && row.status === "different").length;
+  const csvInputDisabled = loading || applying || !comparisonAvailable;
 
   return (
     <section className="panel cockpit-panel target-version-panel">
       <h2>Target Dependency Versions</h2>
       <p className="meta">
-        Upload a CSV file to compare target dependency versions with the Stage 4 root pom.xml. No file is changed until Change is clicked.
+        Upload a CSV or Excel .xlsx file to compare target dependency versions with the latest completed stage root pom.xml. No file is changed until Change is clicked.
       </p>
       <div className="csv-upload-row">
         <input
-          aria-label="Upload target dependency version CSV"
-          accept=".csv,text/csv"
-          disabled={loading || applying || !stage4Completed}
+          ref={fileInputRef}
+          aria-label="Upload target dependency version CSV or Excel file"
+          accept={TARGET_VERSION_FILE_ACCEPT}
+          data-testid="target-version-csv-input"
+          disabled={csvInputDisabled}
+          hidden
           type="file"
           onChange={(event) => void handleFileSelected(event.currentTarget.files?.[0] ?? null)}
         />
+        <button
+          type="button"
+          data-testid="target-version-csv-button"
+          disabled={csvInputDisabled}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          Choisir fichier
+        </button>
         <button type="button" disabled={applying || applyableCount === 0} onClick={() => void handleApplyChanges()}>
           {applying ? "Changing..." : "Change"}
         </button>
       </div>
-      {!stage4Completed && <p className="meta">CSV comparison unlocks after Stage 4 completes successfully.</p>}
+      {!comparisonAvailable && <p className="meta">File comparison unlocks after the latest migration stage completes successfully.</p>}
       {fileName && <p className="meta">File: <code>{fileName}</code></p>}
-      {loading && <p className="meta">Reading CSV and Stage 4 POM...</p>}
+      {loading && <p className="meta">Reading file and latest stage POM...</p>}
       {error && <p className="target-version-error" role="alert">{error}</p>}
       {rows.length > 0 && (
         <>
@@ -135,7 +162,6 @@ export default function Stage4TargetVersionComparison({ jobId, stage4Completed }
             <span className="status-badge completed">{summary.matches} match</span>
             <span className="status-badge running">{summary.different} different</span>
             <span className="status-badge blocked">{summary.noExplicitVersion} managed/no version</span>
-            <span className="status-badge failed">{summary.missing} missing</span>
             <span className="status-badge blocked">{summary.blocked} blocked</span>
           </div>
           <div className="target-version-table-wrap">
@@ -143,8 +169,8 @@ export default function Stage4TargetVersionComparison({ jobId, stage4Completed }
               <thead>
                 <tr>
                   <th>Dependency</th>
-                  <th>CSV target</th>
-                  <th>Stage 4 POM</th>
+                  <th>Uploaded target</th>
+                  <th>Current POM version</th>
                   <th>Source</th>
                   <th>Status</th>
                 </tr>
@@ -200,11 +226,194 @@ export default function Stage4TargetVersionComparison({ jobId, stage4Completed }
   );
 }
 
+export async function parseTargetVersionsFile(file: File): Promise<TargetVersionRow[]> {
+  const fileName = file.name.toLowerCase();
+  if (fileName.endsWith(".csv")) {
+    return parseTargetVersionsCsv(await file.text());
+  }
+  if (fileName.endsWith(".xlsx")) {
+    return parseTargetVersionsXlsx(await file.arrayBuffer());
+  }
+  throw new Error("Upload a CSV or Excel .xlsx file with groupId, artifactId, and targetVersion columns.");
+}
+
+export async function parseTargetVersionsXlsx(workbookBytes: ArrayBuffer): Promise<TargetVersionRow[]> {
+  const entries = parseZipEntries(workbookBytes);
+  const workbookXml = await readZipText(entries, "xl/workbook.xml");
+  const relsXml = await readZipText(entries, "xl/_rels/workbook.xml.rels");
+  const sheetPath = resolveFirstWorksheetPath(workbookXml, relsXml);
+  const sharedStringsXml = entries.has("xl/sharedStrings.xml")
+    ? await readZipText(entries, "xl/sharedStrings.xml")
+    : "";
+  const sheetXml = await readZipText(entries, sheetPath);
+  return parseTargetVersionRows(parseWorksheetRows(sheetXml, parseSharedStrings(sharedStringsXml)), "Excel workbook", { lenientRows: true });
+}
+
+function isSupportedTargetVersionFile(fileName: string): boolean {
+  const normalized = fileName.toLowerCase();
+  return normalized.endsWith(".csv") || normalized.endsWith(".xlsx");
+}
+
+function resolveFirstWorksheetPath(workbookXml: string, relsXml: string): string {
+  const sheetTag = /<sheet\b[^>]*>/i.exec(workbookXml)?.[0];
+  const relationshipId = sheetTag ? extractXmlAttribute(sheetTag, "r:id") : null;
+  if (relationshipId) {
+    for (const relationship of relsXml.matchAll(/<Relationship\b[^>]*>/gi)) {
+      const tag = relationship[0];
+      if (extractXmlAttribute(tag, "Id") === relationshipId) {
+        const target = extractXmlAttribute(tag, "Target");
+        if (target) return normalizeZipPath(target.startsWith("/") ? target.slice(1) : `xl/${target}`);
+      }
+    }
+  }
+  return "xl/worksheets/sheet1.xml";
+}
+
+function parseSharedStrings(sharedStringsXml: string): string[] {
+  if (!sharedStringsXml) return [];
+  return [...sharedStringsXml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/gi)].map((match) => readTextNodes(match[1]));
+}
+
+function parseWorksheetRows(sheetXml: string, sharedStrings: string[]): string[][] {
+  return [...sheetXml.matchAll(/<row\b[^>]*>([\s\S]*?)<\/row>/gi)]
+    .map((rowMatch) => {
+      const row: string[] = [];
+      let fallbackColumnIndex = 0;
+      for (const cellMatch of rowMatch[1].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/gi)) {
+        const attrs = cellMatch[1];
+        const cellBody = cellMatch[2];
+        const columnIndex = columnIndexFromCellRef(extractXmlAttribute(attrs, "r")) ?? fallbackColumnIndex;
+        row[columnIndex] = readCellValue(attrs, cellBody, sharedStrings);
+        fallbackColumnIndex = columnIndex + 1;
+      }
+      return row.map((value) => value ?? "");
+    })
+    .filter((row) => row.some((cell) => cell.trim().length > 0));
+}
+
+function readCellValue(attrs: string, cellBody: string, sharedStrings: string[]): string {
+  const type = extractXmlAttribute(attrs, "t");
+  if (type === "s") {
+    const index = Number(readFirstTagText(cellBody, "v"));
+    return Number.isInteger(index) ? sharedStrings[index] ?? "" : "";
+  }
+  if (type === "inlineStr") {
+    return readTextNodes(cellBody);
+  }
+  return readFirstTagText(cellBody, "v") || readTextNodes(cellBody);
+}
+
+function readTextNodes(xmlFragment: string): string {
+  return [...xmlFragment.matchAll(/<t\b[^>]*>([\s\S]*?)<\/t>/gi)]
+    .map((match) => decodeXmlText(match[1]))
+    .join("");
+}
+
+function readFirstTagText(xmlFragment: string, tagName: string): string {
+  const pattern = new RegExp(`<${tagName}\\b[^>]*>([\\s\\S]*?)<\\/${tagName}>`, "i");
+  const match = pattern.exec(xmlFragment);
+  return match ? decodeXmlText(match[1].trim()) : "";
+}
+
+function columnIndexFromCellRef(cellRef: string | null): number | null {
+  const letters = /^[A-Z]+/i.exec(cellRef ?? "")?.[0];
+  if (!letters) return null;
+  return [...letters.toUpperCase()].reduce((value, letter) => value * 26 + letter.charCodeAt(0) - 64, 0) - 1;
+}
+
+function parseZipEntries(workbookBytes: ArrayBuffer): Map<string, ZipEntry> {
+  const view = new DataView(workbookBytes);
+  const bytes = new Uint8Array(workbookBytes);
+  const eocdOffset = findEndOfCentralDirectory(view);
+  const centralDirectorySize = view.getUint32(eocdOffset + 12, true);
+  const centralDirectoryOffset = view.getUint32(eocdOffset + 16, true);
+  const entries = new Map<string, ZipEntry>();
+  let offset = centralDirectoryOffset;
+  const endOffset = centralDirectoryOffset + centralDirectorySize;
+  while (offset < endOffset) {
+    if (view.getUint32(offset, true) !== 0x02014b50) {
+      throw new Error("Excel .xlsx central directory is invalid.");
+    }
+    const compressionMethod = view.getUint16(offset + 10, true);
+    const compressedSize = view.getUint32(offset + 20, true);
+    const fileNameLength = view.getUint16(offset + 28, true);
+    const extraLength = view.getUint16(offset + 30, true);
+    const commentLength = view.getUint16(offset + 32, true);
+    const localHeaderOffset = view.getUint32(offset + 42, true);
+    const fileName = decodeUtf8(bytes.slice(offset + 46, offset + 46 + fileNameLength));
+    const localNameLength = view.getUint16(localHeaderOffset + 26, true);
+    const localExtraLength = view.getUint16(localHeaderOffset + 28, true);
+    const dataOffset = localHeaderOffset + 30 + localNameLength + localExtraLength;
+    entries.set(normalizeZipPath(fileName), {
+      name: normalizeZipPath(fileName),
+      compressionMethod,
+      compressedData: bytes.slice(dataOffset, dataOffset + compressedSize),
+    });
+    offset += 46 + fileNameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
+function findEndOfCentralDirectory(view: DataView): number {
+  const minimumOffset = Math.max(0, view.byteLength - 65557);
+  for (let offset = view.byteLength - 22; offset >= minimumOffset; offset -= 1) {
+    if (view.getUint32(offset, true) === 0x06054b50) return offset;
+  }
+  throw new Error("Excel .xlsx file is invalid or corrupted.");
+}
+
+async function readZipText(entries: Map<string, ZipEntry>, path: string): Promise<string> {
+  const entry = entries.get(normalizeZipPath(path));
+  if (!entry) throw new Error(`Excel .xlsx file is missing ${path}.`);
+  return decodeUtf8(await decompressZipEntry(entry));
+}
+
+async function decompressZipEntry(entry: ZipEntry): Promise<Uint8Array> {
+  if (entry.compressionMethod === 0) return entry.compressedData;
+  if (entry.compressionMethod !== 8) {
+    throw new Error("Excel .xlsx file uses an unsupported compression method.");
+  }
+  if (typeof DecompressionStream === "undefined") {
+    throw new Error("Excel .xlsx parsing is not supported by this browser. Export the workbook as CSV and upload it.");
+  }
+  const stream = new Blob([toArrayBuffer(entry.compressedData)]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+function extractXmlAttribute(tag: string, name: string): string | null {
+  const pattern = new RegExp(`\\b${escapeRegExp(name)}=(["'])(.*?)\\1`, "i");
+  const match = pattern.exec(tag);
+  return match ? decodeXmlText(match[2]) : null;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeZipPath(path: string): string {
+  const segments: string[] = [];
+  for (const segment of path.replace(/\\/g, "/").split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") segments.pop();
+    else segments.push(segment);
+  }
+  return segments.join("/");
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+}
+
+function decodeUtf8(bytes: Uint8Array): string {
+  return new TextDecoder("utf-8").decode(bytes);
+}
 export function parseTargetVersionsCsv(csvText: string): TargetVersionRow[] {
   return parseTargetVersionRows(parseCsv(csvText), "CSV");
 }
 
-export function parseTargetVersionRows(parsedRows: string[][], sourceLabel: string): TargetVersionRow[] {
+export function parseTargetVersionRows(parsedRows: string[][], sourceLabel: string, options: { lenientRows?: boolean } = {}): TargetVersionRow[] {
   if (parsedRows.length < 2) return [];
   const headers = parsedRows[0].map(normalizeHeader);
   const groupIndex = findHeaderIndex(headers, ["groupid", "group", "group_id"]);
@@ -227,17 +436,21 @@ export function parseTargetVersionRows(parsedRows: string[][], sourceLabel: stri
     const targetVersion = versionCell || coordinateParts[2] || "";
     if (!groupId && !artifactId && !targetVersion) return [];
     if (!groupId || !artifactId || !targetVersion) {
+      if (options.lenientRows) return [];
       throw new Error(`${sourceLabel} row ${rowNumber} must include groupId, artifactId, and target version.`);
     }
     if (!isSafeCoordinatePart(groupId) || !isSafeCoordinatePart(artifactId)) {
+      if (options.lenientRows) return [];
       throw new Error(`${sourceLabel} row ${rowNumber} has an invalid dependency coordinate.`);
     }
     if (!isSafeVersion(targetVersion)) {
+      if (options.lenientRows) return [];
       throw new Error(`${sourceLabel} row ${rowNumber} has an invalid target version.`);
     }
     const coordinate = `${groupId}:${artifactId}`;
     const existing = seen.get(coordinate);
     if (existing && existing !== targetVersion) {
+      if (options.lenientRows) return [];
       throw new Error(`${sourceLabel} row ${rowNumber} duplicates ${coordinate} with a different target version.`);
     }
     if (existing) return [];
@@ -248,26 +461,26 @@ export function parseTargetVersionRows(parsedRows: string[][], sourceLabel: stri
 
 export function compareTargetVersionsToPom(targetRows: TargetVersionRow[], pomText: string): TargetVersionComparisonRow[] {
   const pomVersions = parsePomDependencyVersions(pomText);
-  return targetRows.map((row) => {
+  return targetRows.flatMap<TargetVersionComparisonRow>((row) => {
     const pomVersion = pomVersions.get(row.coordinate);
     if (!pomVersion) {
-      return { ...row, pomVersion: null, versionSource: "not_found", status: "missing_in_pom", reason: "Missing from POM", canApply: false };
+      return [];
     }
     if (pomVersion.duplicate) {
-      return { ...row, pomVersion: pomVersion.version, versionSource: pomVersion.source, status: "blocked", reason: "Duplicate POM entries require manual review", canApply: false };
+      return [{ ...row, pomVersion: pomVersion.version, versionSource: pomVersion.source, status: "blocked", reason: "Duplicate POM entries require manual review", canApply: false }];
     }
     if (!pomVersion.version) {
-      return { ...row, pomVersion: null, versionSource: pomVersion.source, status: "no_explicit_pom_version", reason: "No explicit version to update", canApply: false };
+      return [{ ...row, pomVersion: null, versionSource: pomVersion.source, status: "no_explicit_pom_version", reason: "No explicit version to update", canApply: false }];
     }
     const matches = normalizeVersion(pomVersion.version) === normalizeVersion(row.targetVersion);
-    return {
+    return [{
       ...row,
       pomVersion: pomVersion.version,
       versionSource: pomVersion.source,
       status: matches ? "matches" : "different",
       reason: matches ? "Matches target" : "Different version",
       canApply: !matches && ["dependency", "dependency_management", "property"].includes(pomVersion.source),
-    };
+    }];
   });
 }
 
@@ -368,7 +581,6 @@ function summarizeComparison(rows: TargetVersionComparisonRow[]) {
   return {
     matches: rows.filter((row) => row.status === "matches").length,
     different: rows.filter((row) => row.status === "different").length,
-    missing: rows.filter((row) => row.status === "missing_in_pom").length,
     noExplicitVersion: rows.filter((row) => row.status === "no_explicit_pom_version").length,
     blocked: rows.filter((row) => row.status === "blocked").length,
   };
