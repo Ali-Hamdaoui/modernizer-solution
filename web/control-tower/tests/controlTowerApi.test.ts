@@ -4,6 +4,7 @@ import {
   CONTROL_TOWER_FRONTEND_CLIENT_ID,
   DEFAULT_CONTROL_TOWER_API_BASE_URL,
   allowedStatusCopy,
+  applyStage4TargetVersionChanges,
   cancelV2MigrationJob,
   createDiagnosticJobPayload,
   createIdempotencyKey,
@@ -300,6 +301,24 @@ describe("M2-01 frontend diagnostic contracts", () => {
     await expect(getV2AssistantMessages("")).rejects.toThrow(/job id is required/i);
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("posts latest-stage target dependency version changes without client paths", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ applied_count: 1 }) }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await applyStage4TargetVersionChanges("job-1", 3, {
+      changes: [{ group_id: "org.example", artifact_id: "demo", target_version: "2.0.0" }],
+      idempotency_key: "csv-change-1",
+    });
+
+    const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit?];
+    expect(call[0]).toContain("/v1/v2/jobs/job-1/stage/3/pom/apply-target-version-changes");
+    expect(JSON.parse(String(call[1]?.body))).toEqual({
+      changes: [{ group_id: "org.example", artifact_id: "demo", target_version: "2.0.0" }],
+      idempotency_key: "csv-change-1",
+    });
+    expect(String(call[1]?.body)).not.toContain("path");
   });
 
   it("preview helper uses preview endpoint and safe preview contract", async () => {

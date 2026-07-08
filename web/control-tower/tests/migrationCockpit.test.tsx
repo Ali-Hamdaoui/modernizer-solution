@@ -18,6 +18,7 @@ import {
   SourceProfileOverrideForm,
   buildSourceProfileOverrideBody,
   buildStageTimelineEntries,
+  getTargetVersionComparisonStageIndex,
   getSourceProfileOverrideBlockedReason,
   formatStageStatusLabel,
   formatGateArtifactRefLabel,
@@ -919,6 +920,109 @@ describe("V2 Migration Cockpit contract", () => {
 
   // ── Stage status lifecycle reducer tests (V2 cockpit state model) ──
 
+  it("uses the final completed route stage for file POM comparison", () => {
+    const routeSteps: V2RouteStepEntry[] = [
+      {
+        route_step_index: 1,
+        stage_index: 2,
+        source_profile: "springboot-2.7-java11",
+        target_profile: "springboot-3.5-java17",
+        runtime_profile: "springboot-2.7-to-3.5-java17",
+        catalog: "springboot-3.5-java17",
+        execution_jdk: "java17",
+        status: "completed",
+        approval_gate_id: "",
+        artifact_refs: [],
+        evidence_refs: [],
+      },
+      {
+        route_step_index: 2,
+        stage_index: 3,
+        source_profile: "springboot-3.5-java17",
+        target_profile: "springboot-3.5-java21",
+        runtime_profile: "springboot-3.5-java17-to-3.5-java21",
+        catalog: "springboot-3.5-java21",
+        execution_jdk: "java21",
+        status: "completed",
+        approval_gate_id: "",
+        artifact_refs: [],
+        evidence_refs: [],
+      },
+    ];
+    const stages = [
+      { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "completed", input_source_kind: "legacy_source" },
+    ];
+
+    expect(getTargetVersionComparisonStageIndex(stages, routeSteps)).toBe(3);
+  });
+
+  it("keeps file comparison locked until the final route step completes", () => {
+    const routeSteps: V2RouteStepEntry[] = [
+      {
+        route_step_index: 1,
+        stage_index: 2,
+        source_profile: "springboot-2.7-java11",
+        target_profile: "springboot-3.5-java17",
+        runtime_profile: "springboot-2.7-to-3.5-java17",
+        catalog: "springboot-3.5-java17",
+        execution_jdk: "java17",
+        status: "completed",
+        approval_gate_id: "",
+        artifact_refs: [],
+        evidence_refs: [],
+      },
+      {
+        route_step_index: 2,
+        stage_index: 3,
+        source_profile: "springboot-3.5-java17",
+        target_profile: "springboot-3.5-java21",
+        runtime_profile: "springboot-3.5-java17-to-3.5-java21",
+        catalog: "springboot-3.5-java21",
+        execution_jdk: "java21",
+        status: "running",
+        approval_gate_id: "",
+        artifact_refs: [],
+        evidence_refs: [],
+      },
+    ];
+
+    expect(getTargetVersionComparisonStageIndex([], routeSteps)).toBeNull();
+  });
+  it("uses refreshed stage status when deciding whether final route stage is complete", () => {
+    const routeSteps: V2RouteStepEntry[] = [
+      {
+        route_step_index: 1,
+        stage_index: 2,
+        source_profile: "springboot-2.7-java11",
+        target_profile: "springboot-3.5-java17",
+        runtime_profile: "springboot-2.7-to-3.5-java17",
+        catalog: "springboot-3.5-java17",
+        execution_jdk: "java17",
+        status: "completed",
+        approval_gate_id: "",
+        artifact_refs: [],
+        evidence_refs: [],
+      },
+      {
+        route_step_index: 2,
+        stage_index: 3,
+        source_profile: "springboot-3.5-java17",
+        target_profile: "springboot-3.5-java21",
+        runtime_profile: "springboot-3.5-java17-to-3.5-java21",
+        catalog: "springboot-3.5-java21",
+        execution_jdk: "java21",
+        status: "pending",
+        approval_gate_id: "",
+        artifact_refs: [],
+        evidence_refs: [],
+      },
+    ];
+    const stages = [
+      { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "completed", input_source_kind: "stage_2_sandbox" },
+    ];
+
+    expect(getTargetVersionComparisonStageIndex(stages, routeSteps)).toBe(3);
+  });
   it("buildStageTimelineEntries overlays route-step status from refreshed stages", () => {
     const routeSteps: V2RouteStepEntry[] = [
       {
@@ -979,6 +1083,33 @@ describe("V2 Migration Cockpit contract", () => {
     ];
     const actual = reduceStageStatus(events);
     expect(actual).toBe("running");
+  });
+
+  it("reduceStageStatus: migration_completed completes the final route stage", () => {
+    const events: V2JobEvent[] = [
+      { stage: 3, type: "stage_started", status: "running", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 3, type: "sandbox_transform_started", status: "running", sequence: 2 } as unknown as V2JobEvent,
+      { stage: 3, type: "sandbox_transform_completed", status: "completed", sequence: 3 } as unknown as V2JobEvent,
+      {
+        stage: 3,
+        type: "migration_completed",
+        status: "completed",
+        sequence: 4,
+        payload: { from_stage: 3, to_stage: 3 },
+      } as unknown as V2JobEvent,
+    ];
+
+    expect(reduceStageStatus(events, 3)).toBe("completed");
+  });
+
+  it("reduceStageStatus: completed does not regress to running on late success events", () => {
+    const events: V2JobEvent[] = [
+      { stage: 3, type: "stage_started", status: "running", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 3, type: "stage_completed", status: "completed", sequence: 2 } as unknown as V2JobEvent,
+      { stage: 3, type: "sandbox_transform_completed", status: "completed", sequence: 3 } as unknown as V2JobEvent,
+    ];
+
+    expect(reduceStageStatus(events, 3)).toBe("completed");
   });
 
   it("reduceStageStatus: failed after sandbox_transform_failed", () => {

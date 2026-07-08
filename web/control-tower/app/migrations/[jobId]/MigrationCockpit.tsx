@@ -53,6 +53,7 @@ import type {
 } from "../../../lib/contracts";
 import { MIGRATION_PROFILE_OPTIONS } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
+import Stage4TargetVersionComparison from "./Stage4TargetVersionComparison";
 import { RepairProposalPanel } from "./RepairProposalPanel";
 
 export function formatGateArtifactRefLabel(ref: string): string {
@@ -131,15 +132,30 @@ export function buildStageTimelineEntries(
   }
 
   const stageStatusByIndex = new Map(stages.map((stage) => [stage.stage_index, stage.chain_status]));
-  console.log("[route-steps-before]", routeSteps?.map((s) => ({ route_step_index: s.route_step_index, stage_index: s.stage_index, status: s.status })));
-  const result = routeSteps.map((routeStep) => ({
+  return routeSteps.map((routeStep) => ({
     ...routeStep,
     status: stageStatusByIndex.get(routeStep.stage_index) ?? routeStep.status,
   }));
-  console.log("[route-steps-after]", result.map((s) => ({ route_step_index: s.route_step_index, stage_index: s.stage_index, status: s.status })));
-  return result;
 }
 
+export function getTargetVersionComparisonStageIndex(
+  stages: Stage[],
+  routeSteps: V2RouteStepEntry[] | undefined,
+): number | null {
+  if (routeSteps?.length) {
+    const stageStatusByIndex = new Map(stages.map((stage) => [stage.stage_index, stage.chain_status]));
+    const finalRouteStep = routeSteps.reduce((latest, routeStep) =>
+      routeStep.route_step_index > latest.route_step_index ? routeStep : latest,
+    );
+    const finalStageStatus = stageStatusByIndex.get(finalRouteStep.stage_index) ?? finalRouteStep.status;
+    return finalStageStatus === "completed" ? finalRouteStep.stage_index : null;
+  }
+
+  const completedStageIndexes = stages
+    .filter((stage) => stage.chain_status === "completed")
+    .map((stage) => stage.stage_index);
+  return completedStageIndexes.length > 0 ? Math.max(...completedStageIndexes) : null;
+}
 export function mergeCockpitLiveRefreshResults(
   current: CockpitData,
   results: LiveRefreshResults,
@@ -1461,6 +1477,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   if (!data) return <div className="info-box">Loading cockpit...</div>;
 
   const stageTimelineEntries = buildStageTimelineEntries(data.job.route_steps, data.stages);
+  const targetVersionComparisonStageIndex = getTargetVersionComparisonStageIndex(data.stages, data.job.route_steps);
 
   return (
     <div className="cockpit-layout">
@@ -1947,6 +1964,17 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         </section>
       )}
 
+      {/* Latest-stage target dependency version file comparison */}
+      {data && (
+        <section style={{ gridColumn: "1 / -1" }}>
+          <Stage4TargetVersionComparison
+            jobId={normalizedJobId || jobId || ""}
+            comparisonAvailable={targetVersionComparisonStageIndex != null}
+            rootPomStageIndex={targetVersionComparisonStageIndex ?? 1}
+          />
+        </section>
+      )}
+
       <style>{`
         .cockpit-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
         .cockpit-actions { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
@@ -2067,8 +2095,11 @@ function reduceAllStageStatuses(stages: Stage[], allEvents: V2JobEvent[]): Stage
 }
 
 function eventAppliesToStage(event: V2JobEvent, stageIndex: number): boolean {
-  if (event.type !== "next_stage_queued") {
-    return event.stage === stageIndex;
+  if (event.stage === stageIndex) {
+    return true;
+  }
+  if (!["next_stage_queued", "migration_completed", "job_completed"].includes(event.type)) {
+    return false;
   }
 
   const payload = event.payload ?? {};
@@ -2083,7 +2114,7 @@ function eventAppliesToStage(event: V2JobEvent, stageIndex: number): boolean {
 export function stageStatusFromEvent(event: V2JobEvent): string {
   if (event.type === "stage_cancelled" || event.status === "cancelled") return "cancelled";
   if (event.type === "stage_failed" || event.status === "failed") return "failed";
-  if (event.type === "stage_completed") return "completed";
+  if (["stage_completed", "migration_completed", "job_completed"].includes(event.type)) return "completed";
   if (["stage_started", "command_started", "sandbox_transform_started",
        "sandbox_transform_completed", "resume_started", "approval_resume_queued",
        "approval_completed", "build_started", "test_started"].includes(event.type) || event.status === "running") {
@@ -2108,6 +2139,7 @@ export function transitionStageStatus(current: string, mapped: string): string {
   if (mapped === "cancelled") return "cancelled";
   if (mapped === "failed") return "failed";
   if (mapped === "completed") return "completed";
+  if (current === "completed") return "completed";
   if (mapped === "running") return "running";
   if (mapped === "blocked") {
     if (current === "running" || current === "completed" || current === "failed") return current;
@@ -2172,6 +2204,8 @@ const IMPORTANT_SSE_TYPES = new Set([
   "final_report_failed",
   "stage_failed",
   "stage_completed",
+  "migration_completed",
+  "job_completed",
   "model_invocation_completed",
   "model_invocation_failed",
   "transform_failed",
