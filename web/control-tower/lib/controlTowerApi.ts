@@ -725,11 +725,12 @@ export async function applyPomRepairPlan(
 
 export async function applyStage4TargetVersionChanges(
   jobId: string,
+  stage: number,
   request: { changes: Stage4TargetVersionChangeRequest[]; idempotency_key?: string }
 ): Promise<Stage4TargetVersionApplyResponse> {
   const safeJobId = requireJobId(jobId);
   return postJson<Stage4TargetVersionApplyResponse>(
-    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/stage/4/pom/apply-target-version-changes`,
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/stage/${stage}/pom/apply-target-version-changes`,
     request
   );
 }

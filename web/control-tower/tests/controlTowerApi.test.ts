@@ -303,17 +303,17 @@ describe("M2-01 frontend diagnostic contracts", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("posts Stage 4 target dependency version changes without client paths", async () => {
+  it("posts latest-stage target dependency version changes without client paths", async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ applied_count: 1 }) }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await applyStage4TargetVersionChanges("job-1", {
+    await applyStage4TargetVersionChanges("job-1", 3, {
       changes: [{ group_id: "org.example", artifact_id: "demo", target_version: "2.0.0" }],
       idempotency_key: "csv-change-1",
     });
 
     const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit?];
-    expect(call[0]).toContain("/v1/v2/jobs/job-1/stage/4/pom/apply-target-version-changes");
+    expect(call[0]).toContain("/v1/v2/jobs/job-1/stage/3/pom/apply-target-version-changes");
     expect(JSON.parse(String(call[1]?.body))).toEqual({
       changes: [{ group_id: "org.example", artifact_id: "demo", target_version: "2.0.0" }],
       idempotency_key: "csv-change-1",
