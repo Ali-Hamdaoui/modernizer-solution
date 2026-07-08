@@ -66,6 +66,10 @@ class MigrationDiscoveryError(MigrationError):
     """Raised when migration files are missing or invalid."""
 
 
+class AppliedMigrationMissingError(MigrationDiscoveryError):
+    """Raised when schema history references a migration no longer on disk."""
+
+
 class MigrationSafetyError(MigrationError):
     """Raised when migration SQL violates safety rules."""
 
@@ -119,7 +123,7 @@ def apply_pending_migrations(
     applied = _load_applied_migrations(connection)
     try:
         _verify_applied_checksums(applied, discovered)
-    except AppliedMigrationChecksumMismatchError:
+    except (AppliedMigrationChecksumMismatchError, AppliedMigrationMissingError):
         if not _is_dev_mode():
             raise
         _dev_reset_database(connection)
@@ -516,7 +520,7 @@ def _verify_applied_checksums(
     for version, row in applied.items():
         migration = by_version.get(version)
         if migration is None:
-            raise MigrationDiscoveryError(
+            raise AppliedMigrationMissingError(
                 f"Applied migration missing from disk: {version:04d}"
             )
         actual_checksum = str(row["checksum"])
@@ -551,7 +555,7 @@ def _is_dev_mode() -> bool:
     """Return True when CONTROL_TOWER_DEV_MODE is set to a truthy value.
 
     Only in dev mode may the migration runner auto-reset the database on
-    checksum mismatch.
+    stale local schema history.
     """
     val = os.environ.get("CONTROL_TOWER_DEV_MODE", "").strip().lower()
     return val in {"1", "true", "yes", "on"}
@@ -560,7 +564,7 @@ def _is_dev_mode() -> bool:
 def _dev_reset_database(connection: sqlite3.Connection) -> None:
     """Drop every user table in the database so migrations start clean.
 
-    This is only called in dev mode after a checksum mismatch.
+    This is only called in dev mode after stale schema history is detected.
     The schema_migrations table itself is dropped last so the next
     apply_pending_migrations call sees zero applied migrations.
     """
