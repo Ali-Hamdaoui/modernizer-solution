@@ -2014,6 +2014,7 @@ export function transitionStageStatus(current: string, mapped: string): string {
   if (mapped === "cancelled") return "cancelled";
   if (mapped === "failed") return "failed";
   if (mapped === "completed") return "completed";
+  if (current === "completed") return "completed";
   if (mapped === "running") return "running";
   if (mapped === "blocked") {
     if (current === "running" || current === "completed" || current === "failed") return current;
