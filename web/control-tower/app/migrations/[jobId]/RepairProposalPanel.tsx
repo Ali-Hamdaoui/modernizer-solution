@@ -449,8 +449,8 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
     <section className="panel repair-proposal-panel" data-testid="repair-proposal-panel">
       <div className="repair-proposal-layout">
         <div className="repair-proposal-main">
-          <div className="repair-panel-kicker">{isCandidateDiff ? "Candidate Diff" : isDirectProposal ? "Direct Reviewer Diff" : "Backend-governed repair gate"}</div>
-          <h2>{isCandidateDiff ? "Candidate Diff Ready" : isDirectProposal ? "Reviewer Diff Ready" : "Reviewed Repair Proposal"}</h2>
+          <div className="repair-panel-kicker">{isCandidateDiff ? "Candidate Repair Diff" : isDirectProposal ? "Direct Reviewer Diff" : "Backend-governed repair gate"}</div>
+          <h2>{isCandidateDiff ? "Candidate Repair Diff Ready" : isDirectProposal ? "Reviewer Diff Ready" : "Reviewed Repair Proposal"}</h2>
 
           {errorBanner && (
             <div className="error-banner" data-testid="approve-error-banner" role="alert">
@@ -508,7 +508,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
                 <strong>Candidate Diff Ready</strong>
                 <span className="status-badge">CANDIDATE</span>
               </div>
-              <p className="meta">Reviewer requested revision, but a main candidate diff is available. Backend will apply the exact diff shown and rerun validation if you approve.</p>
+              <p className="meta">Reviewer requested revision, but the main LLM candidate diff is available for your review and decision.</p>
             </div>
           )}
 
@@ -543,6 +543,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
             proposal={proposal}
             diff={diff}
             diffMessage={diffState.status === "error" ? diffState.message : null}
+            candidateDiff={isCandidateDiff}
           />
 
           {showAttempts && attempts.length > 0 && (

@@ -312,6 +312,74 @@ class V2RepairGateService:
                     reason="reviewed repair chain failed closed: duplicate_main_blocked",
                 )
 
+            _proposed_exists = bool(partial_chain.get("proposed_diff_exists"))
+            _final_exists = bool(partial_chain.get("final_diff_exists"))
+            _direct_sandbox = str(payload.get("_repair_sandbox_path", "")).strip() or sandbox_path_for_chain or ""
+            if reason_code == "REVIEWER_REQUESTED_REVISION" and _proposed_exists and not _final_exists:
+                _cand_chain_result: dict[str, Any] = {"review_chain": partial_chain}
+                if not _direct_sandbox:
+                    logger.warning(
+                        "direct_candidate_reviewer_revision_missing_sandbox job=%s stage=%d",
+                        job_id, stage_index,
+                    )
+                    return RepairGateCreationResult(
+                        gate_id="", gate_checksum="", diagnosis=None,
+                        status="skipped", reason="direct_sandbox_missing",
+                    )
+                _cand_valid, _cand_reason = self._validate_direct_candidate_diff(
+                    chain_result=_cand_chain_result,
+                    sandbox_path=_direct_sandbox,
+                    output_dir=output_dir,
+                )
+                if not _cand_valid:
+                    logger.warning(
+                        "direct_candidate_reviewer_revision_validation_failed job=%s stage=%d reason=%s",
+                        job_id, stage_index, _cand_reason,
+                    )
+                else:
+                    try:
+                        proposal_id, proposal_diff_checksum = self._persist_direct_candidate_repair_proposal(
+                            job_id=job_id,
+                            stage_index=stage_index,
+                            command_id=command_id,
+                            failure_evidence=evidence,
+                            context_pack=context_pack,
+                            chain_result=_cand_chain_result,
+                            failure_evidence_ref=str(payload["_repair_failure_evidence_ref"]),
+                            repair_context_ref=str(payload["_repair_context_pack_ref"]),
+                        )
+                    except Exception as exc_persist:
+                        logger.warning(
+                            "direct_candidate_reviewer_revision_persistence_failed job=%s stage=%d: %s",
+                            job_id, stage_index, exc_persist,
+                        )
+                        return RepairGateCreationResult(
+                            gate_id="", gate_checksum="", diagnosis=None,
+                            status="skipped",
+                            reason="direct candidate repair proposal persistence failed",
+                        )
+                    self._bind_llm_invocations(
+                        chain=partial_chain, proposal_id=proposal_id, gate_id="",
+                    )
+                    self._emit_repair_candidate_diff_ready_for_user_apply(
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        context_checksum=str(payload["_repair_context_pack_checksum"]),
+                        proposal_id=proposal_id,
+                        proposal_diff_checksum=proposal_diff_checksum,
+                        chain=partial_chain,
+                    )
+                    logger.info(
+                        "direct_candidate_proposal_created_from_reviewer_revision job=%s stage=%d proposal=%s reviewer_decision=%s",
+                        job_id, stage_index, proposal_id,
+                        partial_chain.get("reviewer_decision", "needs_revision"),
+                    )
+                    return RepairGateCreationResult(
+                        gate_id="", gate_checksum="", diagnosis=None,
+                        status="created",
+                        reason="direct candidate repair proposal persisted for user review; reviewer requested revision but candidate diff available",
+                    )
+
             detail = str(getattr(exc, "detail", "") or str(exc))
             struct_issue = str(getattr(exc, "struct_issue", "") or partial_chain.get("struct_issue") or "").strip()
             self._emit_reviewed_repair_materialization_failed(

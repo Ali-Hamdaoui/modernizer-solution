@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { ReviewedDiffProposal, SafeDiffPreview as SafeDiffPreviewType } from "../../../lib/contracts";
 import { formatSafeRelativePath } from "../../../lib/safeDisplay";
 import { SafeDiffPreview } from "./SafeDiffPreview";
@@ -8,24 +8,35 @@ import { ReviewerVerdictCard } from "./ReviewerVerdictCard";
 
 type TabId = "diff" | "validation" | "files-changed" | "reviewer-opinion";
 
-const TABS: { id: TabId; label: string }[] = [
-  { id: "diff", label: "Reviewed Diff" },
-  { id: "validation", label: "Validation" },
-  { id: "files-changed", label: "Files Changed" },
-  { id: "reviewer-opinion", label: "Reviewer Verdict" },
-];
-
 export function ReviewedDiffTabs({
   proposal,
   diff,
   diffMessage,
+  candidateDiff,
   onTabChange,
 }: {
   proposal: ReviewedDiffProposal;
   diff: SafeDiffPreviewType | null;
   diffMessage?: string | null;
+  candidateDiff?: boolean;
   onTabChange?: (tab: TabId) => void;
 }) {
+  const tabs: { id: TabId; label: string }[] = useMemo(() => {
+    if (candidateDiff) {
+      return [
+        { id: "diff", label: "Proposed Diff (Candidate)" },
+        { id: "validation", label: "Validation" },
+        { id: "files-changed", label: "Files Changed" },
+        { id: "reviewer-opinion", label: "Reviewer Findings" },
+      ];
+    }
+    return [
+      { id: "diff", label: "Reviewed Diff" },
+      { id: "validation", label: "Validation" },
+      { id: "files-changed", label: "Files Changed" },
+      { id: "reviewer-opinion", label: "Reviewer Verdict" },
+    ];
+  }, [candidateDiff]);
   const [activeTab, setActiveTab] = useState<TabId>("diff");
 
   function handleTabClick(tab: TabId) {
@@ -36,7 +47,7 @@ export function ReviewedDiffTabs({
   return (
     <div className="reviewed-diff-tabs" data-testid="reviewed-diff-tabs">
       <div className="tab-bar" role="tablist">
-        {TABS.map((tab) => (
+        {tabs.map((tab) => (
           <button
             key={tab.id}
             role="tab"
