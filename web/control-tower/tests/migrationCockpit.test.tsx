@@ -940,6 +940,33 @@ describe("V2 Migration Cockpit contract", () => {
     expect(actual).toBe("running");
   });
 
+  it("reduceStageStatus: migration_completed completes the final route stage", () => {
+    const events: V2JobEvent[] = [
+      { stage: 3, type: "stage_started", status: "running", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 3, type: "sandbox_transform_started", status: "running", sequence: 2 } as unknown as V2JobEvent,
+      { stage: 3, type: "sandbox_transform_completed", status: "completed", sequence: 3 } as unknown as V2JobEvent,
+      {
+        stage: 3,
+        type: "migration_completed",
+        status: "completed",
+        sequence: 4,
+        payload: { from_stage: 3, to_stage: 3 },
+      } as unknown as V2JobEvent,
+    ];
+
+    expect(reduceStageStatus(events, 3)).toBe("completed");
+  });
+
+  it("reduceStageStatus: completed does not regress to running on late success events", () => {
+    const events: V2JobEvent[] = [
+      { stage: 3, type: "stage_started", status: "running", sequence: 1 } as unknown as V2JobEvent,
+      { stage: 3, type: "stage_completed", status: "completed", sequence: 2 } as unknown as V2JobEvent,
+      { stage: 3, type: "sandbox_transform_completed", status: "completed", sequence: 3 } as unknown as V2JobEvent,
+    ];
+
+    expect(reduceStageStatus(events, 3)).toBe("completed");
+  });
+
   it("reduceStageStatus: failed after sandbox_transform_failed", () => {
     const events: V2JobEvent[] = [
       { stage: 1, type: "approval_required", status: "blocked", sequence: 1 } as unknown as V2JobEvent,
