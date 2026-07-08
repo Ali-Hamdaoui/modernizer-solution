@@ -12179,7 +12179,7 @@ _IMPORTANT_EVENT_TYPES = {
 def _active_stage_index(events: tuple[Any, ...]) -> int:
     """Determine the current/active stage from events."""
     failed_stages = {e.stage for e in events if e.stage and e.type == "stage_failed"}
-    completed_stages = {e.stage for e in events if e.stage and e.type == "stage_completed"}
+    completed_stages = {e.stage for e in events if e.stage and e.type in {"stage_completed", "migration_completed", "job_completed"}}
 
     # Find latest running/blocked/started stage
     candidates = [
@@ -12944,7 +12944,7 @@ def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, 
     from collections import defaultdict
     stage_events: dict[int, list[Any]] = defaultdict(list)
     for event in events:
-        if event.stage is None and event.type != "next_stage_queued":
+        if event.stage is None and event.type not in {"next_stage_queued", "migration_completed", "job_completed"}:
             continue
         if event.type == "next_stage_queued":
             payload = _event_payload_dict(event)
@@ -12954,6 +12954,12 @@ def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, 
                 stage_events[from_stage].append(event)
             if to_stage:
                 stage_events[to_stage].append(event)
+            continue
+        if event.type in {"migration_completed", "job_completed"}:
+            payload = _event_payload_dict(event)
+            completed_stage = int(payload.get("from_stage") or payload.get("to_stage") or event.stage or 0)
+            if completed_stage:
+                stage_events[completed_stage].append(event)
             continue
         if event.stage:
             stage_events[event.stage].append(event)
@@ -13009,7 +13015,7 @@ def _stage_status_from_event(event_type: str, event_status: str) -> str:
         return "cancelled"
     if event_type == "stage_failed" or event_status == "failed":
         return "failed"
-    if event_type == "stage_completed":
+    if event_type in {"stage_completed", "migration_completed", "job_completed"}:
         return "completed"
     if event_type in {
         "stage_started", "command_started",
