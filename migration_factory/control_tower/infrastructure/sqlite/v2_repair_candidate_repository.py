@@ -15,10 +15,14 @@ class SqliteV2RepairCandidateRepository:
         self._connection = connection
 
     def save_candidate(self, candidate: dict[str, Any]) -> None:
-        for key in ("_sandbox_root", "_target_path", "_after_text", "_patch_payload"):
-            if not candidate.get(key):
-                raise ValueError("internal_repair_candidate_required")
+        if str(candidate.get("candidate_kind") or "") != "llm_unknown_family":
+            for key in ("_sandbox_root", "_target_path", "_after_text", "_patch_payload"):
+                if not candidate.get(key):
+                    raise ValueError("internal_repair_candidate_required")
         public = public_repair_apply_candidate(candidate) or {}
+        if str(candidate.get("candidate_kind") or "") == "llm_unknown_family":
+            candidate = _force_llm_read_only(dict(candidate))
+            public = _force_llm_read_only(dict(public))
         now = str(candidate.get("created_at") or utc_now_text())
         self._connection.execute(
             """INSERT OR IGNORE INTO v2_repair_apply_candidates (
@@ -91,7 +95,7 @@ class SqliteV2RepairCandidateRepository:
                 "apply_enabled": False,
                 "approval_enabled": False,
             })
-        return public
+        return _force_llm_read_only(public) if public.get("candidate_kind") == "llm_unknown_family" else public
 
     def latest_public_for_job(self, job_id: str) -> dict[str, Any] | None:
         row = self._connection.execute(
@@ -128,9 +132,11 @@ class SqliteV2RepairCandidateRepository:
                 "apply_enabled": False,
                 "approval_enabled": False,
             })
-        return public
+        return _force_llm_read_only(public) if public.get("candidate_kind") == "llm_unknown_family" else public
 
     def save_approval(self, job_id: str, stage_index: int, repair_candidate_id: str, approval: dict[str, Any]) -> None:
+        if _is_llm_unknown_family(self._connection, job_id, stage_index, repair_candidate_id):
+            raise ValueError("llm_candidate_not_actionable")
         now = utc_now_text()
         self._connection.execute(
             """UPDATE v2_repair_apply_candidates
@@ -140,6 +146,8 @@ class SqliteV2RepairCandidateRepository:
         )
 
     def save_execution(self, job_id: str, stage_index: int, repair_candidate_id: str, execution: dict[str, Any]) -> None:
+        if _is_llm_unknown_family(self._connection, job_id, stage_index, repair_candidate_id):
+            raise ValueError("llm_candidate_not_actionable")
         now = utc_now_text()
         self._connection.execute(
             """UPDATE v2_repair_apply_candidates
@@ -147,3 +155,38 @@ class SqliteV2RepairCandidateRepository:
                WHERE job_id = ? AND stage_index = ? AND repair_candidate_id = ?""",
             (str(execution.get("status") or execution.get("execution_status") or "failed"), json.dumps(execution, sort_keys=True, separators=(",", ":")), now, job_id, stage_index, repair_candidate_id),
         )
+
+
+def _is_llm_unknown_family(connection: sqlite3.Connection, job_id: str, stage_index: int, repair_candidate_id: str) -> bool:
+    row = connection.execute(
+        """SELECT internal_json, public_json
+           FROM v2_repair_apply_candidates
+           WHERE job_id = ? AND stage_index = ? AND repair_candidate_id = ?""",
+        (job_id, stage_index, repair_candidate_id),
+    ).fetchone()
+    if row is None:
+        return False
+    for column in ("internal_json", "public_json"):
+        try:
+            payload = json.loads(str(row[column] or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {}
+        if payload.get("candidate_kind") == "llm_unknown_family":
+            return True
+    return False
+
+
+def _force_llm_read_only(value: dict[str, Any]) -> dict[str, Any]:
+    value["candidate_kind"] = "llm_unknown_family"
+    value["family"] = "llm_unknown_family"
+    value["patch_source"] = "llm_reviewed"
+    value["status"] = "read_only"
+    value["approval_enabled"] = False
+    value["apply_enabled"] = False
+    value["repair_enabled"] = False
+    value["sandbox_only"] = True
+    value["legacy_mutation_allowed"] = False
+    value["downstream_start_allowed"] = False
+    value["llm_can_apply"] = False
+    value["browser_can_supply_patch"] = False
+    return value

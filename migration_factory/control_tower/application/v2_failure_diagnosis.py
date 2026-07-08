@@ -457,6 +457,52 @@ class V2FailureDiagnosisService:
 
         return diagnosis
 
+    def classify_for_repair_route(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Return the normalized stage-failure classification for route selection.
+
+        This intentionally stops at the pure stage-evidence classifier.  It does
+        not create diagnosis records, prompt-router requests, strategy packets,
+        apply candidates, repair proposals, LLM shadow traces, events, or gates.
+        """
+        if event_type not in self.TRIGGER_EVENT_TYPES:
+            raise ValueError(
+                f"Event type {event_type!r} is not a diagnosis trigger. "
+                f"Expected one of: {', '.join(sorted(self.TRIGGER_EVENT_TYPES))}"
+            )
+        payload_data = payload or {}
+        build_status = str(payload_data.get("build_status", ""))
+        test_status = str(payload_data.get("test_status", ""))
+        transform_status = str(payload_data.get("transform_status", ""))
+        failure_summary = self._build_failure_summary(
+            event_type=event_type,
+            payload=payload_data,
+        )
+        stage_evidence_pack = self._build_stage_evidence_pack(
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            event_type=event_type,
+            payload=payload_data,
+            failure_summary=failure_summary,
+            build_status=build_status,
+            test_status=test_status,
+            transform_status=transform_status,
+        )
+        if stage_evidence_pack is None:
+            return self._classification_unavailable(stage_index=stage_index)
+        classification = classify_stage_failure(stage_evidence_pack)
+        if not isinstance(classification, dict):
+            return self._classification_unavailable(stage_index=stage_index)
+        return classification
+
     def get_diagnosis(
         self,
         command_id: str,

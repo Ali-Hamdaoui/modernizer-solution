@@ -113,6 +113,7 @@ def run_unknown_repair_review_chain(
     model_client: Any | None = None,
     invocation_ledger: Any | None = None,
     event_sink: Callable[..., None] | None = None,
+    chain_result_sink: Callable[[dict[str, Any]], None] | None = None,
     proposal_id: str | None = None,
     gate_id: str | None = None,
 ) -> UnknownRepairReviewChainResult:
@@ -212,6 +213,8 @@ def run_unknown_repair_review_chain(
             proposal_id=proposal_id,
             gate_id=gate_id,
         )
+    if chain_result_sink is not None:
+        chain_result_sink(chain_result)
 
     complete_emit = _emit_event(
         event_sink=event_sink,

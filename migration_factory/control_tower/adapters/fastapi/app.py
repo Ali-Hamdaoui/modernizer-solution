@@ -181,7 +181,21 @@ from migration_factory.control_tower.application.v2_repair_strategy_packet impor
 )
 from migration_factory.control_tower.application.v2_repair_gate_service import (
     V2RepairGateService,
-    create_repair_gate_diagnosis_callback,
+    _build_failure_summary_from_payload,
+)
+from migration_factory.control_tower.application.v2_llm_read_only_candidate_persistence import (
+    LlmReadOnlyCandidatePersistenceService,
+    emit_llm_read_only_candidate_event,
+)
+from migration_factory.control_tower.application.v2_repair_route_decision import (
+    BLOCKED_ROUTES,
+    ROUTE_DETERMINISTIC_RECIPE,
+    ROUTE_LLM_REVIEWED_UNKNOWN,
+    emit_repair_route_decision,
+    select_repair_route_decision,
+)
+from migration_factory.control_tower.application.v2_unknown_repair_review_chain import (
+    run_unknown_repair_review_chain,
 )
 from migration_factory.control_tower.application.v2_reviewer_service import (
     V2ReviewerService,
@@ -224,6 +238,7 @@ from migration_factory.control_tower.application.v2_gate_assistant import (
     GateContext,
 )
 from migration_factory.control_tower.application.v2_orchestrator_runner import (
+    CanonicalRepairRuntimeContext,
     V2OrchestratorRunner,
     V2OrchestratorStart,
     _bounded,
@@ -1008,50 +1023,6 @@ def create_app(
         service=_diagnosis_service,
     )
 
-    def _repair_gate_enabled_for_job(job_id: str) -> bool:
-        with unit_of_work_factory() as uow:
-            run_config = uow.run_configurations.get_for_job(job_id)
-        if run_config is None or not run_config.policy_json:
-            return False
-        try:
-            policy = RunPolicy(**json.loads(run_config.policy_json))
-        except Exception:
-            return False
-        return policy.enable_build_repair
-
-    def _maybe_create_repair_gate(
-        job_id: str,
-        stage_index: int,
-        command_id: str,
-        event_type: str,
-        payload: dict[str, Any],
-    ) -> None:
-        if not V2FailureDiagnosisService.is_diagnosable_event(event_type):
-            return
-        if not _repair_gate_enabled_for_job(job_id):
-            return
-
-        with unit_of_work_factory() as uow:
-            gate_service = V2PhaseGateService(uow.phase_gates)
-            decision_service = V2GateActionService(
-                uow.phase_gates,
-                uow.gate_decisions,
-                gate_service,
-                revision_repo=uow.artifact_revisions,
-                repair_service=_repair_flow,
-            )
-            repair_gate_service = V2RepairGateService(
-                gate_service=gate_service,
-                gate_action_service=decision_service,
-                repair_flow=_repair_flow,
-                diagnosis_service=_diagnosis_service,
-                invocation_ledger=V2LLMInvocationLedger(uow.v2_llm_invocations),
-            )
-            create_repair_gate_diagnosis_callback(
-                repair_gate_service,
-                _diagnosis_service,
-            )(job_id, stage_index, command_id, event_type, payload)
-
     def _diagnosis_callback(
         job_id: str,
         stage: int,
@@ -1060,12 +1031,242 @@ def create_app(
         payload: dict[str, Any],
     ) -> None:
         _orchestrator_diagnosis_callback(job_id, stage, command_id, event_type, payload)
-        _maybe_create_repair_gate(job_id, stage, command_id, event_type, payload)
+
+    def _runtime_event_sink_factory(events_written: dict[str, bool]) -> Callable[..., None]:
+        def _event_sink(
+            job_id: str,
+            stage: int | None,
+            event_type: str,
+            status: str,
+            message: str,
+            payload: dict[str, Any] | None = None,
+        ) -> None:
+            with unit_of_work_factory() as uow:
+                redacted_payload = redact_public_value(_sanitize_public_event_payload(payload or {}))
+                uow.v2_events.save(
+                    job_id=job_id,
+                    stage=stage,
+                    event_type=event_type,
+                    status=status,
+                    message=_bounded(str(redact_public_value(message))),
+                    payload=redacted_payload if isinstance(redacted_payload, dict) else {},
+                )
+            events_written["value"] = True
+        return _event_sink
+
+    class _ShortTransactionInvocationLedger:
+        def start_invocation(self, **kwargs: Any) -> str:
+            with unit_of_work_factory() as uow:
+                return V2LLMInvocationLedger(uow.v2_llm_invocations).start_invocation(**kwargs)
+
+        def complete_invocation(self, invocation_id: str, **kwargs: Any) -> None:
+            with unit_of_work_factory() as uow:
+                V2LLMInvocationLedger(uow.v2_llm_invocations).complete_invocation(invocation_id, **kwargs)
+
+        def fail_invocation(self, invocation_id: str, **kwargs: Any) -> None:
+            with unit_of_work_factory() as uow:
+                V2LLMInvocationLedger(uow.v2_llm_invocations).fail_invocation(invocation_id, **kwargs)
+
+    def _repair_policy_allows_gate(job_id: str) -> bool:
+        try:
+            with unit_of_work_factory() as uow:
+                run_config = uow.run_configurations.get_for_job(job_id) if hasattr(uow, "run_configurations") else None
+            if run_config is None or not run_config.policy_json:
+                return False
+            policy = RunPolicy.model_validate(json.loads(run_config.policy_json))
+            return bool(policy.enable_build_repair)
+        except Exception:
+            return False
+
+    def _create_deterministic_repair_review_gate(
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        event_type: str,
+        payload: dict[str, Any],
+        diagnosis: Any,
+    ) -> None:
+        if not _repair_policy_allows_gate(job_id):
+            return
+        failure_summary = _build_failure_summary_from_payload(event_type, payload)
+        failure_details = dict(payload or {})
+        raw_refs = failure_details.get("artifact_refs", {})
+        artifact_refs = tuple(str(v) for v in raw_refs.values() if v and isinstance(v, str)) if isinstance(raw_refs, dict) else ()
+        with unit_of_work_factory() as uow:
+            repair_gate_service = V2RepairGateService(
+                gate_service=V2PhaseGateService(uow.phase_gates),
+                gate_action_service=V2GateActionService(
+                    uow.phase_gates,
+                    uow.gate_decisions,
+                    V2PhaseGateService(uow.phase_gates),
+                ),
+                repair_flow=_repair_flow,
+                diagnosis_service=_diagnosis_service,
+            )
+            repair_gate_service.create_repair_gate_on_failure(
+                job_id=job_id,
+                stage_index=stage_index,
+                command_id=command_id,
+                failure_summary=failure_summary,
+                failure_details=failure_details,
+                source_artifact_refs=artifact_refs,
+                diagnosis=diagnosis,
+            )
+
+    def _emit_runtime_blocked_event_best_effort(
+        *,
+        event_sink: Callable[..., None] | None,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        event_type: str,
+        reason: str,
+    ) -> None:
+        if event_sink is None:
+            return
+        payload = {
+            "job_id": str(job_id),
+            "stage_index": int(stage_index),
+            "command_id": str(command_id),
+            "status": "blocked",
+            "reason": str(reason),
+        }
+        try:
+            event_sink(
+                job_id=job_id,
+                stage=stage_index,
+                event_type=event_type,
+                status="blocked",
+                message="Runtime repair event blocked.",
+                payload=payload,
+            )
+        except Exception:
+            return
+
+    def _repair_runtime_callback(context: CanonicalRepairRuntimeContext) -> dict[str, Any] | None:
+        events_written = {"value": False}
+        event_sink = _runtime_event_sink_factory(events_written)
+        evidence = context.failure_evidence
+        context_pack = context.context_pack
+        try:
+            classification = _diagnosis_service.classify_for_repair_route(
+                job_id=evidence.job_id,
+                stage_index=evidence.stage_index,
+                command_id=evidence.command_id,
+                event_type=context.diagnostic_event_type,
+                payload=context.diagnostic_payload,
+            )
+            decision = select_repair_route_decision(
+                job_id=evidence.job_id,
+                stage_index=evidence.stage_index,
+                command_id=evidence.command_id,
+                classification=classification,
+                evidence_checksum=evidence.content_checksum,
+                context_checksum=context_pack.context_pack_checksum,
+                base_repo_state_checksum=context_pack.base_repo_state_checksum,
+                attempt_number=context_pack.cycle_number,
+                max_attempts=context_pack.max_cycles,
+                available_evidence=_available_repair_evidence(classification),
+            )
+            emit_repair_route_decision(
+                event_sink=event_sink,
+                job_id=evidence.job_id,
+                stage_index=evidence.stage_index,
+                command_id=evidence.command_id,
+                decision=decision,
+            )
+        except Exception:
+            _emit_runtime_blocked_event_best_effort(
+                event_sink=event_sink,
+                job_id=evidence.job_id,
+                stage_index=evidence.stage_index,
+                command_id=evidence.command_id,
+                event_type="repair_route_blocked",
+                reason="repair_runtime_dispatch_failed",
+            )
+            if app.state.public_event_notifier is not None:
+                asyncio.run(app.state.public_event_notifier.notify())
+            return {"route": "blocked_runtime_failure"}
+        if decision.route == ROUTE_DETERMINISTIC_RECIPE:
+            diagnosis = _diagnosis_service.diagnose(
+                job_id=evidence.job_id,
+                stage_index=evidence.stage_index,
+                command_id=evidence.command_id,
+                event_type=context.diagnostic_event_type,
+                payload=context.diagnostic_payload,
+            )
+            _create_deterministic_repair_review_gate(
+                job_id=evidence.job_id,
+                stage_index=evidence.stage_index,
+                command_id=evidence.command_id,
+                event_type=context.diagnostic_event_type,
+                payload=context.diagnostic_payload,
+                diagnosis=diagnosis,
+            )
+            if events_written["value"] and app.state.public_event_notifier is not None:
+                asyncio.run(app.state.public_event_notifier.notify())
+            return {"route": decision.route}
+        if decision.route in BLOCKED_ROUTES:
+            if events_written["value"] and app.state.public_event_notifier is not None:
+                asyncio.run(app.state.public_event_notifier.notify())
+            return {"route": decision.route}
+        if decision.route != ROUTE_LLM_REVIEWED_UNKNOWN:
+            if events_written["value"] and app.state.public_event_notifier is not None:
+                asyncio.run(app.state.public_event_notifier.notify())
+            return {"route": decision.route}
+        try:
+            captured_chain: dict[str, Any] = {}
+            review_result = run_unknown_repair_review_chain(
+                decision=decision,
+                failure_evidence=evidence,
+                context_pack=context_pack,
+                output_dir=context.review_chain_output_dir,
+                source_profile=context.source_profile,
+                target_profile=context.target_profile,
+                model_client=app.state.v2_assistant_model_client,
+                invocation_ledger=_ShortTransactionInvocationLedger(),
+                event_sink=event_sink,
+                chain_result_sink=lambda result: captured_chain.update(result),
+                proposal_id=None,
+                gate_id=None,
+            )
+            if review_result.status == "completed":
+                with unit_of_work_factory() as uow:
+                    persistence = LlmReadOnlyCandidatePersistenceService(
+                        repair_repo=uow.v2_repairs,
+                        candidate_repo=uow.v2_repair_candidates,
+                        event_repo=uow.v2_events,
+                    ).persist(
+                        decision=decision,
+                        failure_evidence=evidence,
+                        context_pack=context_pack,
+                        chain_result=captured_chain,
+                        output_dir=context.review_chain_output_dir,
+                        source_proposal_id=None,
+                        source_gate_id=None,
+                    )
+                events_written["value"] = events_written["value"] or persistence.status == "persisted"
+                if not persistence.persisted:
+                    emit_llm_read_only_candidate_event(event_sink=event_sink, result=persistence)
+        except Exception:
+            _emit_runtime_blocked_event_best_effort(
+                event_sink=event_sink,
+                job_id=evidence.job_id,
+                stage_index=evidence.stage_index,
+                command_id=evidence.command_id,
+                event_type="llm_read_only_candidate_blocked",
+                reason="llm_candidate_runtime_failed",
+            )
+        if events_written["value"] and app.state.public_event_notifier is not None:
+            asyncio.run(app.state.public_event_notifier.notify())
+        return {"route": decision.route}
 
     app.state.v2_orchestrator_runner = v2_orchestrator_runner or V2OrchestratorRunner(
         unit_of_work_factory=unit_of_work_factory,
         notifier=app.state.public_event_notifier,
         diagnosis_callback=_diagnosis_callback,
+        repair_runtime_callback=_repair_runtime_callback,
     )
     app.state.controller_ownership = resolved_controller_ownership
     app.state.controller_services_started = False
@@ -15165,6 +15366,43 @@ def _is_safe_relative_ui_path(value: str) -> bool:
 def _safe_repair_apply_candidate(value: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
+    if _safe_failure_str(value.get("candidate_kind")) == "llm_unknown_family":
+        return {
+            "repair_candidate_id": _safe_failure_str(value.get("repair_candidate_id")),
+            "status": "read_only",
+            "candidate_kind": "llm_unknown_family",
+            "family": "llm_unknown_family",
+            "patch_source": "llm_reviewed",
+            "target_file": _safe_failure_str(value.get("target_file")),
+            "pre_apply_checksum": "",
+            "target_file_checksum": _safe_failure_str(value.get("target_file_checksum")),
+            "patch_checksum": _safe_failure_str(value.get("patch_checksum")),
+            "review_checksum": _safe_failure_str(value.get("review_checksum")),
+            "proposal_checksum": _safe_failure_str(value.get("proposal_checksum")),
+            "candidate_checksum": _safe_failure_str(value.get("candidate_checksum")),
+            "failure_evidence_checksum": _safe_failure_str(value.get("failure_evidence_checksum")),
+            "context_checksum": _safe_failure_str(value.get("context_checksum")),
+            "base_repo_state_checksum": _safe_failure_str(value.get("base_repo_state_checksum")),
+            "primary_output_checksum": _safe_failure_str(value.get("primary_output_checksum")),
+            "reviewer_output_checksum": _safe_failure_str(value.get("reviewer_output_checksum")),
+            "raw_reviewed_diff_checksum": _safe_failure_str(value.get("raw_reviewed_diff_checksum")),
+            "final_artifact_checksum": _safe_failure_str(value.get("final_artifact_checksum")),
+            "attempt_number": _int_or_none(value.get("attempt_number")),
+            "review_chain_identity_checksum": _safe_failure_str(value.get("review_chain_identity_checksum")),
+            "approval_required": False,
+            "apply_enabled": False,
+            "approval_enabled": False,
+            "repair_enabled": False,
+            "sandbox_only": True,
+            "legacy_mutation_allowed": False,
+            "downstream_start_allowed": False,
+            "llm_can_apply": False,
+            "browser_can_supply_patch": False,
+            "verification_status": "not_started",
+            "rollback_status": "not_started",
+            "proof_artifact": "",
+            "created_at": _safe_failure_str(value.get("created_at")),
+        }
     trusted = _safe_failure_str(value.get("patch_source")) == "backend_deterministic_recipe"
     if not trusted or _safe_failure_str(value.get("family")) != "INITMOCKS_TO_OPENMOCKS_CANDIDATE":
         return None
@@ -15197,6 +15435,18 @@ def _safe_repair_apply_candidate(value: Any) -> dict[str, Any] | None:
         "proof_artifact": _safe_failure_str(value.get("proof_artifact")),
         "created_at": _safe_failure_str(value.get("created_at")),
     }
+
+
+def _available_repair_evidence(classification: dict[str, Any]) -> tuple[str, ...]:
+    result: list[str] = []
+    for item in classification.get("usable_artifacts", ()) or ():
+        if isinstance(item, dict):
+            kind = str(item.get("kind") or "").strip()
+            if kind:
+                result.append(kind)
+        elif str(item).strip():
+            result.append(str(item))
+    return tuple(result)
 
 
 def _safe_repair_draft_review(value: Any) -> dict[str, Any] | None:

@@ -8,9 +8,18 @@ from typing import Any
 import pytest
 
 from migration_factory.control_tower.application import v2_unknown_repair_review_chain as wf03a
+from migration_factory.control_tower.application.v2_repair_apply_candidate import (
+    apply_approved_repair_candidate,
+    approve_repair_apply_candidate,
+)
+from migration_factory.control_tower.application.v2_repair_projection import (
+    build_reviewed_diff_proposal_from_record,
+    reviewed_diff_proposal_to_safe_dict,
+)
 from migration_factory.control_tower.application.v2_repair_route_decision import (
     RepairRouteDecision,
 )
+from migration_factory.control_tower.domain.checksums import sha256_hex
 from migration_factory.repair_loop.failure_evidence import (
     FailureSource,
     build_failure_evidence,
@@ -103,8 +112,62 @@ def _accepted_chain(context: Any | None = None, **overrides: Any) -> dict[str, A
     }
 
 
+def _accepted_chain_with_diff(tmp_path: Path, context: Any, diff_text: str | None = None, **overrides: Any) -> dict[str, Any]:
+    text = diff_text or (
+        "diff --git a/src/main/java/App.java b/src/main/java/App.java\n"
+        "--- a/src/main/java/App.java\n"
+        "+++ b/src/main/java/App.java\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    diff_path = tmp_path / "final_reviewed_repair.diff"
+    diff_path.write_bytes(text.encode("utf-8"))
+    checksum = "sha256:" + sha256_hex(diff_path.read_bytes())
+    result = _accepted_chain(
+        context,
+        proposed_diff_checksum=checksum,
+        raw_diff_bytes_checksum=checksum,
+        final_reviewed_diff_checksum=checksum,
+        final_diff_ref=str(diff_path),
+        artifact_refs={"final_reviewed_diff": str(diff_path)},
+    )
+    result["review_chain"].update(overrides)
+    return result
+
+
 class Ledger:
     pass
+
+
+class FakeRepairRepo:
+    def __init__(self) -> None:
+        self.records: dict[str, Any] = {}
+        self.save_calls = 0
+
+    def save_proposal(self, record: Any) -> None:
+        self.save_calls += 1
+        self.records.setdefault(record.proposal_id, record)
+
+    def get_current_proposal_for_job(self, job_id: str) -> Any | None:
+        matches = [record for record in self.records.values() if record.job_id == job_id]
+        return matches[-1] if matches else None
+
+
+class FakeCandidateRepo:
+    def __init__(self) -> None:
+        self.candidates: dict[str, dict[str, Any]] = {}
+        self.save_calls = 0
+
+    def save_candidate(self, candidate: dict[str, Any]) -> None:
+        self.save_calls += 1
+        self.candidates.setdefault(candidate["repair_candidate_id"], dict(candidate))
+
+    def latest_public_for_job(self, job_id: str) -> dict[str, Any] | None:
+        matches = [candidate for candidate in self.candidates.values() if candidate["job_id"] == job_id]
+        if not matches:
+            return None
+        return {key: value for key, value in matches[-1].items() if not key.startswith("_")}
 
 
 _DEFAULT_LEDGER = object()
@@ -123,6 +186,8 @@ def _run(
     event_sink: Any | None = _DEFAULT_SINK,
     proposal_id: str | None = None,
     gate_id: str | None = None,
+    repair_repo: Any | None = None,
+    candidate_repo: Any | None = None,
 ) -> Any:
     evidence = evidence or _evidence()
     context = context or _context(evidence)
@@ -730,7 +795,6 @@ def test_result_contains_no_actionable_fields(monkeypatch: pytest.MonkeyPatch, t
         "sandbox_mutation",
         "patch_bytes",
         "artifact_ref",
-        "candidate_id",
         "approval_id",
         "verification",
         "downstream",
@@ -739,3 +803,147 @@ def test_result_contains_no_actionable_fields(monkeypatch: pytest.MonkeyPatch, t
     assert result.non_actionable is True
     for marker in forbidden:
         assert marker not in blob
+
+
+def test_reviewer_accept_does_not_persist_candidate_inside_wf03(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    evidence = _evidence()
+    context = _context(evidence)
+    repair_repo = FakeRepairRepo()
+    candidate_repo = FakeCandidateRepo()
+
+    result = _run(
+        monkeypatch,
+        tmp_path,
+        evidence=evidence,
+        context=context,
+        decision=_decision(evidence, context),
+        producer=lambda **kwargs: _accepted_chain_with_diff(tmp_path, kwargs["context_pack"]),
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+    )
+
+    assert result.status == "completed"
+    assert repair_repo.save_calls == 0
+    assert candidate_repo.save_calls == 0
+    assert candidate_repo.candidates == {}
+    assert repair_repo.records == {}
+
+
+def test_reprocessing_same_review_chain_keeps_wf03_result_stable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    evidence = _evidence()
+    context = _context(evidence)
+    repair_repo = FakeRepairRepo()
+    candidate_repo = FakeCandidateRepo()
+    chain = _accepted_chain_with_diff(tmp_path, context)
+
+    first = _run(
+        monkeypatch,
+        tmp_path,
+        evidence=evidence,
+        context=context,
+        decision=_decision(evidence, context),
+        producer=lambda **_: chain,
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+    )
+    second = _run(
+        monkeypatch,
+        tmp_path,
+        evidence=evidence,
+        context=context,
+        decision=_decision(evidence, context),
+        producer=lambda **_: chain,
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+    )
+
+    assert first == second
+    assert candidate_repo.candidates == {}
+    assert repair_repo.records == {}
+
+
+@pytest.mark.parametrize(
+    "chain_update",
+    [
+        {"reviewer_decision": "revise"},
+        {"reviewer_decision": "reject"},
+        {"primary_deterministic_fallback_used": True},
+        {"raw_diff_bytes_checksum": "sha256:" + "8" * 64},
+    ],
+)
+def test_non_accept_fallback_or_mismatched_checksum_creates_no_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    chain_update: dict[str, Any],
+) -> None:
+    evidence = _evidence()
+    context = _context(evidence)
+    repair_repo = FakeRepairRepo()
+    candidate_repo = FakeCandidateRepo()
+
+    result = _run(
+        monkeypatch,
+        tmp_path,
+        evidence=evidence,
+        context=context,
+        decision=_decision(evidence, context),
+        producer=lambda **kwargs: _accepted_chain_with_diff(tmp_path, kwargs["context_pack"], **chain_update),
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+    )
+
+    assert result.status == "blocked"
+    assert result.reason in {"review_chain_invalid_result", "candidate_persistence_failed", "review_chain_producer_failed"}
+    assert candidate_repo.candidates == {}
+    assert repair_repo.records == {}
+
+
+def test_producer_unavailable_creates_no_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    repair_repo = FakeRepairRepo()
+    candidate_repo = FakeCandidateRepo()
+
+    def unavailable(**_: Any) -> dict[str, Any]:
+        raise RuntimeError("provider unavailable")
+
+    result = _run(
+        monkeypatch,
+        tmp_path,
+        producer=unavailable,
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+    )
+
+    assert result.reason == "review_chain_producer_failed"
+    assert candidate_repo.candidates == {}
+    assert repair_repo.records == {}
+
+
+def test_wf03_result_has_no_read_only_candidate_to_approve_or_apply(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    evidence = _evidence()
+    context = _context(evidence)
+    candidate_repo = FakeCandidateRepo()
+
+    result = _run(
+        monkeypatch,
+        tmp_path,
+        evidence=evidence,
+        context=context,
+        decision=_decision(evidence, context),
+        producer=lambda **kwargs: _accepted_chain_with_diff(tmp_path, kwargs["context_pack"]),
+        candidate_repo=candidate_repo,
+    )
+    assert result.status == "completed"
+    assert candidate_repo.candidates == {}
+    assert not hasattr(result, "candidate_id")

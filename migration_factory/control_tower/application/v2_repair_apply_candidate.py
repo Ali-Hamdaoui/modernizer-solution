@@ -57,6 +57,7 @@ def approve_repair_apply_candidate(candidate: dict[str, Any], request: dict[str,
 
     candidate = candidate if isinstance(candidate, dict) else {}
     request = request if isinstance(request, dict) else {}
+    _must(str(candidate.get("candidate_kind") or "") != "llm_unknown_family", "llm_candidate_not_actionable")
     _must(candidate.get("status") == "pending_human_approval", "candidate_not_pending_human_approval")
     _must(str(request.get("repair_candidate_id") or "") == str(candidate.get("repair_candidate_id") or ""), "repair_candidate_id_mismatch")
     _must(str(request.get("patch_checksum") or "") == str(candidate.get("patch_checksum") or ""), "patch_checksum_mismatch")
@@ -87,6 +88,7 @@ def apply_approved_repair_candidate(
 
     candidate = candidate if isinstance(candidate, dict) else {}
     approval = approval if isinstance(approval, dict) else {}
+    _must(str(candidate.get("candidate_kind") or "") != "llm_unknown_family", "llm_candidate_not_actionable")
     _must(approval.get("approval_status") == "approved", "approval_required")
     _must(approval.get("repair_candidate_id") == candidate.get("repair_candidate_id"), "approval_candidate_mismatch")
     target = Path(str(candidate.get("_target_path") or "")).resolve()

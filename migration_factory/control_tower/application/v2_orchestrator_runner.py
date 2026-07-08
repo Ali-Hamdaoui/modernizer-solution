@@ -38,11 +38,13 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository
     V2StageCommandRecord,
 )
 from migration_factory.repair_loop.failure_evidence import (
+    FailureEvidence,
     FailureSource,
     build_failure_evidence,
     failure_evidence_to_dict,
 )
 from migration_factory.repair_loop.repair_context import (
+    RepairContextPack,
     build_repair_context_pack,
     context_pack_to_dict,
 )
@@ -153,6 +155,65 @@ def _stage_failure_evidence_payload(result: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _diagnostic_failure_payloads(
+    *,
+    command_id: str,
+    result: dict[str, Any],
+) -> tuple[tuple[str, str, str, dict[str, Any]], ...]:
+    build_status = str(result.get("build_status", ""))
+    test_status = str(result.get("test_status", ""))
+    final_status = str(result.get("final_status", ""))
+    final_proof = str(result.get("final_proof_level", ""))
+    transform_status = str(result.get("transform_status", ""))
+    fallback = result.get("repair_fallback_generated")
+
+    public_contract = _build_diagnostic_contract(result)
+    evidence_payload = _stage_failure_evidence_payload(result)
+    payloads: list[tuple[str, str, str, dict[str, Any]]] = []
+    if _is_failure_status(build_status):
+        payloads.append((
+            "build_failed",
+            "failed",
+            f"Build result: {build_status}",
+            {
+                "command_id": command_id,
+                "build_status": build_status,
+                "test_status": test_status,
+                **public_contract,
+                **evidence_payload,
+            },
+        ))
+    if _is_failure_status(test_status):
+        payloads.append((
+            "test_failed",
+            "failed",
+            f"Test result: {test_status}",
+            {
+                "command_id": command_id,
+                "test_status": test_status,
+                **public_contract,
+                **evidence_payload,
+            },
+        ))
+    if _is_failure_status(final_status) or _is_failure_status(transform_status):
+        payloads.append((
+            "transform_failed",
+            "failed",
+            f"Transform/build failed: {final_status or transform_status}",
+            {
+                "command_id": command_id,
+                "final_status": final_status,
+                "transform_status": transform_status,
+                "final_proof_level": final_proof,
+                "build_status": build_status,
+                "repair_fallback_generated": bool(fallback),
+                **public_contract,
+                **evidence_payload,
+            },
+        ))
+    return tuple(payloads)
+
+
 @dataclass(frozen=True)
 class V2OrchestratorStart:
     command_id: str
@@ -181,6 +242,17 @@ class _ResumeValidationResult:
     stage_index: int = -1
 
 
+@dataclass(frozen=True, slots=True)
+class CanonicalRepairRuntimeContext:
+    failure_evidence: FailureEvidence
+    context_pack: RepairContextPack
+    review_chain_output_dir: Path
+    source_profile: str
+    target_profile: str
+    diagnostic_event_type: str
+    diagnostic_payload: dict[str, Any]
+
+
 class V2OrchestratorRunner:
     """Launches the persisted runner manifest in a background subprocess."""
 
@@ -192,6 +264,7 @@ class V2OrchestratorRunner:
         popen_factory: Any = subprocess.Popen,
         cwd: Path | None = None,
         diagnosis_callback: Callable[[str, int, str, str, dict[str, Any]], None] | None = None,
+        repair_runtime_callback: Callable[[CanonicalRepairRuntimeContext], None] | None = None,
         stage_timeout_seconds: float | None = None,
     ) -> None:
         self._unit_of_work_factory = unit_of_work_factory
@@ -201,6 +274,7 @@ class V2OrchestratorRunner:
         self._event_lock = threading.Lock()
         self._last_stdout_lines: list[str] = []
         self._diagnosis_callback = diagnosis_callback
+        self._repair_runtime_callback = repair_runtime_callback
         self._stage_timeout_seconds = stage_timeout_seconds
 
     def start(self, *, job_id: str, command_id: str) -> V2OrchestratorStart:
@@ -1503,10 +1577,14 @@ class V2OrchestratorRunner:
     ) -> None:
         build_status = str(result.get("build_status", ""))
         test_status = str(result.get("test_status", ""))
+        final_status = str(result.get("final_status", ""))
+        transform_status = str(result.get("transform_status", ""))
         if _is_failure_status(build_status):
             failure_source = FailureSource.BUILD
         elif _is_failure_status(test_status):
             failure_source = FailureSource.TEST
+        elif _is_failure_status(final_status) or _is_failure_status(transform_status):
+            failure_source = FailureSource.TRANSFORM
         else:
             return
 
@@ -1599,6 +1677,28 @@ class V2OrchestratorRunner:
                 "base_repo_state_checksum": context_pack.base_repo_state_checksum,
             },
         )
+        if self._repair_runtime_callback is not None:
+            diagnostic_payloads = _diagnostic_failure_payloads(command_id=command_id, result=result)
+            if not diagnostic_payloads:
+                return
+            diagnostic_event_type, _, _, diagnostic_payload = diagnostic_payloads[0]
+            runtime_context = CanonicalRepairRuntimeContext(
+                failure_evidence=evidence,
+                context_pack=context_pack,
+                review_chain_output_dir=repair_dir / "llm_review_chain",
+                source_profile=context_pack.source_profile,
+                target_profile=context_pack.target_profile,
+                diagnostic_event_type=diagnostic_event_type,
+                diagnostic_payload=diagnostic_payload,
+            )
+            try:
+                runtime_outcome = self._repair_runtime_callback(runtime_context)
+                if isinstance(runtime_outcome, dict):
+                    route = str(runtime_outcome.get("route") or "")
+                    if route:
+                        result["_repair_runtime_route"] = route
+            except Exception:
+                pass
 
     def _emit_diagnostic_failure_events(
         self,
@@ -1608,88 +1708,24 @@ class V2OrchestratorRunner:
         command_id: str,
         result: dict[str, Any],
     ) -> None:
-        build_status = str(result.get("build_status", ""))
-        test_status = str(result.get("test_status", ""))
-        final_status = str(result.get("final_status", ""))
-        final_proof = str(result.get("final_proof_level", ""))
-        transform_status = str(result.get("transform_status", ""))
-        fallback = result.get("repair_fallback_generated")
-
-        public_contract = _build_diagnostic_contract(result)
-        evidence_payload = _stage_failure_evidence_payload(result)
-
-        if _is_failure_status(build_status):
-            build_payload = {
-                "command_id": command_id,
-                "build_status": build_status,
-                "test_status": test_status,
-                **public_contract,
-                **evidence_payload,
-            }
+        for event_type, status, message, payload in _diagnostic_failure_payloads(command_id=command_id, result=result):
             self._event(
                 job_id=job_id,
                 stage=stage_index,
-                event_type="build_failed",
-                status="failed",
-                message=f"Build result: {build_status}",
-                payload=build_payload,
+                event_type=event_type,
+                status=status,
+                message=message,
+                payload=payload,
             )
+            route = str(result.get("_repair_runtime_route") or "")
+            if route and route != "deterministic_recipe":
+                continue
             self._maybe_diagnose(
                 job_id=job_id,
                 stage_index=stage_index,
                 command_id=command_id,
-                event_type="build_failed",
-                payload=build_payload,
-            )
-
-        if _is_failure_status(test_status):
-            test_payload = {
-                "command_id": command_id,
-                "test_status": test_status,
-                **public_contract,
-                **evidence_payload,
-            }
-            self._event(
-                job_id=job_id,
-                stage=stage_index,
-                event_type="test_failed",
-                status="failed",
-                message=f"Test result: {test_status}",
-                payload=test_payload,
-            )
-            self._maybe_diagnose(
-                job_id=job_id,
-                stage_index=stage_index,
-                command_id=command_id,
-                event_type="test_failed",
-                payload=test_payload,
-            )
-
-        if _is_failure_status(final_status) or _is_failure_status(transform_status):
-            transform_payload = {
-                "command_id": command_id,
-                "final_status": final_status,
-                "transform_status": transform_status,
-                "final_proof_level": final_proof,
-                "build_status": build_status,
-                "repair_fallback_generated": bool(fallback),
-                **public_contract,
-                **evidence_payload,
-            }
-            self._event(
-                job_id=job_id,
-                stage=stage_index,
-                event_type="transform_failed",
-                status="failed",
-                message=f"Transform/build failed: {final_status or transform_status}",
-                payload=transform_payload,
-            )
-            self._maybe_diagnose(
-                job_id=job_id,
-                stage_index=stage_index,
-                command_id=command_id,
-                event_type="transform_failed",
-                payload=transform_payload,
+                event_type=event_type,
+                payload=payload,
             )
 
     def _maybe_diagnose(

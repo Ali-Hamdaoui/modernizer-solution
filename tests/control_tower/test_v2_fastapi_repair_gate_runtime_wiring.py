@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from types import SimpleNamespace
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from migration_factory.control_tower.adapters.fastapi import create_app
@@ -20,6 +22,9 @@ from migration_factory.control_tower.application.v2_repair_strategy_packet impor
 from migration_factory.control_tower.application.v2_repair_apply_candidate import (
     create_repair_apply_candidate,
 )
+from migration_factory.control_tower.application.v2_failure_diagnosis import (
+    V2FailureDiagnosisService,
+)
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.migrations import (
     apply_pending_migrations,
@@ -30,6 +35,9 @@ from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import (
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import (
     SqliteV2SetupRepository,
     V2PreflightResultRecord,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_event_repository import (
+    SqliteV2JobEventRepository,
 )
 from ._helpers import canonical_json, seed_runner_profile, sha256_json
 from .test_v2_repair_strategy_packet import _powermock_classification, _powermock_evidence
@@ -84,6 +92,24 @@ class _FakeShadowClient:
             "deployment": "shadow-deployment",
             "endpoint_metadata": "endpoint_host=[redacted-endpoint]",
         })()
+
+
+class _CountingShadowClient(_FakeShadowClient):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def answer_with_role(self, **kwargs: Any) -> Any:
+        self.calls += 1
+        return super().answer_with_role(**kwargs)
+
+
+class _NoCallModelClient:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def answer_with_role(self, *, role: Any, prompt: str, fallback: str, **_: Any) -> Any:
+        self.calls.append(getattr(role, "value", str(role)))
+        raise AssertionError("deterministic route must not invoke WF-03A model calls")
 
 
 def _mutation_headers() -> dict[str, str]:
@@ -237,6 +263,95 @@ def _seed_policy(
             policy.model_dump_json(),
             job_id,
         ),
+    )
+
+
+class _RunConfigurationOverrideRepository:
+    def __init__(
+        self,
+        delegate: Any,
+        *,
+        missing_job_ids: set[str],
+        policy_json_by_job_id: dict[str, str],
+    ) -> None:
+        self._delegate = delegate
+        self._missing_job_ids = missing_job_ids
+        self._policy_json_by_job_id = policy_json_by_job_id
+
+    def get_for_job(self, job_id: str) -> Any:
+        if job_id in self._missing_job_ids:
+            return None
+        if job_id in self._policy_json_by_job_id:
+            return SimpleNamespace(policy_json=self._policy_json_by_job_id[job_id])
+        return self._delegate.get_for_job(job_id)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+
+class _RunConfigurationOverrideUnitOfWork:
+    def __init__(
+        self,
+        delegate: SqliteUnitOfWork,
+        *,
+        missing_job_ids: set[str],
+        policy_json_by_job_id: dict[str, str],
+    ) -> None:
+        self._delegate = delegate
+        self.run_configurations = _RunConfigurationOverrideRepository(
+            delegate.run_configurations,
+            missing_job_ids=missing_job_ids,
+            policy_json_by_job_id=policy_json_by_job_id,
+        )
+
+    def __enter__(self) -> "_RunConfigurationOverrideUnitOfWork":
+        self._delegate.__enter__()
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool | None:
+        return self._delegate.__exit__(exc_type, exc, tb)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._delegate, name)
+
+
+def _invoke_deterministic_repair_runtime(
+    app: Any,
+    tmp_path: Path,
+    *,
+    job_id: str,
+    command_id: str,
+) -> None:
+    sandbox = tmp_path / command_id / "sandbox"
+    source = sandbox / "src" / "test" / "java" / "ExampleTest.java"
+    source.parent.mkdir(parents=True)
+    source.write_text("class ExampleTest { void setUp(){ MockitoAnnotations.initMocks(this); } }", encoding="utf-8")
+    test_report = tmp_path / command_id / "TEST-ExampleTest.xml"
+    test_report.parent.mkdir(parents=True, exist_ok=True)
+    test_report.write_text("<failure>test setup failed</failure>", encoding="utf-8")
+    build_error = tmp_path / command_id / "build-error.json"
+    build_error.write_text('{"error":"test setup failed"}', encoding="utf-8")
+    run_dir = tmp_path / command_id / "deterministic-run"
+    run_dir.mkdir(parents=True)
+
+    app.state.v2_orchestrator_runner._maybe_write_repair_failure_context(
+        job_id=job_id,
+        stage_index=2,
+        command_id=command_id,
+        result={
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "run_dir": str(run_dir),
+            "sandbox_path": str(sandbox),
+            "message": "MockitoAnnotations.initMocks(this);",
+            "artifact_refs": {
+                "sandbox": str(sandbox),
+                "test_source": str(source),
+                "test_report": str(test_report),
+                "build_error_contract": str(build_error),
+            },
+        },
+        stdout_tail="",
+        stderr_tail="MockitoAnnotations.initMocks(this);",
     )
 
 
@@ -419,7 +534,7 @@ def test_live_powermock_failure_persists_strategy_overlays_summary_and_chatbot(t
     assert "PowerMockito.whenNew" in test_source.read_text(encoding="utf-8")
 
 
-def test_fastapi_create_app_repair_gate_callback_creates_repair_review_gate(tmp_path: Path) -> None:
+def test_fastapi_diagnosis_callback_does_not_create_parallel_repair_gate(tmp_path: Path) -> None:
     app, client, conn = _app_and_client(tmp_path)
     setup_id = _ready_setup(conn)
     job_id = _create_job(client, setup_id)
@@ -440,8 +555,9 @@ def test_fastapi_create_app_repair_gate_callback_creates_repair_review_gate(tmp_
 
     with SqliteUnitOfWork(conn) as uow:
         open_gates = uow.phase_gates.list_open(job_id)
-        assert open_gates
-        assert any(gate.gate_phase == "repair_review" for gate in open_gates)
+        assert open_gates == ()
+    diagnosis = app.state.v2_failure_diagnosis_service.get_diagnosis("cmd-build-1", "build_failed")
+    assert diagnosis is not None
 
 
 def test_failure_summary_exposes_persisted_jackson_next_candidate(tmp_path: Path) -> None:
@@ -551,6 +667,147 @@ def test_fastapi_create_app_skips_repair_gate_when_disabled(tmp_path: Path) -> N
     with SqliteUnitOfWork(conn) as uow:
         open_gates = uow.phase_gates.list_open(job_id)
         assert not any(gate.gate_phase == "repair_review" for gate in open_gates)
+
+
+def test_classify_for_repair_route_is_side_effect_free_with_shadow_enabled(tmp_path: Path) -> None:
+    shadow = _CountingShadowClient()
+    candidates: list[dict[str, Any]] = []
+    strategies: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+    sandbox = tmp_path / "sandbox"
+    source = sandbox / "src" / "test" / "java" / "ExampleTest.java"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "class ExampleTest {\n"
+        "  void setUp(){\n"
+        "    MockitoAnnotations.initMocks(this);\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    service = V2FailureDiagnosisService(
+        event_sink=lambda **kwargs: events.append(kwargs),
+        repair_candidate_sink=candidates.append,
+        repair_strategy_sink=lambda packet: strategies.append(packet) or packet,
+        llm_repair_shadow_client=shadow,
+        llm_repair_shadow_enabled=True,
+    )
+    classification = service.classify_for_repair_route(
+        job_id="job-pure",
+        stage_index=2,
+        command_id="cmd-pure",
+        event_type="build_failed",
+        payload={
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "sandbox_path": str(sandbox),
+            "message": "MockitoAnnotations.initMocks(this);",
+            "artifact_refs": {"test_source": str(source), "sandbox": str(sandbox)},
+        },
+    )
+
+    assert classification["classification_status"] == "known_family_candidate"
+    assert classification["failure_type"] == "INITMOCKS_TO_OPENMOCKS_CANDIDATE"
+    assert shadow.calls == 0
+    assert strategies == []
+    assert candidates == []
+    assert events == []
+    assert service.get_diagnosis("cmd-pure", "build_failed") is None
+
+
+@pytest.mark.parametrize("policy_authority", ("missing", "empty", "invalid", "disabled"))
+def test_app_deterministic_route_fails_closed_without_valid_build_repair_policy(
+    tmp_path: Path,
+    policy_authority: str,
+) -> None:
+    conn = sqlite3.connect(str(tmp_path / f"{policy_authority}.sqlite3"), check_same_thread=False, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    apply_pending_migrations(conn)
+    client = _NoCallModelClient()
+    missing_job_ids: set[str] = set()
+    policy_json_by_job_id: dict[str, str] = {}
+
+    def unit_of_work_factory() -> _RunConfigurationOverrideUnitOfWork:
+        return _RunConfigurationOverrideUnitOfWork(
+            SqliteUnitOfWork(conn),
+            missing_job_ids=missing_job_ids,
+            policy_json_by_job_id=policy_json_by_job_id,
+        )
+
+    app = create_app(unit_of_work_factory, v2_assistant_model_client=client)
+    app.state.v2_failure_diagnosis_service._llm_repair_shadow_client = _FakeShadowClient()
+    app.state.v2_failure_diagnosis_service._llm_repair_shadow_enabled = True
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(client=TestClient(app, base_url="http://127.0.0.1:8000"), setup_id=setup_id, policy={
+        "stage_continuation_policy": "auto_on_green",
+        "enable_build_repair": policy_authority != "disabled",
+    })
+    if policy_authority == "missing":
+        missing_job_ids.add(job_id)
+    elif policy_authority == "empty":
+        policy_json_by_job_id[job_id] = ""
+    elif policy_authority == "invalid":
+        policy_json_by_job_id[job_id] = "{not valid json"
+
+    _invoke_deterministic_repair_runtime(
+        app,
+        tmp_path,
+        job_id=job_id,
+        command_id=f"cmd-deterministic-{policy_authority}",
+    )
+
+    events = SqliteV2JobEventRepository(conn).list_by_job(job_id)
+    event_types = [event.type for event in events]
+    event_payloads = [json.loads(event.payload_json or "{}") for event in events]
+    assert "repair_route_selected" in event_types, list(zip(event_types, event_payloads))
+    route_payload = json.loads(events[event_types.index("repair_route_selected")].payload_json)
+    assert route_payload["route"] == "deterministic_recipe"
+    assert client.calls == []
+    with SqliteUnitOfWork(conn) as uow:
+        open_gates = uow.phase_gates.list_open(job_id)
+    assert not any(gate.gate_phase == "repair_review" for gate in open_gates)
+
+
+def test_app_deterministic_route_preserves_candidate_and_repair_review_gate(tmp_path: Path) -> None:
+    conn = sqlite3.connect(str(tmp_path / "deterministic.sqlite3"), check_same_thread=False, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    apply_pending_migrations(conn)
+    client = _NoCallModelClient()
+    app = create_app(lambda: SqliteUnitOfWork(conn), v2_assistant_model_client=client)
+    app.state.v2_failure_diagnosis_service._llm_repair_shadow_client = _FakeShadowClient()
+    app.state.v2_failure_diagnosis_service._llm_repair_shadow_enabled = True
+    setup_id = _ready_setup(conn)
+    job_id = _create_job(TestClient(app, base_url="http://127.0.0.1:8000"), setup_id, policy={
+        "stage_continuation_policy": "auto_on_green",
+        "enable_build_repair": True,
+    })
+    _invoke_deterministic_repair_runtime(
+        app,
+        tmp_path,
+        job_id=job_id,
+        command_id="cmd-deterministic",
+    )
+
+    events = SqliteV2JobEventRepository(conn).list_by_job(job_id)
+    event_types = [event.type for event in events]
+    event_payloads = [json.loads(event.payload_json or "{}") for event in events]
+    assert "repair_route_selected" in event_types, list(zip(event_types, event_payloads))
+    route_payload = json.loads(events[event_types.index("repair_route_selected")].payload_json)
+    assert route_payload["route"] == "deterministic_recipe"
+    assert client.calls == []
+    with SqliteUnitOfWork(conn) as uow:
+        candidate = uow.v2_repair_candidates.latest_public_for_job(job_id)
+        open_gates = uow.phase_gates.list_open(job_id)
+    diagnosis = app.state.v2_failure_diagnosis_service.get_diagnosis("cmd-deterministic", "build_failed")
+    envelope = getattr(diagnosis, "classification_envelope", {}) or {}
+    assert envelope["failure_type"] == "INITMOCKS_TO_OPENMOCKS_CANDIDATE"
+    assert envelope["repair_proposal_draft"]["proposal_status"] == "drafted_non_actionable"
+    assert envelope["repair_subfamily_assessment"]["apply_candidate_allowed"] is True
+    assert any(gate.gate_phase == "repair_review" for gate in open_gates)
+    if candidate is not None:
+        assert candidate["candidate_kind"] != "llm_unknown_family"
 
 
 def test_live_diagnosis_persists_repair_candidate_then_approve_and_apply(tmp_path: Path) -> None:

@@ -515,6 +515,7 @@ def build_reviewed_diff_proposal_from_record(
         proposal_id=proposal_id,
         diff_ref=diff_ref,
         diff_text=final_diff_text,
+        stored_diff_checksum=diff_checksum,
     )
     verdict = ReviewerVerdictProjection(
         reviewer_verdict_id=reviewer_verdict_id,

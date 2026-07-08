@@ -229,7 +229,8 @@ class SqliteV2RepairRepository:
             """SELECT * FROM v2_repair_proposals
                WHERE job_id = ?
                  AND (status = 'user_review_required'
-                      OR (gate_id IS NOT NULL AND status IN ('user_review_required', 'reviewer_accepted', 'diff_materialized')))
+                      OR (gate_id IS NOT NULL AND status IN ('user_review_required', 'reviewer_accepted', 'diff_materialized', 'llm_candidate_read_only'))
+                      OR status = 'llm_candidate_read_only')
                ORDER BY created_at DESC
                LIMIT 1""",
             (job_id,),
