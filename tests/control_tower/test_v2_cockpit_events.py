@@ -722,6 +722,31 @@ def _pipeline_row(client: TestClient, job_id: str, key: str) -> dict[str, str]:
     return matches[0]
 
 
+def test_final_route_stage_completed_by_migration_completed_event(tmp_path: Path) -> None:
+    """A selected route ending at Stage 3 must not stay running after migration_completed."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(job_id=job_id, stage=3, event_type="stage_started", status="running", message="stage 3 started", payload={})
+        uow.v2_events.save(job_id=job_id, stage=3, event_type="sandbox_transform_started", status="running", message="sandbox started", payload={})
+        uow.v2_events.save(job_id=job_id, stage=3, event_type="sandbox_transform_completed", status="completed", message="sandbox passed", payload={})
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=3,
+            event_type="migration_completed",
+            status="completed",
+            message="selected target profile reached",
+            payload={"from_stage": 3, "to_stage": 3, "reason": "migration_completed"},
+        )
+
+    stages = _stages_status(client, job_id)
+    assert stages[3] == "completed"
+
+    transform_row = _pipeline_row(client, job_id, "sandbox_transform")
+    assert transform_row["status"] == "pass"
+
 def test_stage_blocked_while_approval_pending(tmp_path: Path) -> None:
     """Stage 1 must be BLOCKED when only approval events exist (no resume/transform)."""
     client, conn = _api_client(tmp_path)
