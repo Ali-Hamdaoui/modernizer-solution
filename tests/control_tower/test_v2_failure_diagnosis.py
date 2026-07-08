@@ -26,6 +26,9 @@ from migration_factory.control_tower.application.v2_failure_diagnosis import (
     FailureDiagnosisRecord,
     create_orchestrator_diagnosis_callback,
 )
+from migration_factory.control_tower.application.v2_repair_route_decision import (
+    select_repair_route_decision,
+)
 from migration_factory.control_tower.application.v2_stage_failure_classifier import classify_stage_failure
 from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
@@ -640,6 +643,46 @@ class TestSerialization:
 
 
 class TestStageAwareEvidence:
+    def _unknown_surefire_layout(
+        self,
+        tmp_path: Path,
+        *,
+        with_log: bool = True,
+        log_text: str = "[INFO] --- maven-surefire-plugin:test ---\n[ERROR] Tests run: 1, Failures: 1\n",
+        with_reports: bool = True,
+        build_error_message: str = "M1_UNKNOWN_RUNTIME_SENTINEL: migrated runtime behavior requires governed review",
+    ) -> dict[str, Any]:
+        run_dir = tmp_path / "run"
+        sandbox = run_dir / "workspaces" / "sandbox"
+        build_dir = run_dir / "build"
+        reports = sandbox / "target" / "surefire-reports"
+        logs = run_dir / "logs"
+        build_dir.mkdir(parents=True)
+        sandbox.mkdir(parents=True)
+        build_error = build_dir / "build-error-unknown_failure.json"
+        build_error.write_text(
+            json.dumps({"message": build_error_message, "classification_status": "unknown"}),
+            encoding="utf-8",
+        )
+        if with_log:
+            logs.mkdir(parents=True)
+            (logs / "phase2_transform.log").write_text(log_text, encoding="utf-8")
+        if with_reports:
+            reports.mkdir(parents=True)
+            (reports / "TEST-com.example.UnknownRuntimeTest.xml").write_text(
+                "<testsuite><testcase classname='com.example.UnknownRuntimeTest'/></testsuite>",
+                encoding="utf-8",
+            )
+            (reports / "com.example.UnknownRuntimeTest.txt").write_text(
+                build_error_message,
+                encoding="utf-8",
+            )
+        return {
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "sandbox_path": str(sandbox),
+            "failure_summary": build_error_message,
+            "artifact_refs": {"build_error_contract": str(build_error)},
+        }
 
     def test_failed_stage_with_artifacts_creates_stage_evidence_pack(
         self,
@@ -758,6 +801,138 @@ class TestStageAwareEvidence:
         assert "build_error_contract" not in evidence["missing_artifacts"]
         usable = {item["kind"]: item for item in evidence["usable_artifacts"]}
         assert usable["build_error_contract"]["checksum"].startswith("sha256:")
+
+    def test_complete_unknown_surefire_evidence_selects_llm_reviewed_unknown(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+    ) -> None:
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-stage",
+            stage_index=1,
+            command_id="cmd-unknown-surefire",
+            event_type="build_failed",
+            payload=self._unknown_surefire_layout(tmp_path),
+        )
+
+        evidence = diagnosis.stage_evidence_pack
+        classification = diagnosis.classification_envelope
+        assert evidence is not None
+        assert classification is not None
+        usable = {item["kind"]: item for item in evidence["usable_artifacts"]}
+        assert {"build_error_contract", "test_report", "test_agent_log"} <= set(usable)
+        assert usable["test_agent_log"]["checksum"].startswith("sha256:")
+        assert "internal_ref" not in json.dumps(evidence)
+        assert classification["classification_status"] == "unknown"
+
+        decision = select_repair_route_decision(
+            job_id="job-stage",
+            stage_index=1,
+            command_id="cmd-unknown-surefire",
+            classification=classification,
+            evidence_checksum=str(evidence["evidence_pack_checksum"]),
+            context_checksum="sha256:" + "b" * 64,
+            base_repo_state_checksum="sha256:" + "c" * 64,
+            attempt_number=0,
+            max_attempts=3,
+            available_evidence=tuple(usable),
+        )
+        assert decision.route == "llm_reviewed_unknown"
+        assert decision.reason == "llm_unknown_eligible"
+        assert decision.llm_eligible is True
+
+    def test_compilation_failure_without_surefire_does_not_bind_test_agent_log(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+    ) -> None:
+        payload = self._unknown_surefire_layout(
+            tmp_path,
+            with_log=True,
+            log_text="[ERROR] COMPILATION ERROR\n[ERROR] package com.example does not exist\n",
+            with_reports=False,
+            build_error_message="src/main/java/App.java:[1,1] package com.example does not exist",
+        )
+
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-stage",
+            stage_index=1,
+            command_id="cmd-compile-no-surefire",
+            event_type="build_failed",
+            payload=payload,
+        )
+
+        evidence = diagnosis.stage_evidence_pack
+        classification = diagnosis.classification_envelope
+        assert evidence is not None
+        assert classification is not None
+        usable = {item["kind"] for item in evidence["usable_artifacts"]}
+        assert "test_agent_log" not in usable
+        decision = select_repair_route_decision(
+            job_id="job-stage",
+            stage_index=1,
+            command_id="cmd-compile-no-surefire",
+            classification=classification,
+            evidence_checksum=str(evidence["evidence_pack_checksum"]),
+            context_checksum="sha256:" + "b" * 64,
+            base_repo_state_checksum="sha256:" + "c" * 64,
+            attempt_number=0,
+            max_attempts=3,
+            available_evidence=tuple(usable),
+        )
+        assert decision.route == "blocked_missing_evidence"
+        assert decision.reason == "missing_policy_evidence"
+
+    @pytest.mark.parametrize(
+        "payload_overrides",
+        [
+            {"with_log": False, "with_reports": True},
+            {"with_log": True, "log_text": "[INFO] transform completed without test execution\n", "with_reports": True},
+        ],
+    )
+    def test_surefire_report_without_valid_test_log_does_not_bind_test_agent_log(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+        payload_overrides: dict[str, Any],
+    ) -> None:
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-stage",
+            stage_index=1,
+            command_id="cmd-report-no-valid-log",
+            event_type="build_failed",
+            payload=self._unknown_surefire_layout(tmp_path, **payload_overrides),
+        )
+
+        evidence = diagnosis.stage_evidence_pack
+        assert evidence is not None
+        usable = {item["kind"] for item in evidence["usable_artifacts"]}
+        assert "test_report" in usable
+        assert "test_agent_log" not in usable
+
+    def test_test_log_without_surefire_reports_does_not_bind_test_agent_log(
+        self,
+        diagnosis_service: V2FailureDiagnosisService,
+        tmp_path: Path,
+    ) -> None:
+        diagnosis = diagnosis_service.diagnose(
+            job_id="job-stage",
+            stage_index=1,
+            command_id="cmd-log-no-report",
+            event_type="build_failed",
+            payload=self._unknown_surefire_layout(
+                tmp_path,
+                with_log=True,
+                log_text="[INFO] Tests run: 1, Failures: 1\n",
+                with_reports=False,
+            ),
+        )
+
+        evidence = diagnosis.stage_evidence_pack
+        assert evidence is not None
+        usable = {item["kind"] for item in evidence["usable_artifacts"]}
+        assert "test_report" not in usable
+        assert "test_agent_log" not in usable
 
     def test_live_build_failure_binds_existing_sandbox_artifacts(
         self,

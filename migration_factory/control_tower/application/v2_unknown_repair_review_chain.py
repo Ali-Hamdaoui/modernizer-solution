@@ -17,7 +17,10 @@ from migration_factory.control_tower.application.v2_repair_route_decision import
     ROUTE_LLM_REVIEWED_UNKNOWN,
     RepairRouteDecision,
 )
-from migration_factory.orchestrator.repair_review_chain import produce_repair_review_chain
+from migration_factory.orchestrator.repair_review_chain import (
+    RepairReviewChainProductionError,
+    produce_repair_review_chain,
+)
 from migration_factory.repair_loop.failure_evidence import FailureEvidence
 from migration_factory.repair_loop.repair_context import RepairContextPack
 
@@ -61,6 +64,18 @@ REASON_EVENT_SINK_FAILED = "event_sink_failed"
 REASON_REVIEW_CHAIN_INVALID_RESULT = "review_chain_invalid_result"
 REASON_REVIEW_CHAIN_PRODUCER_FAILED = "review_chain_producer_failed"
 
+FAILURE_KIND_INVOCATION_LEDGER_UNAVAILABLE = "invocation_ledger_unavailable"
+FAILURE_KIND_INVOCATION_LEDGER_START_FAILED = "invocation_ledger_start_failed"
+FAILURE_KIND_PROPOSER_OUTPUT_TRUNCATED = "proposer_output_truncated"
+FAILURE_KIND_PROPOSER_PROVIDER_FAILED = "proposer_provider_failed"
+FAILURE_KIND_PROPOSER_SCHEMA_INVALID = "proposer_schema_invalid"
+FAILURE_KIND_REVIEWER_OUTPUT_TRUNCATED = "reviewer_output_truncated"
+FAILURE_KIND_REVIEWER_PROVIDER_FAILED = "reviewer_provider_failed"
+FAILURE_KIND_REVIEWER_SCHEMA_INVALID = "reviewer_schema_invalid"
+FAILURE_KIND_REVIEWER_REJECTED = "reviewer_rejected"
+FAILURE_KIND_CANDIDATE_PERSISTENCE_FAILED = "candidate_persistence_failed"
+FAILURE_KIND_REVIEW_CHAIN_PRODUCER_FAILED = "review_chain_producer_failed"
+
 _ALLOWED_EVENT_PAYLOAD_KEYS = (
     "job_id",
     "stage_index",
@@ -78,6 +93,7 @@ _ALLOWED_EVENT_PAYLOAD_KEYS = (
     "reviewer_output_checksum",
     "reviewed_diff_checksum",
     "final_artifact_checksum",
+    "failure_kind",
 )
 
 
@@ -99,6 +115,7 @@ class UnknownRepairReviewChainResult:
     reviewer_output_checksum: str = ""
     reviewed_diff_checksum: str = ""
     final_artifact_checksum: str = ""
+    failure_kind: str = ""
     non_actionable: bool = True
 
 
@@ -184,12 +201,13 @@ def run_unknown_repair_review_chain(
             gate_id=gate_id,
             attempt_number=context_pack.cycle_number,
         )
-    except Exception:
+    except Exception as exc:
         return _blocked_result(
             decision=decision,
             failure_evidence=failure_evidence,
             context_pack=context_pack,
             reason=REASON_REVIEW_CHAIN_PRODUCER_FAILED,
+            failure_kind=_classify_review_chain_failure(exc),
             event_sink=event_sink,
             proposal_id=proposal_id,
             gate_id=gate_id,
@@ -375,6 +393,7 @@ def _blocked_result(
     event_sink: Callable[..., None] | None,
     proposal_id: str | None,
     gate_id: str | None,
+    failure_kind: str = "",
 ) -> UnknownRepairReviewChainResult:
     result = _base_result(
         status=STATUS_BLOCKED,
@@ -384,6 +403,7 @@ def _blocked_result(
         context_pack=context_pack,
         proposal_id=proposal_id,
         gate_id=gate_id,
+        failure_kind=failure_kind or _failure_kind_for_block_reason(reason),
     )
     emit_reason = _emit_event(
         event_sink=event_sink,
@@ -416,6 +436,7 @@ def _base_result(
     reviewer_output_checksum: str = "",
     reviewed_diff_checksum: str = "",
     final_artifact_checksum: str = "",
+    failure_kind: str = "",
 ) -> UnknownRepairReviewChainResult:
     return UnknownRepairReviewChainResult(
         status=status,
@@ -434,6 +455,7 @@ def _base_result(
         reviewer_output_checksum=reviewer_output_checksum,
         reviewed_diff_checksum=reviewed_diff_checksum,
         final_artifact_checksum=final_artifact_checksum,
+        failure_kind=failure_kind,
     )
 
 
@@ -480,6 +502,7 @@ def _public_payload(result: UnknownRepairReviewChainResult) -> dict[str, Any] | 
         "reviewer_output_checksum": result.reviewer_output_checksum,
         "reviewed_diff_checksum": result.reviewed_diff_checksum,
         "final_artifact_checksum": result.final_artifact_checksum,
+        "failure_kind": result.failure_kind,
     }
     try:
         redacted = redact_public_value(payload)
@@ -504,3 +527,56 @@ def _valid_nonnegative_int(value: Any) -> bool:
 
 def _valid_positive_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _failure_kind_for_block_reason(reason: str) -> str:
+    if reason == REASON_LEDGER_UNAVAILABLE:
+        return FAILURE_KIND_INVOCATION_LEDGER_UNAVAILABLE
+    if reason == REASON_REVIEW_CHAIN_INVALID_RESULT:
+        return FAILURE_KIND_REVIEWER_SCHEMA_INVALID
+    return ""
+
+
+def _classify_review_chain_failure(exc: Exception) -> str:
+    failure_code = str(getattr(exc, "failure_code", "") or "")
+    if failure_code in {
+        FAILURE_KIND_PROPOSER_OUTPUT_TRUNCATED,
+        FAILURE_KIND_PROPOSER_SCHEMA_INVALID,
+        FAILURE_KIND_PROPOSER_PROVIDER_FAILED,
+        FAILURE_KIND_REVIEWER_OUTPUT_TRUNCATED,
+        FAILURE_KIND_REVIEWER_SCHEMA_INVALID,
+        FAILURE_KIND_REVIEWER_PROVIDER_FAILED,
+        FAILURE_KIND_REVIEWER_REJECTED,
+        FAILURE_KIND_INVOCATION_LEDGER_UNAVAILABLE,
+        FAILURE_KIND_INVOCATION_LEDGER_START_FAILED,
+    }:
+        return failure_code
+    text = str(exc).lower()
+    if isinstance(exc, RepairReviewChainProductionError):
+        if "mandatory invocation ledger unavailable" in text:
+            return FAILURE_KIND_INVOCATION_LEDGER_UNAVAILABLE
+        if "invocation ledger start failed" in text:
+            return FAILURE_KIND_INVOCATION_LEDGER_START_FAILED
+        if "primary repair model failed closed" in text:
+            if _looks_schema_failure(text):
+                return FAILURE_KIND_PROPOSER_SCHEMA_INVALID
+            return FAILURE_KIND_PROPOSER_PROVIDER_FAILED
+        if "primary deterministic fallback" in text:
+            return FAILURE_KIND_PROPOSER_PROVIDER_FAILED
+        if "primary repair chain failed closed" in text or "primary repair output" in text:
+            return FAILURE_KIND_PROPOSER_SCHEMA_INVALID
+        if "reviewer repair model failed closed" in text:
+            if _looks_schema_failure(text):
+                return FAILURE_KIND_REVIEWER_SCHEMA_INVALID
+            return FAILURE_KIND_REVIEWER_PROVIDER_FAILED
+        if "reviewer deterministic fallback" in text:
+            return FAILURE_KIND_REVIEWER_PROVIDER_FAILED
+        if "reviewer decision failed closed" in text:
+            return FAILURE_KIND_REVIEWER_REJECTED
+        if "reviewer repair chain failed closed" in text or "reviewer repair output" in text:
+            return FAILURE_KIND_REVIEWER_SCHEMA_INVALID
+    return FAILURE_KIND_REVIEW_CHAIN_PRODUCER_FAILED
+
+
+def _looks_schema_failure(text: str) -> bool:
+    return any(marker in text for marker in ("schema", "json", "object", "invalid", "checksum mismatch"))

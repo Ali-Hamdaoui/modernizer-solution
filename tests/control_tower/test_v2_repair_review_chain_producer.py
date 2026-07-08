@@ -100,6 +100,26 @@ def _accept_reviewer_json(prompt: str, *, decision: str = "accept", context_chec
     )
 
 
+def _large_valid_primary_json() -> str:
+    diff_lines = [
+        "--- a/src/main/java/App.java",
+        "+++ b/src/main/java/App.java",
+        "@@ -1,6 +1,6 @@",
+    ]
+    for index in range(80):
+        diff_lines.append(f"-old line {index}")
+        diff_lines.append(f"+new line {index}")
+    diff = "\n".join(diff_lines) + "\n"
+    assert len(diff) > 700
+    return json.dumps(
+        {
+            **json.loads(_valid_primary_json()),
+            "proposed_diff": diff,
+        },
+        sort_keys=True,
+    )
+
+
 def _make_evidence(**overrides: Any) -> Any:
     kwargs: dict[str, Any] = {
         "failure_source": FailureSource.BUILD,
@@ -753,6 +773,79 @@ def test_terminal_ledger_failure_states(
         terminal = list(ledger.rows.values())[-1]
         assert terminal["deterministic_fallback_used"] is True
         assert terminal["accepted_provider_source"] == "deterministic"
+
+
+def test_proposer_output_truncated_fails_before_json_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import migration_factory.orchestrator.repair_review_chain as module
+
+    ledger = RecordingLedger()
+    output_dir = tmp_path / "truncated"
+    client = SequenceRepairClient(
+        [
+            _model_result(
+                '{"schema_version":"1.0","root_cause":"partial',
+                role="proposer",
+                success=False,
+                model_status="fallback",
+                failure_reason="output_truncated",
+                source="deterministic",
+                provider="deterministic",
+                fallback_used=True,
+            )
+        ]
+    )
+
+    def fail_if_parsed(*_: Any, **__: Any) -> dict[str, Any]:
+        raise AssertionError("truncated provider output must not be parsed")
+
+    monkeypatch.setattr(module, "_parse_strict_json_object", fail_if_parsed)
+
+    with pytest.raises(RepairReviewChainProductionError) as exc_info:
+        _run_chain(tmp_path, client, ledger, output_name="truncated")
+
+    assert exc_info.value.failure_code == "proposer_output_truncated"
+    assert [row["status"] for row in ledger.rows.values()] == ["fallback"]
+    _assert_fail_closed(output_dir, ledger)
+
+
+def test_malformed_completed_primary_json_is_proposer_schema_invalid(tmp_path: Path) -> None:
+    ledger = RecordingLedger()
+    output_dir = tmp_path / "malformed"
+
+    with pytest.raises(RepairReviewChainProductionError) as exc_info:
+        _run_chain(
+            tmp_path,
+            SequenceRepairClient([_model_result("{\"schema_version\":\"1.0\"", role="proposer")]),
+            ledger,
+            output_name="malformed",
+        )
+
+    assert exc_info.value.failure_code == "proposer_schema_invalid"
+    assert [row["status"] for row in ledger.rows.values()] == ["failed"]
+    _assert_fail_closed(output_dir, ledger)
+
+
+def test_large_valid_primary_diff_proceeds_to_reviewer_without_apply_or_approval(tmp_path: Path) -> None:
+    ledger = RecordingLedger()
+    output_dir = tmp_path / "large_valid"
+    client = SequenceRepairClient(
+        [
+            _model_result(_large_valid_primary_json(), role="proposer"),
+            _model_result("__ACCEPT__", role="reviewer"),
+        ]
+    )
+
+    result = _run_chain(tmp_path, client, ledger, output_name="large_valid")
+
+    assert client.calls == [V2ModelRole.PROPOSER, V2ModelRole.REVIEWER]
+    assert result["review_chain"]["reviewer_decision"] == "accept"
+    assert len((output_dir / "final_reviewed_repair.diff").read_text(encoding="utf-8")) > 700
+    assert not list(output_dir.glob("*candidate*"))
+    assert not list(output_dir.glob("*approval*"))
+    assert not list(output_dir.glob("*apply*"))
 
 
 def test_primary_artifact_write_failure_gets_terminal_status(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

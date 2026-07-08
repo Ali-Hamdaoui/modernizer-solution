@@ -50,7 +50,9 @@ from migration_factory.repair_loop.repair_context import (
 
 
 class RepairReviewChainProductionError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, failure_code: str = "") -> None:
+        super().__init__(message)
+        self.failure_code = failure_code
 
 
 _PRIMARY_CANONICAL_FIELDS = tuple(REPAIR_PRIMARY_OUTPUT_SCHEMA["properties"].keys())
@@ -153,20 +155,21 @@ def _reviewer_repair_prompt(
 
 
 def _parse_strict_json_object(content: str, *, label: str) -> dict[str, Any]:
+    failure_code = _schema_failure_code_for_label(label)
     if not isinstance(content, str):
-        raise RepairReviewChainProductionError(f"{label} output must be a JSON object string")
+        raise RepairReviewChainProductionError(f"{label} output must be a JSON object string", failure_code=failure_code)
     text = content.strip()
     if not text:
-        raise RepairReviewChainProductionError(f"{label} output must not be empty")
+        raise RepairReviewChainProductionError(f"{label} output must not be empty", failure_code=failure_code)
     decoder = json.JSONDecoder()
     try:
         parsed, end = decoder.raw_decode(text)
     except json.JSONDecodeError as exc:
-        raise RepairReviewChainProductionError(f"{label} output must be valid JSON") from exc
+        raise RepairReviewChainProductionError(f"{label} output must be valid JSON", failure_code=failure_code) from exc
     if text[end:].strip():
-        raise RepairReviewChainProductionError(f"{label} output must contain exactly one JSON object")
+        raise RepairReviewChainProductionError(f"{label} output must contain exactly one JSON object", failure_code=failure_code)
     if not isinstance(parsed, dict):
-        raise RepairReviewChainProductionError(f"{label} output root must be a JSON object")
+        raise RepairReviewChainProductionError(f"{label} output root must be a JSON object", failure_code=failure_code)
     return parsed
 
 
@@ -175,12 +178,16 @@ def _validate_primary_repair_contract(content: str) -> dict[str, Any]:
     try:
         validate_model_output("RepairPrimaryOutput", parsed)
     except (SchemaValidationError, ValueError) as exc:
-        raise RepairReviewChainProductionError(f"primary repair output schema invalid: {exc}") from exc
+        raise RepairReviewChainProductionError(
+            f"primary repair output schema invalid: {exc}",
+            failure_code="proposer_schema_invalid",
+        ) from exc
 
     failures = _validate_primary_repair_output(parsed)
     if failures:
         raise RepairReviewChainProductionError(
-            "invalid primary repair output: " + "; ".join(failures)
+            "invalid primary repair output: " + "; ".join(failures),
+            failure_code="proposer_schema_invalid",
         )
     return parsed
 
@@ -206,21 +213,45 @@ def _coerce_reviewer_repair_output(
     try:
         validate_model_output("RepairReviewerOutput", parsed)
     except (SchemaValidationError, ValueError) as exc:
-        raise RepairReviewChainProductionError(f"reviewer repair output schema invalid: {exc}") from exc
+        raise RepairReviewChainProductionError(
+            f"reviewer repair output schema invalid: {exc}",
+            failure_code="reviewer_schema_invalid",
+        ) from exc
 
     if parsed["reviewed_context_checksum"] != context_checksum:
         raise RepairReviewChainProductionError(
-            f"reviewer context checksum mismatch: expected {context_checksum}, got {parsed['reviewed_context_checksum']}"
+            f"reviewer context checksum mismatch: expected {context_checksum}, got {parsed['reviewed_context_checksum']}",
+            failure_code="reviewer_schema_invalid",
         )
     if parsed["reviewed_primary_output_checksum"] != primary_checksum:
         raise RepairReviewChainProductionError(
-            f"reviewer primary checksum mismatch: expected {primary_checksum}, got {parsed['reviewed_primary_output_checksum']}"
+            f"reviewer primary checksum mismatch: expected {primary_checksum}, got {parsed['reviewed_primary_output_checksum']}",
+            failure_code="reviewer_schema_invalid",
         )
     if parsed["reviewed_diff_checksum"] != diff_checksum:
         raise RepairReviewChainProductionError(
-            f"reviewer diff checksum mismatch: expected {diff_checksum}, got {parsed['reviewed_diff_checksum']}"
+            f"reviewer diff checksum mismatch: expected {diff_checksum}, got {parsed['reviewed_diff_checksum']}",
+            failure_code="reviewer_schema_invalid",
         )
     return parsed
+
+
+def _schema_failure_code_for_label(label: str) -> str:
+    normalized = str(label or "").lower()
+    if "reviewer" in normalized:
+        return "reviewer_schema_invalid"
+    return "proposer_schema_invalid"
+
+
+def _model_failure_code(result: Any, *, role_prefix: str) -> str:
+    markers = {
+        str(getattr(result, "failure_reason", "") or ""),
+        str(getattr(result, "primary_failure_reason", "") or ""),
+        str(getattr(result, "provider_failure_kind", "") or ""),
+    }
+    if "output_truncated" in markers:
+        return f"{role_prefix}_output_truncated"
+    return f"{role_prefix}_provider_failed"
 
 
 def _compute_primary_repair_checksum(output: dict[str, Any]) -> str:
@@ -584,6 +615,7 @@ def produce_repair_review_chain(
         deterministic_fallback_primary = _is_deterministic_fallback(primary_result)
         primary_provider_source = _safe_provider_source(primary_result)
         if not primary_result.success:
+            failure_code = _model_failure_code(primary_result, role_prefix="proposer")
             proposer_lifecycle.fail(
                 reason=str(getattr(primary_result, "failure_reason", "") or getattr(primary_result, "model_status", "") or "provider_failure"),
                 summary=getattr(primary_result, "redacted_summary", None),
@@ -592,7 +624,8 @@ def produce_repair_review_chain(
                 deterministic_fallback_used=deterministic_fallback_primary,
             )
             raise RepairReviewChainProductionError(
-                f"primary repair model failed closed: {primary_result.failure_reason or primary_result.model_status}"
+                f"primary repair model failed closed: {primary_result.failure_reason or primary_result.model_status}",
+                failure_code=failure_code,
             )
         if deterministic_fallback_primary:
             proposer_lifecycle.fail(
@@ -602,7 +635,10 @@ def produce_repair_review_chain(
                 accepted_provider_source="deterministic",
                 deterministic_fallback_used=True,
             )
-            raise RepairReviewChainProductionError("primary deterministic fallback blocked; no actionable repair produced")
+            raise RepairReviewChainProductionError(
+                "primary deterministic fallback blocked; no actionable repair produced",
+                failure_code="proposer_provider_failed",
+            )
 
         primary_raw_response = _exact_provider_content(primary_result)
         primary_raw_checksum = sha256_raw_model_response(primary_raw_response)
@@ -697,6 +733,7 @@ def produce_repair_review_chain(
         deterministic_fallback_reviewer = _is_deterministic_fallback(reviewer_result)
         reviewer_provider_source = _safe_provider_source(reviewer_result)
         if not reviewer_result.success:
+            failure_code = _model_failure_code(reviewer_result, role_prefix="reviewer")
             reviewer_lifecycle.fail(
                 reason=str(getattr(reviewer_result, "failure_reason", "") or getattr(reviewer_result, "model_status", "") or "provider_failure"),
                 summary=getattr(reviewer_result, "redacted_summary", None),
@@ -705,7 +742,8 @@ def produce_repair_review_chain(
                 deterministic_fallback_used=deterministic_fallback_reviewer,
             )
             raise RepairReviewChainProductionError(
-                f"reviewer repair model failed closed: {reviewer_result.failure_reason or reviewer_result.model_status}"
+                f"reviewer repair model failed closed: {reviewer_result.failure_reason or reviewer_result.model_status}",
+                failure_code=failure_code,
             )
         if deterministic_fallback_reviewer:
             reviewer_lifecycle.fail(
@@ -715,7 +753,10 @@ def produce_repair_review_chain(
                 accepted_provider_source="deterministic",
                 deterministic_fallback_used=True,
             )
-            raise RepairReviewChainProductionError("reviewer deterministic fallback blocked; no actionable repair produced")
+            raise RepairReviewChainProductionError(
+                "reviewer deterministic fallback blocked; no actionable repair produced",
+                failure_code="reviewer_provider_failed",
+            )
 
         reviewer_raw_response = _exact_provider_content(reviewer_result)
         reviewer_raw_checksum = sha256_raw_model_response(reviewer_raw_response)
@@ -732,15 +773,18 @@ def produce_repair_review_chain(
 
         if validated_reviewer_output["reviewed_context_checksum"] != context_checksum:
             raise RepairReviewChainProductionError(
-                f"reviewer context checksum mismatch: expected {context_checksum}, got {validated_reviewer_output['reviewed_context_checksum']}"
+                f"reviewer context checksum mismatch: expected {context_checksum}, got {validated_reviewer_output['reviewed_context_checksum']}",
+                failure_code="reviewer_schema_invalid",
             )
         if validated_reviewer_output["reviewed_primary_output_checksum"] != primary_checksum:
             raise RepairReviewChainProductionError(
-                f"reviewer primary checksum mismatch: expected {primary_checksum}, got {validated_reviewer_output['reviewed_primary_output_checksum']}"
+                f"reviewer primary checksum mismatch: expected {primary_checksum}, got {validated_reviewer_output['reviewed_primary_output_checksum']}",
+                failure_code="reviewer_schema_invalid",
             )
         if validated_reviewer_output["reviewed_diff_checksum"] != diff_checksum:
             raise RepairReviewChainProductionError(
-                f"reviewer diff checksum mismatch: expected {diff_checksum}, got {validated_reviewer_output['reviewed_diff_checksum']}"
+                f"reviewer diff checksum mismatch: expected {diff_checksum}, got {validated_reviewer_output['reviewed_diff_checksum']}",
+                failure_code="reviewer_schema_invalid",
             )
 
         if validated_reviewer_output["decision"] != "accept":
@@ -750,7 +794,8 @@ def produce_repair_review_chain(
                 accepted_provider_source=reviewer_provider_source,
             )
             raise RepairReviewChainProductionError(
-                f"reviewer decision failed closed: {validated_reviewer_output['decision']}"
+                f"reviewer decision failed closed: {validated_reviewer_output['decision']}",
+                failure_code="reviewer_provider_failed",
             )
 
         reviewer_checksum = _compute_reviewer_repair_checksum(validated_reviewer_output)

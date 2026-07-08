@@ -59,6 +59,9 @@ class V2RoleModelResult:
     provider_http_status: str = ""
     provider_error_redacted_preview: str = ""
     exact_provider_content: str = ""
+    provider_completion_status: str = ""
+    provider_finish_reason: str = ""
+    provider_incomplete_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -127,8 +130,11 @@ class V2ModelRoleRouter:
                     provider_http_status=result.provider_http_status,
                     provider_error_redacted_preview=result.provider_error_redacted_preview,
                     exact_provider_content=result.exact_provider_content,
+                    provider_completion_status=result.provider_completion_status,
+                    provider_finish_reason=result.provider_finish_reason,
+                    provider_incomplete_reason=result.provider_incomplete_reason,
                 )
-            schema_failure = self._schema_failure_reason(request, validation_content) if request.require_schema else ""
+            schema_failure = self._schema_failure_reason(request, validation_content) if request.require_schema and result.success else ""
             primary_failure = (
                 result.primary_failure_reason
                 or result.failure_reason
@@ -171,11 +177,15 @@ class V2ModelRoleRouter:
                         provider_http_status=result.provider_http_status,
                         provider_error_redacted_preview=result.provider_error_redacted_preview,
                         exact_provider_content=result.exact_provider_content,
+                        provider_completion_status=result.provider_completion_status,
+                        provider_finish_reason=result.provider_finish_reason,
+                        provider_incomplete_reason=result.provider_incomplete_reason,
                     )
+                schema_failure = self._schema_failure_reason(request, validation_content) if request.require_schema and result.success else ""
                 fallback_failure = (
                     result.failure_reason
                     or fallback_failure
-                    or self._schema_failure_reason(request, validation_content)
+                    or schema_failure
                     or "fallback_model_failed"
                 )
             else:
@@ -226,6 +236,9 @@ class V2ModelRoleRouter:
             exact_provider_content=str(
                 getattr(result, "exact_provider_content", "") or getattr(result, "content", "") or ""
             ),
+            provider_completion_status=str(getattr(result, "provider_completion_status", "") or ""),
+            provider_finish_reason=str(getattr(result, "provider_finish_reason", "") or ""),
+            provider_incomplete_reason=str(getattr(result, "provider_incomplete_reason", "") or ""),
         )
 
     def _coerce_fallback_result(
@@ -255,6 +268,9 @@ class V2ModelRoleRouter:
             provider_http_status=coerced.provider_http_status,
             provider_error_redacted_preview=coerced.provider_error_redacted_preview,
             exact_provider_content=coerced.exact_provider_content,
+            provider_completion_status=coerced.provider_completion_status,
+            provider_finish_reason=coerced.provider_finish_reason,
+            provider_incomplete_reason=coerced.provider_incomplete_reason,
         )
 
     def _schema_ok(self, request: V2RoleModelRequest, content: str) -> bool:
@@ -310,6 +326,9 @@ class V2ModelRoleRouter:
                 fallback_failure_reason or primary_failure_reason or "model_unavailable"
             )[:500],
             exact_provider_content=content,
+            provider_completion_status="",
+            provider_finish_reason="",
+            provider_incomplete_reason="",
         )
 
     def _deterministic_content(

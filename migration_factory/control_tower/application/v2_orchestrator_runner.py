@@ -30,6 +30,7 @@ from migration_factory.control_tower.application.v2_stage_progression import (
 from migration_factory.control_tower.application.v2_profile_runtime import (
     RouteRuntimeProfileUnavailableError,
     ensure_runtime_profile_available,
+    extract_profile_route,
     public_runtime_profile_error_message,
     resolve_runtime_profile_for_run_configuration,
 )
@@ -1603,6 +1604,12 @@ class V2OrchestratorRunner:
             )
             if str(value).strip()
         )
+        source_profile, target_profile = self._resolve_repair_context_profiles(
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            result=result,
+        )
         failure_summary = _first_text(
             result.get("failure_summary"),
             result.get("message"),
@@ -1617,8 +1624,8 @@ class V2OrchestratorRunner:
             command_id=command_id,
             failure_summary=failure_summary,
             changed_files=changed_files,
-            source_profile=str(result.get("source_profile") or ""),
-            target_profile=str(result.get("target_profile") or ""),
+            source_profile=source_profile,
+            target_profile=target_profile,
             accepted_artifact_checksums=accepted_checksums,
             artifact_refs={str(k): str(v) for k, v in artifact_refs.items() if v},
             stdout_tail=stdout_tail,
@@ -1630,8 +1637,8 @@ class V2OrchestratorRunner:
             job_id=job_id,
             stage_index=stage_index,
             command_id=command_id,
-            source_profile=str(result.get("source_profile") or ""),
-            target_profile=str(result.get("target_profile") or ""),
+            source_profile=source_profile,
+            target_profile=target_profile,
             changed_files=changed_files,
             accepted_artifact_checksums=accepted_checksums,
         )
@@ -1699,6 +1706,54 @@ class V2OrchestratorRunner:
                         result["_repair_runtime_route"] = route
             except Exception:
                 pass
+
+    def _resolve_repair_context_profiles(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        result: dict[str, Any],
+    ) -> tuple[str, str]:
+        try:
+            with self._unit_of_work_factory() as uow:
+                route = _current_route_for_job(uow, job_id)
+                if route is not None and getattr(route, "route_steps", None):
+                    command = None
+                    try:
+                        command = uow.v2_commands.get(command_id)
+                    except Exception:
+                        command = None
+                    route_step_index = (
+                        _resolve_route_step_index_for_command(
+                            command=command,
+                            result=result,
+                            route=route,
+                        )
+                        if command is not None
+                        else None
+                    )
+                    step = _route_step_for_repair_context(
+                        route=route,
+                        stage_index=stage_index,
+                        route_step_index=route_step_index,
+                    )
+                    if step is not None:
+                        step_source = str(getattr(step, "source_profile", "") or "").strip()
+                        step_target = str(getattr(step, "target_profile", "") or "").strip()
+                        if step_source and step_target:
+                            return step_source, step_target
+
+                run_configuration = uow.run_configurations.get_for_job(job_id)
+                config_source, config_target = extract_profile_route(run_configuration)
+                if config_source and config_target:
+                    return config_source, config_target
+        except Exception:
+            pass
+
+        source_profile = str(result.get("source_profile") or "").strip()
+        target_profile = str(result.get("target_profile") or "").strip()
+        return source_profile, target_profile
 
     def _emit_diagnostic_failure_events(
         self,
@@ -2662,6 +2717,29 @@ def _route_step_index_for_runtime_profile(route: Any, runtime_profile: str) -> i
     for index, step in enumerate(getattr(route, "route_steps", ()), start=1):
         if str(getattr(step, "runtime_profile", "")).strip() == runtime_profile:
             return index
+    return None
+
+
+def _route_step_for_repair_context(
+    *,
+    route: Any,
+    stage_index: int,
+    route_step_index: int | None,
+) -> Any | None:
+    route_steps = tuple(getattr(route, "route_steps", ()) or ())
+    if route_step_index is not None and 1 <= route_step_index <= len(route_steps):
+        step = route_steps[route_step_index - 1]
+        try:
+            if int(getattr(step, "stage_index", -1)) == int(stage_index):
+                return step
+        except (TypeError, ValueError):
+            pass
+    for step in route_steps:
+        try:
+            if int(getattr(step, "stage_index", -1)) == int(stage_index):
+                return step
+        except (TypeError, ValueError):
+            continue
     return None
 
 

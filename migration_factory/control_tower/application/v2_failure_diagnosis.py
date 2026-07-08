@@ -119,6 +119,86 @@ def _bind_compile_error_source_files(bound: dict[str, str], contract: Path, sand
         bound["source_ref"] = refs[0]
 
 
+_SUREFIRE_LOG_MARKERS = (
+    "maven-surefire-plugin",
+    "there are test failures",
+    "tests run:",
+    "surefire-reports",
+)
+
+
+def _bind_test_agent_log_if_surefire_evidence_exists(bound: dict[str, str], run_dir: Path, sandbox: Path) -> None:
+    if bound.get("test_agent_log"):
+        return
+
+    log_ref = bound.get("phase2_log")
+    log_path = Path(log_ref) if log_ref else run_dir / "logs" / "phase2_transform.log"
+    if not _is_contained_existing_file(log_path, (run_dir, sandbox)):
+        return
+
+    report_ref = bound.get("test_report")
+    report_candidates = [
+        Path(report_ref) if report_ref else None,
+        sandbox / "target" / "surefire-reports",
+        run_dir / "analysis" / "readonly-workspace" / "target" / "surefire-reports",
+    ]
+    if not any(_has_surefire_report(candidate, (run_dir, sandbox)) for candidate in report_candidates if candidate is not None):
+        return
+
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace").lower()
+    except OSError:
+        return
+    if any(marker in text for marker in _SUREFIRE_LOG_MARKERS):
+        bound["test_agent_log"] = str(log_path)
+
+
+def _is_contained_existing_file(path: Path, roots: tuple[Path, ...]) -> bool:
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return False
+    if not resolved.is_file():
+        return False
+    for root in roots:
+        try:
+            resolved.relative_to(root.resolve())
+            return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def _has_surefire_report(path: Path, roots: tuple[Path, ...]) -> bool:
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError:
+        return False
+    if not any(_is_within_root(resolved, root) for root in roots):
+        return False
+    if resolved.is_file():
+        return _looks_like_surefire_report(resolved)
+    if not resolved.is_dir():
+        return False
+    try:
+        return any(_looks_like_surefire_report(candidate) for candidate in resolved.iterdir() if candidate.is_file())
+    except OSError:
+        return False
+
+
+def _is_within_root(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _looks_like_surefire_report(path: Path) -> bool:
+    name = path.name
+    return name.endswith(".txt") or (name.startswith("TEST-") and name.endswith(".xml"))
+
+
 def _extract_public_compile_errors(text: str) -> list[dict[str, str]]:
     text = _failure_contract_search_text(text)
     pattern = re.compile(
@@ -918,6 +998,8 @@ class V2FailureDiagnosisService:
             _bind_if_exists(bound, "test_report", run_dir / "analysis" / "readonly-workspace" / "target" / "surefire-reports")
             _bind_if_exists(bound, "pom_xml", run_dir / "workspaces" / "sandbox" / "pom.xml")
             _bind_power_mock_test_source_if_present(bound, run_dir / "analysis" / "readonly-workspace" / "src" / "test" / "java")
+            if sandbox_path is not None:
+                _bind_test_agent_log_if_surefire_evidence_exists(bound, run_dir, sandbox_path)
             if not bound.get("build_error_contract"):
                 build_dir = run_dir / "build"
                 try:

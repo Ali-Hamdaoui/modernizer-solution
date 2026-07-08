@@ -131,6 +131,7 @@ def _valid_primary_json() -> str:
             "fix_strategy": "Minimal source update",
             "changed_files": ["src/main/java/App.java"],
             "proposed_diff": (
+                "diff --git a/src/main/java/App.java b/src/main/java/App.java\n"
                 "--- a/src/main/java/App.java\n"
                 "+++ b/src/main/java/App.java\n"
                 "@@ -1,3 +1,3 @@\n"
@@ -572,20 +573,68 @@ def test_app_runner_dispatch_uses_authoritative_diagnosis_and_persists_once(tmp_
     repair_repo, candidate_repo = _repos(conn)
     record = repair_repo.list_proposals_by_job("job-wf04a")[0]
     metadata = json.loads(record.patch_package_json)
+    projection = reviewed_diff_proposal_to_safe_dict(
+        build_reviewed_diff_proposal_from_record(
+            proposal_id=record.proposal_id,
+            status=record.status,
+            failure_summary=record.failure_summary,
+            job_id=record.job_id,
+            command_id=record.command_id,
+            gate_id=record.gate_id,
+            route_step_index=record.route_step_index,
+            attempt_number=record.attempt_number,
+            diff_ref=record.diff_ref,
+            diff_checksum=record.diff_checksum,
+            reviewer_output_checksum=record.reviewer_output_checksum,
+            reviewer_decision=record.reviewer_decision,
+        )
+    )
     events = SqliteV2JobEventRepository(conn).list_by_job("job-wf04a")
     event_types = [event.type for event in events]
     route_payload = json.loads(events[event_types.index("repair_route_selected")].payload_json)
+    invocation_rows = conn.execute(
+        """SELECT role, responsibility, status, stage_index, attempt_number,
+                  schema_name, context_checksum, input_checksum, output_checksum,
+                  raw_response_checksum, normalized_output_checksum,
+                  validated_output_checksum, diff_checksum
+           FROM v2_llm_invocations
+           WHERE job_id = ?
+           ORDER BY created_at""",
+        ("job-wf04a",),
+    ).fetchall()
+    latest_candidate = candidate_repo.latest_public_for_job("job-wf04a")
 
     assert client.calls == ["proposer", "reviewer"]
     assert client.in_tx == [False, False]
+    assert [row["role"] for row in invocation_rows] == ["main", "reviewer"]
+    assert [row["responsibility"] for row in invocation_rows] == ["repair_proposal", "repair_review"]
+    assert [row["status"] for row in invocation_rows] == ["completed", "completed"]
+    assert [row["schema_name"] for row in invocation_rows] == ["RepairPrimaryOutput", "RepairReviewerOutput"]
+    assert all(row["stage_index"] == 1 for row in invocation_rows)
+    assert all(row["attempt_number"] == 0 for row in invocation_rows)
+    assert all(row["context_checksum"] for row in invocation_rows)
+    assert all(row["input_checksum"] for row in invocation_rows)
+    assert all(row["output_checksum"] for row in invocation_rows)
+    assert all(row["raw_response_checksum"] for row in invocation_rows)
+    assert all(row["normalized_output_checksum"] for row in invocation_rows)
+    assert all(row["validated_output_checksum"] for row in invocation_rows)
+    assert all(row["diff_checksum"] for row in invocation_rows)
     assert len(repair_repo.list_proposals_by_job("job-wf04a")) == 1
-    assert candidate_repo.latest_public_for_job("job-wf04a")["candidate_kind"] == "llm_unknown_family"
+    assert latest_candidate["candidate_kind"] == "llm_unknown_family"
+    assert latest_candidate["status"] == "read_only"
+    assert latest_candidate["approval_enabled"] is False
+    assert latest_candidate["apply_enabled"] is False
     assert conn.execute("SELECT COUNT(*) FROM v2_phase_gates").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM v2_stage_commands WHERE job_id = ? AND stage_index > 1", ("job-wf04a",)).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM v2_repair_apply_candidates WHERE approval_json NOT IN ('', '{}') OR execution_json NOT IN ('', '{}')").fetchone()[0] == 0
     assert app.state.v2_failure_diagnosis_service.get_diagnosis("cmd-wf04a", "build_failed") is None
     assert route_payload["route"] == "llm_reviewed_unknown"
     assert route_payload["classification_status"] == "unknown"
     assert metadata["failure_evidence_checksum"] == route_payload["evidence_checksum"]
     assert metadata["context_checksum"] == route_payload["context_checksum"]
+    assert Path(record.diff_ref).is_file()
+    assert projection["safe_diff_preview"]["checksum_mismatch"] is False
+    assert projection["safe_diff_preview"]["files"]
     assert [
         event_type
         for event_type in event_types
@@ -603,7 +652,46 @@ def test_app_runner_dispatch_uses_authoritative_diagnosis_and_persists_once(tmp_
         "llm_read_only_candidate_persisted",
     ]
     assert "repair_review_required" not in event_types
+    assert not any("approval" in event_type for event_type in event_types)
+    assert not any("apply" in event_type for event_type in event_types)
+    assert not any("downstream" in event_type or "queued" in event_type for event_type in event_types)
     assert not any(str(tmp_path) in event.payload_json for event in events if event.type in {"build_failed", "test_failed", "transform_failed"})
+
+
+def test_app_unknown_route_unavailable_ledger_fails_closed_with_safe_kind(tmp_path: Path) -> None:
+    class MissingLedgerUow(SqliteControlTowerUnitOfWork):
+        def __init__(self, connection: sqlite3.Connection) -> None:
+            super().__init__(connection)
+            self.v2_llm_invocations = None
+
+    conn = _conn()
+    client = _TxAssertingRepairClient(conn)
+    app = create_app(lambda: MissingLedgerUow(conn), v2_assistant_model_client=client)
+    runner = app.state.v2_orchestrator_runner
+
+    runner._handle_exit(
+        job_id="job-wf04a",
+        stage_index=1,
+        command_id="cmd-wf04a",
+        exit_code=0,
+        result=_unknown_failure_result(tmp_path / "missing-ledger-run"),
+        stderr="compile failed",
+    )
+
+    events = SqliteV2JobEventRepository(conn).list_by_job("job-wf04a")
+    event_types = [event.type for event in events]
+    blocked = events[event_types.index("llm_review_chain_blocked")]
+    payload = json.loads(blocked.payload_json)
+
+    assert client.calls == []
+    assert payload["reason"] == "review_chain_producer_failed"
+    assert payload["failure_kind"] == "invocation_ledger_start_failed"
+    assert conn.execute("SELECT COUNT(*) FROM v2_llm_invocations").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM v2_repair_proposals").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM v2_repair_apply_candidates").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM v2_phase_gates").fetchone()[0] == 0
+    assert "llm_review_chain_completed" not in event_types
+    assert "llm_read_only_candidate_persisted" not in event_types
 
 
 def test_app_notifier_runs_after_wf04_commit(tmp_path: Path) -> None:

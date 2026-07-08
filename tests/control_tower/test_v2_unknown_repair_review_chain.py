@@ -523,13 +523,17 @@ def test_decision_checksum_mismatches_block(
 
 
 def test_missing_invocation_ledger_blocks_before_producer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    events, sink = _events()
     result = _run(
         monkeypatch,
         tmp_path,
         producer=lambda **_: pytest.fail("producer called"),
         ledger=None,
+        event_sink=sink,
     )
     assert result.reason == "invocation_ledger_unavailable"
+    assert result.failure_kind == "invocation_ledger_unavailable"
+    assert events[-1]["payload"]["failure_kind"] == "invocation_ledger_unavailable"
 
 
 def test_started_emitted_immediately_before_producer_call(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -567,12 +571,66 @@ def test_producer_exception_constant_reason_and_no_exception_text(
 
     assert result.status == "blocked"
     assert result.reason == "review_chain_producer_failed"
+    assert result.failure_kind == "review_chain_producer_failed"
     blob = json.dumps([result.__dict__ if hasattr(result, "__dict__") else {}, events], default=str)
     assert "reviewer reject fallback schema" not in blob
+    assert events[-1]["payload"]["failure_kind"] == "review_chain_producer_failed"
     assert [event["event_type"] for event in events] == [
         "llm_review_chain_started",
         "llm_review_chain_blocked",
     ]
+
+
+def test_producer_ledger_start_exception_has_safe_failure_kind(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events, sink = _events()
+
+    def producer(**_: Any) -> dict[str, Any]:
+        from migration_factory.orchestrator.repair_review_chain import RepairReviewChainProductionError
+
+        raise RepairReviewChainProductionError("mandatory proposer invocation ledger start failed")
+
+    result = _run(monkeypatch, tmp_path, producer=producer, event_sink=sink)
+
+    assert result.status == "blocked"
+    assert result.reason == "review_chain_producer_failed"
+    assert result.failure_kind == "invocation_ledger_start_failed"
+    assert events[-1]["payload"]["failure_kind"] == "invocation_ledger_start_failed"
+
+
+@pytest.mark.parametrize(
+    "failure_code",
+    [
+        "proposer_output_truncated",
+        "proposer_schema_invalid",
+        "proposer_provider_failed",
+        "reviewer_output_truncated",
+        "reviewer_schema_invalid",
+        "reviewer_provider_failed",
+    ],
+)
+def test_typed_producer_failure_code_is_public_failure_kind(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure_code: str,
+) -> None:
+    events, sink = _events()
+
+    def producer(**_: Any) -> dict[str, Any]:
+        from migration_factory.orchestrator.repair_review_chain import RepairReviewChainProductionError
+
+        raise RepairReviewChainProductionError(
+            "safe producer failure",
+            failure_code=failure_code,
+        )
+
+    result = _run(monkeypatch, tmp_path, producer=producer, event_sink=sink)
+
+    assert result.status == "blocked"
+    assert result.failure_kind == failure_code
+    assert events[-1]["payload"]["failure_kind"] == failure_code
 
 
 @pytest.mark.parametrize(

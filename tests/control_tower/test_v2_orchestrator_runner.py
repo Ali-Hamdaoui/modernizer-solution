@@ -1063,6 +1063,115 @@ def test_v2_runner_emits_failure_repair_events_from_result(tmp_path: Path) -> No
     assert event_payloads["repair_context_pack_written"]["context_pack_checksum"] == context["context_pack_checksum"]
 
 
+@pytest.mark.parametrize(
+    ("job_id", "stage_index", "source_profile", "target_profile", "expected_source", "expected_target"),
+    [
+        (
+            "job-profile-stage1",
+            1,
+            "springboot-2.1-java11",
+            "springboot-2.7-java11",
+            "springboot-2.1-java11",
+            "springboot-2.7-java11",
+        ),
+        (
+            "job-profile-stage2",
+            2,
+            "springboot-2.1-java11",
+            "springboot-3.5-java17",
+            "springboot-2.7-java11",
+            "springboot-3.5-java17",
+        ),
+    ],
+)
+def test_repair_failure_context_uses_authoritative_route_step_profiles(
+    tmp_path: Path,
+    job_id: str,
+    stage_index: int,
+    source_profile: str,
+    target_profile: str,
+    expected_source: str,
+    expected_target: str,
+) -> None:
+    conn = _conn(tmp_path)
+    _seed_stage_pipeline(conn, job_id=job_id, seed_run_configuration=False)
+    _insert_run_config(
+        conn,
+        job_id=job_id,
+        rc_id=f"rc-{job_id}",
+        source_profile=source_profile,
+        target_profile=target_profile,
+        policy_json="{}",
+    )
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        cwd=tmp_path,
+    )
+    run_dir = tmp_path / "out" / ".migration" / "runs" / f"run-s{stage_index}"
+
+    runner._maybe_write_repair_failure_context(
+        job_id=job_id,
+        stage_index=stage_index,
+        command_id=f"cmd-profile-s{stage_index}",
+        result={
+            "run_dir": str(run_dir),
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "failure_summary": "Opaque failure with profiles omitted from runner result",
+        },
+        stdout_tail="",
+        stderr_tail="",
+    )
+
+    evidence = json.loads((run_dir / "repairs" / "repair_failure_evidence.json").read_text(encoding="utf-8"))
+    context = json.loads((run_dir / "repairs" / "repair_context_pack.json").read_text(encoding="utf-8"))
+    assert evidence["source_profile"] == expected_source
+    assert evidence["target_profile"] == expected_target
+    assert context["source_profile"] == expected_source
+    assert context["target_profile"] == expected_target
+
+
+def test_repair_failure_context_ignores_route_step_from_another_stage(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    job_id = "job-profile-stage-mismatch"
+    _seed_stage_pipeline(conn, job_id=job_id, seed_run_configuration=False)
+    _insert_run_config(
+        conn,
+        job_id=job_id,
+        rc_id="rc-profile-stage-mismatch",
+        source_profile="springboot-2.1-java11",
+        target_profile="springboot-3.5-java17",
+        policy_json="{}",
+    )
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        cwd=tmp_path,
+    )
+    run_dir = tmp_path / "out" / ".migration" / "runs" / "run-stage-mismatch"
+
+    runner._maybe_write_repair_failure_context(
+        job_id=job_id,
+        stage_index=2,
+        command_id="cmd-profile-s2",
+        result={
+            "run_dir": str(run_dir),
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "failure_summary": "Result metadata points at the wrong route step",
+            "route_step_index": 1,
+            "source_profile": "result-source-should-not-win",
+            "target_profile": "result-target-should-not-win",
+        },
+        stdout_tail="",
+        stderr_tail="",
+    )
+
+    evidence = json.loads((run_dir / "repairs" / "repair_failure_evidence.json").read_text(encoding="utf-8"))
+    context = json.loads((run_dir / "repairs" / "repair_context_pack.json").read_text(encoding="utf-8"))
+    assert evidence["source_profile"] == "springboot-2.7-java11"
+    assert evidence["target_profile"] == "springboot-3.5-java17"
+    assert context["source_profile"] == "springboot-2.7-java11"
+    assert context["target_profile"] == "springboot-3.5-java17"
+
+
 def test_analysis_reviewed_result_validation_requires_final_reviewed_markdown(tmp_path: Path) -> None:
     conn = _conn(tmp_path)
     _save_command(conn)
