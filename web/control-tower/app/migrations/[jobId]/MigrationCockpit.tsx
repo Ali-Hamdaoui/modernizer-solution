@@ -1385,6 +1385,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   if (!data) return <div className="info-box">Loading cockpit...</div>;
 
   const stageTimelineEntries = buildStageTimelineEntries(data.job.route_steps, data.stages);
+  const targetVersionComparisonStageIndex = getTargetVersionComparisonStageIndex(data.stages, data.job.route_steps);
 
   return (
     <div className="cockpit-layout">
@@ -1867,16 +1868,13 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         </section>
       )}
 
-      {/* Stage 4 target dependency version CSV comparison */}
+      {/* Latest-stage target dependency version file comparison */}
       {data && (
         <section style={{ gridColumn: "1 / -1" }}>
           <Stage4TargetVersionComparison
             jobId={normalizedJobId || jobId || ""}
-            stage4Completed={
-              (data.stages || []).some(
-                (s) => s.stage_index === 4 && s.chain_status === "completed"
-              )
-            }
+            comparisonAvailable={targetVersionComparisonStageIndex != null}
+            rootPomStageIndex={targetVersionComparisonStageIndex ?? 1}
           />
         </section>
       )}
