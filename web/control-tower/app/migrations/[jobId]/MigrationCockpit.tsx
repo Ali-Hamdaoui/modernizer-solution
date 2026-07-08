@@ -131,15 +131,30 @@ export function buildStageTimelineEntries(
   }
 
   const stageStatusByIndex = new Map(stages.map((stage) => [stage.stage_index, stage.chain_status]));
-  console.log("[route-steps-before]", routeSteps?.map((s) => ({ route_step_index: s.route_step_index, stage_index: s.stage_index, status: s.status })));
-  const result = routeSteps.map((routeStep) => ({
+  return routeSteps.map((routeStep) => ({
     ...routeStep,
     status: stageStatusByIndex.get(routeStep.stage_index) ?? routeStep.status,
   }));
-  console.log("[route-steps-after]", result.map((s) => ({ route_step_index: s.route_step_index, stage_index: s.stage_index, status: s.status })));
-  return result;
 }
 
+export function getTargetVersionComparisonStageIndex(
+  stages: Stage[],
+  routeSteps: V2RouteStepEntry[] | undefined,
+): number | null {
+  if (routeSteps?.length) {
+    const stageStatusByIndex = new Map(stages.map((stage) => [stage.stage_index, stage.chain_status]));
+    const finalRouteStep = routeSteps.reduce((latest, routeStep) =>
+      routeStep.route_step_index > latest.route_step_index ? routeStep : latest,
+    );
+    const finalStageStatus = stageStatusByIndex.get(finalRouteStep.stage_index) ?? finalRouteStep.status;
+    return finalStageStatus === "completed" ? finalRouteStep.stage_index : null;
+  }
+
+  const completedStageIndexes = stages
+    .filter((stage) => stage.chain_status === "completed")
+    .map((stage) => stage.stage_index);
+  return completedStageIndexes.length > 0 ? Math.max(...completedStageIndexes) : null;
+}
 export function mergeCockpitLiveRefreshResults(
   current: CockpitData,
   results: LiveRefreshResults,
