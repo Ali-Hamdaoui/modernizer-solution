@@ -13064,6 +13064,8 @@ def _transition_stage_status(current: str, mapped: str) -> str:
         return "failed"
     if mapped == "completed":
         return "completed"
+    if current == "completed":
+        return "completed"
     if mapped == "running":
         return "running"
     if mapped == "blocked":
