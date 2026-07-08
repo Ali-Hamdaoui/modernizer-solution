@@ -370,3 +370,64 @@ def test_answer_delegates_to_assistant_role(monkeypatch) -> None:
     assert seen["prompt"] == "status?"
     assert seen["fallback"] == "fallback"
     assert result.role == "assistant"
+
+
+def test_router_preserves_safe_provider_termination_metadata_on_deterministic_fallback(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_PROPOSER_DEPLOYMENT", "proposer-deployment")
+    monkeypatch.delenv("AZURE_OPENAI_FALLBACK_DEPLOYMENT", raising=False)
+    router = V2ModelRoleRouter(ControlTowerSettings(azure_foundry_fallback_enabled=False))
+
+    result = router.route(
+        V2RoleModelRequest(role=V2ModelRole.PROPOSER, prompt="draft", fallback="fallback"),
+        invoke=lambda _: V2AssistantModelResult(
+            content="fallback",
+            source="deterministic",
+            model_status="fallback",
+            provider="deterministic",
+            role="proposer",
+            success=False,
+            redacted_summary="truncated",
+            failure_reason="output_truncated",
+            provider_completion_status="incomplete",
+            provider_incomplete_reason="max_output_tokens",
+        ),
+    )
+
+    assert result.success is False
+    assert result.provider_completion_status == "incomplete"
+    assert result.provider_incomplete_reason == "max_output_tokens"
+
+
+def test_router_uses_explicit_fallback_invoker(monkeypatch) -> None:
+    monkeypatch.setenv("AZURE_OPENAI_PROPOSER_DEPLOYMENT", "proposer-deployment")
+    monkeypatch.setenv("AZURE_OPENAI_FALLBACK_DEPLOYMENT", "fallback-deployment")
+    router = V2ModelRoleRouter(ControlTowerSettings(azure_foundry_fallback_enabled=True))
+    calls: list[str] = []
+
+    def primary(_: str) -> V2AssistantModelResult:
+        calls.append("primary")
+        return V2AssistantModelResult(
+            content="failed", source="deterministic", model_status="fallback",
+            provider="deterministic", role="proposer", success=False,
+            redacted_summary="failed", failure_reason="provider_incomplete",
+        )
+
+    def fallback(_: str) -> V2AssistantModelResult:
+        calls.append("fallback")
+        return V2AssistantModelResult(
+            content="recovered", source="azure_openai", model_status="live_ok",
+            provider="azure_openai", role="fallback", success=True,
+            redacted_summary="recovered", failure_reason="",
+        )
+
+    result = router.route(
+        V2RoleModelRequest(role=V2ModelRole.PROPOSER, prompt="draft", fallback="fallback"),
+        invoke=primary,
+        fallback_invoke=fallback,
+    )
+
+    assert calls == ["primary", "fallback"]
+    assert result.success is True
+    assert result.fallback_used is True

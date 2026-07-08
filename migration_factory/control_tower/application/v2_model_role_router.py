@@ -98,9 +98,12 @@ class V2ModelRoleRouter:
         request: V2RoleModelRequest,
         *,
         invoke: Callable[[str], Any],
+        fallback_invoke: Callable[[str], Any] | None = None,
         settings: ControlTowerSettings | None = None,
     ) -> V2RoleModelResult:
         route = self.plan(request, settings=settings)
+        primary_provider_metadata: V2RoleModelResult | None = None
+        fallback_provider_metadata: V2RoleModelResult | None = None
         primary_result, primary_failure = self._try_invoke(
             invoke,
             deployment=route.primary_deployment,
@@ -109,6 +112,7 @@ class V2ModelRoleRouter:
         )
         if primary_result is not None:
             result = self._coerce_primary_result(primary_result, request)
+            primary_provider_metadata = result
             validation_content = result.exact_provider_content or result.content
             if result.success and self._schema_ok(request, validation_content):
                 return V2RoleModelResult(
@@ -145,7 +149,7 @@ class V2ModelRoleRouter:
 
         if route.fallback_enabled and route.fallback_deployment:
             fallback_result, fallback_failure = self._try_invoke(
-                invoke,
+                fallback_invoke or invoke,
                 deployment=route.fallback_deployment,
                 request=request,
                 role=V2ModelRole.FALLBACK.value,
@@ -156,6 +160,7 @@ class V2ModelRoleRouter:
                     request,
                     primary_failure_reason=primary_failure,
                 )
+                fallback_provider_metadata = result
                 validation_content = result.exact_provider_content or result.content
                 if result.success and self._schema_ok(request, validation_content):
                     return V2RoleModelResult(
@@ -197,6 +202,7 @@ class V2ModelRoleRouter:
             request=request,
             primary_failure_reason=primary_failure or "primary_model_unavailable",
             fallback_failure_reason=fallback_failure,
+            provider_metadata=fallback_provider_metadata or primary_provider_metadata,
         )
 
     def _try_invoke(
@@ -301,6 +307,7 @@ class V2ModelRoleRouter:
         request: V2RoleModelRequest,
         primary_failure_reason: str,
         fallback_failure_reason: str,
+        provider_metadata: V2RoleModelResult | None = None,
     ) -> V2RoleModelResult:
         content = self._deterministic_content(request, primary_failure_reason, fallback_failure_reason)
         schema_validated = self._schema_ok(request, content)
@@ -326,9 +333,15 @@ class V2ModelRoleRouter:
                 fallback_failure_reason or primary_failure_reason or "model_unavailable"
             )[:500],
             exact_provider_content=content,
-            provider_completion_status="",
-            provider_finish_reason="",
-            provider_incomplete_reason="",
+            provider_completion_status=redact_model_summary(
+                str(getattr(provider_metadata, "provider_completion_status", "") or "")
+            )[:64],
+            provider_finish_reason=redact_model_summary(
+                str(getattr(provider_metadata, "provider_finish_reason", "") or "")
+            )[:64],
+            provider_incomplete_reason=redact_model_summary(
+                str(getattr(provider_metadata, "provider_incomplete_reason", "") or "")
+            )[:64],
         )
 
     def _deterministic_content(

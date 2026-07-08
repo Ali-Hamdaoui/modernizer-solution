@@ -960,3 +960,28 @@ def test_produce_raises_on_primary_model_failure(tmp_path: Path) -> None:
             invocation_ledger=_Ledger(),
         )
     assert "failed closed" in str(exc_info.value)
+
+
+@pytest.mark.parametrize("decision", ["reject", "revise"])
+def test_reviewer_non_accept_decision_has_stable_governed_classification(
+    tmp_path: Path,
+    decision: str,
+) -> None:
+    evidence = _make_evidence()
+    context_pack = _make_context(evidence)
+    client = FakeRepairClient(reviewer_decision=decision)
+    ledger = RecordingLedger()
+
+    with pytest.raises(RepairReviewChainProductionError) as exc_info:
+        produce_repair_review_chain(
+            failure_evidence=evidence,
+            context_pack=context_pack,
+            output_dir=tmp_path / decision,
+            model_client=client,
+            invocation_ledger=ledger,
+        )
+
+    assert exc_info.value.failure_code == "reviewer_rejected"
+    assert [row["status"] for row in ledger.rows.values()] == ["completed", "failed"]
+    assert not (tmp_path / decision / "final_reviewed_repair_artifact.json").exists()
+    assert not (tmp_path / decision / "final_reviewed_repair.diff").exists()

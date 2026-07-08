@@ -265,6 +265,15 @@ class V2AssistantModelClient:
                 output_schema_name=output_schema_name,
                 require_schema=require_schema,
             ),
+            fallback_invoke=lambda deployment: self._answer_with_deployment(
+                role=V2ModelRole.FALLBACK,
+                deployment=deployment,
+                prompt=prompt,
+                fallback=fallback,
+                conversation_history=conversation_history,
+                output_schema_name=output_schema_name,
+                require_schema=require_schema,
+            ),
         )
         return self._to_assistant_result(routed)
 
@@ -399,6 +408,9 @@ class V2AssistantModelClient:
                 provider_failure_stage="model_output",
                 provider_retry_path=provider_retry_path,
                 provider_error_redacted_preview=detail,
+                provider_completion_status=provider_result.completion_status,
+                provider_finish_reason=provider_result.finish_reason,
+                provider_incomplete_reason=provider_result.incomplete_reason,
             )
 
         exact_content = str(provider_result.content)
@@ -743,13 +755,19 @@ class V2AssistantModelClient:
         )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
-        content = _extract_assistant_content(data)
+        finish_reason = _extract_chat_finish_reason(data)
+        try:
+            content = _extract_assistant_content(data)
+        except RuntimeError:
+            if finish_reason != "length":
+                raise
+            content = ""
         if not str(content).strip():
             # Empty response — log redacted diagnostics
             _log_empty_azure_response(data, deployment)
         return _ProviderCompletionResult(
             content=content,
-            finish_reason=_extract_chat_finish_reason(data),
+            finish_reason=finish_reason,
         )
 
     def _post_responses_v1(
@@ -786,13 +804,20 @@ class V2AssistantModelClient:
         )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
-        content = _extract_responses_output_text(data)
+        completion_status = _extract_responses_status(data)
+        incomplete_reason = _extract_responses_incomplete_reason(data)
+        try:
+            content = _extract_responses_output_text(data)
+        except RuntimeError:
+            if completion_status != "incomplete":
+                raise
+            content = ""
         if not str(content).strip():
             _log_empty_azure_response(data, deployment)
         return _ProviderCompletionResult(
             content=content,
-            completion_status=_extract_responses_status(data),
-            incomplete_reason=_extract_responses_incomplete_reason(data),
+            completion_status=completion_status,
+            incomplete_reason=incomplete_reason,
         )
 
     def _chat_completion_legacy(
@@ -852,9 +877,16 @@ class V2AssistantModelClient:
         )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
+        finish_reason = _extract_chat_finish_reason(data)
+        try:
+            content = _extract_assistant_content(data)
+        except RuntimeError:
+            if finish_reason != "length":
+                raise
+            content = ""
         return _ProviderCompletionResult(
-            content=_extract_assistant_content(data),
-            finish_reason=_extract_chat_finish_reason(data),
+            content=content,
+            finish_reason=finish_reason,
         )
 
 
@@ -1044,6 +1076,7 @@ def _role_budget_env_names(role: V2ModelRole) -> tuple[str, ...]:
         "AI_MIGRATION_ASSISTANT_MAX_OUTPUT_TOKENS",
         "AZURE_OPENAI_MAIN_MAX_OUTPUT_TOKENS",
         "AI_MIGRATION_MAIN_MAX_OUTPUT_TOKENS",
+        "AZURE_OPENAI_ASSISTANT_MAX_COMPLETION_TOKENS",
     )
 
 
@@ -1232,6 +1265,9 @@ def _fallback_result(
     provider_retry_path: str = "",
     provider_http_status: str = "",
     provider_error_redacted_preview: str = "",
+    provider_completion_status: str = "",
+    provider_finish_reason: str = "",
+    provider_incomplete_reason: str = "",
 ) -> V2AssistantModelResult:
     safe_summary = str(redact_model_summary(summary))
     fallback_content = f"{fallback}\n\nModel: fallback\nSource: deterministic\nReason: {safe_summary}"
@@ -1255,6 +1291,9 @@ def _fallback_result(
         provider_http_status=redact_model_summary(provider_http_status)[:32],
         provider_error_redacted_preview=redact_model_summary(provider_error_redacted_preview)[:500],
         exact_provider_content=fallback_content,
+        provider_completion_status=redact_model_summary(provider_completion_status)[:64],
+        provider_finish_reason=redact_model_summary(provider_finish_reason)[:64],
+        provider_incomplete_reason=redact_model_summary(provider_incomplete_reason)[:64],
     )
 
 

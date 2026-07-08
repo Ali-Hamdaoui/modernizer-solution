@@ -795,7 +795,7 @@ def produce_repair_review_chain(
             )
             raise RepairReviewChainProductionError(
                 f"reviewer decision failed closed: {validated_reviewer_output['decision']}",
-                failure_code="reviewer_provider_failed",
+                failure_code="reviewer_rejected",
             )
 
         reviewer_checksum = _compute_reviewer_repair_checksum(validated_reviewer_output)

@@ -53,6 +53,7 @@ def configured_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "AZURE_OPENAI_PROPOSER_MAX_OUTPUT_TOKENS",
         "AZURE_OPENAI_REVIEWER_MAX_OUTPUT_TOKENS",
         "AZURE_OPENAI_ASSISTANT_MAX_OUTPUT_TOKENS",
+        "AZURE_OPENAI_ASSISTANT_MAX_COMPLETION_TOKENS",
         "AZURE_OPENAI_FALLBACK_MAX_OUTPUT_TOKENS",
         "AZURE_OPENAI_MAIN_MAX_OUTPUT_TOKENS",
         "AI_MIGRATION_PROPOSER_MAX_OUTPUT_TOKENS",
@@ -66,6 +67,7 @@ def configured_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "AI_MIGRATION_MAIN_TIMEOUT_SECONDS",
         "AI_MIGRATION_FALLBACK_TIMEOUT_SECONDS",
         "AZURE_OPENAI_REASONING_EFFORT",
+        "CONTROL_TOWER_AZURE_FOUNDRY_FALLBACK_ENABLED",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1")
@@ -246,3 +248,112 @@ def test_chat_completion_length_finish_reason_becomes_output_truncated(
     assert result.success is False
     assert result.failure_reason == "output_truncated"
     assert _request_body(recorder.calls[1])["max_completion_tokens"] == 700
+
+
+def test_responses_incomplete_without_text_is_classified_before_text_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_env: None,
+) -> None:
+    recorder = _UrlopenRecorder(
+        [
+            {
+                "body": {
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                }
+            }
+        ]
+    )
+
+    result = _answer_with_role(monkeypatch, recorder, V2ModelRole.PROPOSER)
+
+    assert result.success is False
+    assert result.failure_reason == "output_truncated"
+    assert result.provider_completion_status == "incomplete"
+    assert result.provider_incomplete_reason == "max_output_tokens"
+
+
+def test_chat_length_without_content_is_classified_before_content_extraction(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_env: None,
+) -> None:
+    recorder = _UrlopenRecorder(
+        [
+            {"status": 404, "body": {"error": {"message": "responses unavailable"}}},
+            {
+                "body": {
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "message": {},
+                        }
+                    ]
+                }
+            },
+        ]
+    )
+
+    result = _answer_with_role(monkeypatch, recorder, V2ModelRole.PROPOSER)
+
+    assert result.success is False
+    assert result.failure_reason == "output_truncated"
+    assert result.provider_finish_reason == "length"
+
+
+def test_provider_fallback_uses_fallback_role_budget_and_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_env: None,
+) -> None:
+    recorder = _UrlopenRecorder(
+        [
+            {
+                "body": {
+                    "status": "incomplete",
+                    "incomplete_details": {"reason": "max_output_tokens"},
+                }
+            },
+            {"body": {"output_text": "fallback provider response"}},
+        ]
+    )
+    monkeypatch.setenv("CONTROL_TOWER_AZURE_FOUNDRY_FALLBACK_ENABLED", "true")
+    monkeypatch.setenv("AZURE_OPENAI_FALLBACK_DEPLOYMENT", "gpt-fallback")
+    monkeypatch.setenv("AZURE_OPENAI_PROPOSER_MAX_OUTPUT_TOKENS", "12000")
+    monkeypatch.setenv("AZURE_OPENAI_FALLBACK_MAX_OUTPUT_TOKENS", "9000")
+    monkeypatch.setenv("AI_MIGRATION_PROPOSER_TIMEOUT_SECONDS", "111")
+    monkeypatch.setenv("AI_MIGRATION_FALLBACK_TIMEOUT_SECONDS", "222")
+
+    result = _answer_with_role(monkeypatch, recorder, V2ModelRole.PROPOSER)
+
+    assert result.success is True
+    assert result.fallback_used is True
+    assert _request_body(recorder.calls[0])["model"] == "gpt-proposer"
+    assert _request_body(recorder.calls[0])["max_output_tokens"] == 12000
+    assert recorder.calls[0][1] == 111
+    assert _request_body(recorder.calls[1])["model"] == "gpt-fallback"
+    assert _request_body(recorder.calls[1])["max_output_tokens"] == 9000
+    assert recorder.calls[1][1] == 222
+
+
+def test_legacy_assistant_completion_budget_is_assistant_only_and_low_priority(
+    monkeypatch: pytest.MonkeyPatch,
+    configured_env: None,
+) -> None:
+    legacy_only = _UrlopenRecorder()
+    monkeypatch.setenv("AZURE_OPENAI_ASSISTANT_MAX_COMPLETION_TOKENS", "13000")
+
+    _answer_with_role(monkeypatch, legacy_only, V2ModelRole.ASSISTANT)
+
+    assert _request_body(legacy_only.calls[0])["max_output_tokens"] == 13000
+
+    preferred = _UrlopenRecorder()
+    monkeypatch.setenv("AZURE_OPENAI_ASSISTANT_MAX_OUTPUT_TOKENS", "14000")
+
+    _answer_with_role(monkeypatch, preferred, V2ModelRole.ASSISTANT)
+
+    assert _request_body(preferred.calls[0])["max_output_tokens"] == 14000
+
+    proposer = _UrlopenRecorder()
+
+    _answer_with_role(monkeypatch, proposer, V2ModelRole.PROPOSER)
+
+    assert _request_body(proposer.calls[0])["max_output_tokens"] == 700
