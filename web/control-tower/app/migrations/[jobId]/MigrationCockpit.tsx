@@ -1971,8 +1971,11 @@ function reduceAllStageStatuses(stages: Stage[], allEvents: V2JobEvent[]): Stage
 }
 
 function eventAppliesToStage(event: V2JobEvent, stageIndex: number): boolean {
-  if (event.type !== "next_stage_queued") {
-    return event.stage === stageIndex;
+  if (event.stage === stageIndex) {
+    return true;
+  }
+  if (!["next_stage_queued", "migration_completed", "job_completed"].includes(event.type)) {
+    return false;
   }
 
   const payload = event.payload ?? {};
@@ -1987,7 +1990,7 @@ function eventAppliesToStage(event: V2JobEvent, stageIndex: number): boolean {
 export function stageStatusFromEvent(event: V2JobEvent): string {
   if (event.type === "stage_cancelled" || event.status === "cancelled") return "cancelled";
   if (event.type === "stage_failed" || event.status === "failed") return "failed";
-  if (event.type === "stage_completed") return "completed";
+  if (["stage_completed", "migration_completed", "job_completed"].includes(event.type)) return "completed";
   if (["stage_started", "command_started", "sandbox_transform_started",
        "sandbox_transform_completed", "resume_started", "approval_resume_queued",
        "approval_completed", "build_started", "test_started"].includes(event.type) || event.status === "running") {
@@ -2073,6 +2076,8 @@ const IMPORTANT_SSE_TYPES = new Set([
   "final_report_failed",
   "stage_failed",
   "stage_completed",
+  "migration_completed",
+  "job_completed",
   "model_invocation_completed",
   "model_invocation_failed",
   "transform_failed",
