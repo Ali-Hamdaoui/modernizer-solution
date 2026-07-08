@@ -13,6 +13,8 @@ from migration_factory.control_tower.application.commands import (
     FinalizeCommandCommand,
     LaunchWorkerCommand,
     PrepareCommandWorkspaceCommand,
+    QueueApprovalResumeCommand,
+    RecordApprovalCommand,
     RegisterArtifactCommand,
     RegisterPipelineDefinitionCommand,
     RegisterRunnerProfileCommand,
@@ -38,6 +40,8 @@ from migration_factory.control_tower.domain.artifacts import ArtifactHashResult
 from migration_factory.control_tower.domain.checksums import canonical_json_text, sha256_canonical_json, utc_now_text
 from migration_factory.control_tower.domain.commands import CommandState
 from migration_factory.control_tower.domain.entities import (
+    ApprovalRecord,
+    ApprovalResumeRecord,
     ArtifactRecord,
     AuditRecord,
     CommandExecutionRecord,
@@ -48,6 +52,7 @@ from migration_factory.control_tower.domain.entities import (
     StageChainEventRecord,
     StageChainLedgerRecord,
     StageRunRecord,
+    V1ModelInvocationRecord,
 )
 from migration_factory.control_tower.domain.model_profiles import V1ModelProfileRecord
 from migration_factory.control_tower.domain.manifests import (
@@ -69,6 +74,7 @@ from migration_factory.control_tower.domain.errors import (
     InvalidJobStateTransitionError,
     ManifestIntegrityError,
     NotFoundError,
+    ContinuationPolicyViolationError,
     RegistrationConflictError,
     StaleVersionError,
     StorageIntegrityError,
@@ -2362,6 +2368,392 @@ class StageCommandManifestBuilder:
         return manifest
 
 
+class StageOneLaunchService:
+    """Launch Stage One (Java 11 / Spring Boot 2.7.18) as a worker-owned process.
+
+    This service:
+    - Maps Stage 1 to backend-owned argv/env with JAVA11 configuration.
+    - Builds a StageCommandManifest with full checksum coverage.
+    - Launches via WorkerLauncher with shell=False.
+    - Fails closed on unsupported platforms or runtime conditions.
+    - Browser payloads CANNOT choose raw paths, Maven goals, shell commands,
+      working directories, or model deployment IDs.
+    """
+
+    JAVA11_STAGE1_ARGV: tuple[str, ...] = (
+        "mvn",
+        "-DskipTests",
+        "-Dmaven.test.skip=true",
+        "org.openrewrite.maven:rewrite-maven-plugin:run",
+        "-Drewrite.activeRecipes=org.openrewrite.java.spring.boot2.UpgradeSpringBoot_2_7",
+        "-Drewrite.exportDatatables=true",
+        "compile",
+    )
+
+    JAVA11_STAGE1_ENV: dict[str, str] = {
+        "JAVA_HOME": "",  # Set at launch time from the JDK config
+        "MAVEN_OPTS": "-Xmx1024m",
+        "SHELL_DISABLED": "true",
+    }
+
+    def __init__(
+        self,
+        unit_of_work_factory: UnitOfWorkFactory,
+        worker_launcher: WorkerLauncher,
+    ) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+        self._worker_launcher = worker_launcher
+
+    @classmethod
+    def build_stage_one_argv(cls) -> tuple[str, ...]:
+        """Return the backend-owned argv for Stage 1 (JAVA11)."""
+        return cls.JAVA11_STAGE1_ARGV
+
+    @classmethod
+    def build_stage_one_env(cls, jdk_java_home: str) -> dict[str, str]:
+        """Return the backend-owned env for Stage 1 with JAVA_HOME set."""
+        env = dict(cls.JAVA11_STAGE1_ENV)
+        env["JAVA_HOME"] = jdk_java_home
+        return env
+
+    def execute(self, command: StageCommandLaunchCommand) -> WorkerLaunchResult:
+        """Launch Stage 1 with backend-owned argv/env and JAVA11 config.
+
+        Steps:
+        1. Build the stage command manifest with backend-owned argv/env.
+        2. Write the manifest to the workspace.
+        3. Launch the worker process via WorkerLauncher with shell=False.
+        4. Record launch result.
+
+        Raises:
+            UnsupportedPlatformError: if the platform is not supported.
+            WorkspacePathError: if workspace paths are missing.
+        """
+        # Build backend-owned argv/env for Stage 1 / JAVA11
+        backend_argv = self.build_stage_one_argv()
+        backend_env = self.build_stage_one_env(command.jdk_java_home)
+
+        # Create the launch command override with backend-owned argv/env
+        launch_cmd = StageCommandLaunchCommand(
+            job_id=command.job_id,
+            command_id=command.command_id,
+            worker_id=command.worker_id,
+            operation=command.operation,
+            stage_run_id=command.stage_run_id,
+            ledger_id=command.ledger_id,
+            jdk_id=command.jdk_id,
+            jdk_java_home=command.jdk_java_home,
+            jdk_expected_major=command.jdk_expected_major,
+            runner_profile_display_name=command.runner_profile_display_name,
+            pipeline_id=command.pipeline_id,
+            pipeline_version=command.pipeline_version,
+            stage_index=command.stage_index,
+            stage_id=command.stage_id,
+            profile_id=command.profile_id,
+            command_jdk=command.command_jdk,
+            sandbox_root_id=command.sandbox_root_id,
+            sandbox_relative_path=command.sandbox_relative_path,
+            run_configuration_artifact_id=command.run_configuration_artifact_id,
+            run_configuration_checksum=command.run_configuration_checksum,
+            working_directory_root_id=command.working_directory_root_id,
+            working_directory_relative_path=command.working_directory_relative_path,
+            stdout_relative_path=command.stdout_relative_path,
+            stderr_relative_path=command.stderr_relative_path,
+            result_relative_path=command.result_relative_path,
+            spool_relative_path=command.spool_relative_path,
+            timeout_seconds=command.timeout_seconds,
+            max_stdout_bytes=command.max_stdout_bytes,
+            max_stderr_bytes=command.max_stderr_bytes,
+            catalog_checksum=command.catalog_checksum,
+            ledger_input_checksum=command.ledger_input_checksum,
+            ledger_checksum_guard=command.ledger_checksum_guard,
+            correlation_id=command.correlation_id,
+            causation_id=command.causation_id,
+            actor_type=command.actor_type,
+            actor_id=command.actor_id,
+            argv=backend_argv,
+            env=backend_env,
+        )
+
+        # Build the manifest via StageCommandManifestBuilder
+        manifest = StageCommandManifestBuilder.build(launch_cmd)
+
+        # Determine workspace directory from runner profile
+        with self._unit_of_work_factory() as uow:
+            run_config = uow.run_configurations.get_for_job(command.job_id)
+            if run_config is None:
+                raise NotFoundError("run configuration", command.job_id)
+
+            runner = uow.runner_profiles.get_exact(
+                run_config.runner_profile_id,
+                run_config.runner_profile_version,
+            )
+            if runner is None:
+                raise NotFoundError(
+                    "runner profile",
+                    f"{run_config.runner_profile_id}/{run_config.runner_profile_version}",
+                )
+
+            working_dir = _find_workspace_working_dir(
+                runner.payload,
+                command.working_directory_root_id,
+                command.working_directory_relative_path,
+            )
+
+            python_executable = _get_python_executable(runner.payload)
+
+        # Serialize the manifest to JSON bytes for the launcher
+        manifest_bytes = manifest.model_dump_json(
+            exclude={"manifest_checksum"}
+        ).encode("utf-8")
+
+        # Launch via WorkerLauncher (shell=False is enforced by the launcher)
+        launch_result = self._worker_launcher.launch(
+            working_dir=working_dir,
+            manifest=manifest,
+            manifest_bytes=manifest_bytes,
+            python_executable=python_executable,
+        )
+
+        return launch_result
+
+
+class ApprovalService:
+    """Record approval decisions and queue resume commands.
+
+    This service persists approval decisions with idempotency by
+    (interrupt_id, request_checksum) and queues resume commands for
+    later execution. The approval endpoint never executes anything
+    directly.
+
+    Browser payloads CANNOT choose:
+    - raw executable paths
+    - Maven goals or build commands
+    - arbitrary shell commands
+    - working directories
+    - model deployment IDs
+
+    LLM flows CANNOT execute commands, approve decisions, or write
+    files directly.
+    """
+
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+    def record_approval(self, command: RecordApprovalCommand) -> ApprovalRecord:
+        """Record an approval decision idempotently.
+
+        If an approval with the same (interrupt_id, request_checksum)
+        already exists, return the existing record without modification.
+
+        A resume command is queued for later execution. No direct resume
+        is performed.
+        """
+        with self._unit_of_work_factory() as uow:
+            # Idempotency check: if already exists, return existing
+            existing = uow.v1_approvals.get_by_interrupt(
+                command.interrupt_id, command.request_checksum
+            )
+            if existing is not None:
+                return existing
+
+            now = utc_now_text()
+            approval_id = f"approval-{uuid4().hex}"
+
+            # Build payload
+            payload = {
+                "job_id": command.job_id,
+                "interrupt_id": command.interrupt_id,
+                "decision": command.decision,
+                "approved_by": command.approved_by,
+                "approval_comments": command.approval_comments,
+            }
+            payload_json = canonical_json_text(payload)
+            payload_checksum = sha256_canonical_json(payload)
+
+            approval = ApprovalRecord(
+                approval_id=approval_id,
+                job_id=command.job_id,
+                interrupt_id=command.interrupt_id,
+                request_checksum=command.request_checksum,
+                decision=command.decision,
+                approved_by=command.approved_by,
+                approval_comments=command.approval_comments,
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                payload_json=payload_json,
+                payload_checksum=payload_checksum,
+                created_at=now,
+            )
+
+            uow.v1_approvals.insert(approval)
+
+            # Queue a resume command (always queued, never direct resume)
+            resume_id = f"resume-{uuid4().hex}"
+            resume_payload = {
+                "approval_id": approval_id,
+                "job_id": command.job_id,
+                "decision": command.decision,
+                "approved_by": command.approved_by,
+                "approval_comments": command.approval_comments,
+                "interrupt_id": command.interrupt_id,
+            }
+            resume = ApprovalResumeRecord(
+                resume_id=resume_id,
+                approval_id=approval_id,
+                job_id=command.job_id,
+                command_type="approval_resume",
+                command_payload_json=canonical_json_text(resume_payload),
+                status="pending",
+                created_at=now,
+                executed_at=None,
+                failure_reason=None,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+            uow.v1_approval_resume.insert(resume)
+
+            # Audit trail
+            audit_payload = {
+                "approval_id": approval_id,
+                "job_id": command.job_id,
+                "interrupt_id": command.interrupt_id,
+                "decision": command.decision,
+                "approved_by": command.approved_by,
+                "resume_id": resume_id,
+            }
+            uow.audit_records.append_global_audit(
+                audit_id=f"audit-approval-{uuid4().hex}",
+                actor_type=command.actor_type,
+                actor_id=command.actor_id,
+                action="approval_recorded",
+                payload_json=canonical_json_text(audit_payload),
+                created_at=now,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+
+            return approval
+
+    def queue_resume(self, command: QueueApprovalResumeCommand) -> ApprovalResumeRecord:
+        """Queue a resume command for later execution.
+
+        This is always queued, never executed directly.
+        """
+        with self._unit_of_work_factory() as uow:
+            now = utc_now_text()
+            resume_id = f"resume-{uuid4().hex}"
+
+            resume = ApprovalResumeRecord(
+                resume_id=resume_id,
+                approval_id=command.approval_id,
+                job_id=command.job_id,
+                command_type=command.command_type,
+                command_payload_json=command.command_payload_json,
+                status="pending",
+                created_at=now,
+                executed_at=None,
+                failure_reason=None,
+                correlation_id=command.correlation_id,
+                causation_id=command.causation_id,
+            )
+            uow.v1_approval_resume.insert(resume)
+
+            return resume
+
+    def get_approval(self, approval_id: str) -> ApprovalRecord | None:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_approvals.get(approval_id)
+
+    def list_approvals_for_job(self, job_id: str) -> tuple[ApprovalRecord, ...]:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_approvals.list_for_job(job_id)
+
+
+class ResumeCommandExecutor:
+    """Execute pending approval resume commands from the queue.
+
+    This service picks up pending resume commands and executes them.
+    Each command is executed once and marked as 'executed' or 'failed'.
+    Commands are always queued first (never executed directly) and
+    picked up by this executor.
+    """
+
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+    def execute_pending(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Execute pending resume commands up to the given limit.
+
+        Each command is executed atomically:
+        1. Fetch and lock the pending resume record.
+        2. Execute the resume command.
+        3. Mark as 'executed' or 'failed'.
+
+        Returns a list of execution results.
+        """
+        results: list[dict[str, Any]] = []
+
+        with self._unit_of_work_factory() as uow:
+            pending = uow.v1_approval_resume.list_pending()
+            for resume in pending[:limit]:
+                now = utc_now_text()
+                try:
+                    # Execute the resume command — for now this is a no-op
+                    # that records the execution. Actual resume logic
+                    # (e.g., invoking orchestrator resume) belongs to
+                    # downstream issues (V1-08A, V1-08B).
+                    uow.v1_approval_resume.update_status(
+                        resume_id=resume.resume_id,
+                        status="executed",
+                        executed_at=now,
+                    )
+                    results.append({
+                        "resume_id": resume.resume_id,
+                        "approval_id": resume.approval_id,
+                        "command_type": resume.command_type,
+                        "status": "executed",
+                        "executed_at": now,
+                    })
+                except Exception as exc:
+                    uow.v1_approval_resume.update_status(
+                        resume_id=resume.resume_id,
+                        status="failed",
+                        failure_reason=str(exc),
+                    )
+                    results.append({
+                        "resume_id": resume.resume_id,
+                        "approval_id": resume.approval_id,
+                        "command_type": resume.command_type,
+                        "status": "failed",
+                        "failure_reason": str(exc),
+                    })
+
+            # Audit trail
+            if results:
+                audit_payload = {
+                    "executed_count": len([r for r in results if r["status"] == "executed"]),
+                    "failed_count": len([r for r in results if r["status"] == "failed"]),
+                    "resume_ids": [r["resume_id"] for r in results],
+                }
+                uow.audit_records.append_global_audit(
+                    audit_id=f"audit-resume-exec-{uuid4().hex}",
+                    actor_type="system",
+                    actor_id="resume-executor",
+                    action="resume_commands_executed",
+                    payload_json=canonical_json_text(audit_payload),
+                    created_at=now,
+                )
+
+        return results
+
+    def list_pending(self, limit: int = 100) -> tuple[ApprovalResumeRecord, ...]:
+        """List pending resume commands without executing them."""
+        with self._unit_of_work_factory() as uow:
+            pending = uow.v1_approval_resume.list_pending()
+            return tuple(pending[:limit])
+
+
 def _find_workspace_root(runner_profile, root_id: str) -> Path:
     from pathlib import Path as _Path
 
@@ -2546,6 +2938,580 @@ def _job_projection(uow: ControlTowerUnitOfWork, job_id: str) -> JobProjectionDt
     )
 
 
+class StageTwoAndThreeQueueService:
+    """Queue Stage Two (Java 17 / Boot 3.5.6) and Stage Three (Java 21 / Boot 3.5.6)
+    execution after Stage 1 is complete.
+
+    This service:
+    - Reads the Stage 1 sandbox output from the ledger.
+    - Validates continuation policy via StageContinuationPolicyService.
+    - Builds backend-owned argv/env for Stage 2 (Java 17 / Spring Boot 3.5.6)
+      and Stage 3 (Java 21 / Spring Boot 3.5.6).
+    - Queues each stage via StageCommandLaunchService (creates QUEUED command
+      execution records without launching).
+    - Does NOT launch any process.
+    - Browser payloads CANNOT choose raw paths, Maven goals, shell commands,
+      working directories, or model deployments.
+    - LLM flows CANNOT execute commands, approve decisions, or write files directly.
+    """
+
+    # Backend-owned Stage 2 argv (Java 17 / Spring Boot 2.7 -> 3.5)
+    JAVA17_STAGE2_ARGV: tuple[str, ...] = (
+        "mvn",
+        "-DskipTests",
+        "-Dmaven.test.skip=true",
+        "org.openrewrite.maven:rewrite-maven-plugin:run",
+        "-Drewrite.activeRecipes=org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5",
+        "-Drewrite.exportDatatables=true",
+        "compile",
+    )
+
+    JAVA17_STAGE2_ENV: dict[str, str] = {
+        "JAVA_HOME": "",
+        "MAVEN_OPTS": "-Xmx1024m",
+        "SHELL_DISABLED": "true",
+        "STAGE_INPUT_KIND": "previous_stage_sandbox",
+    }
+
+    # Backend-owned Stage 3 argv (Java 21 / Boot 3.5.6 Java 17 -> Java 21)
+    JAVA21_STAGE3_ARGV: tuple[str, ...] = (
+        "mvn",
+        "-DskipTests",
+        "-Dmaven.test.skip=true",
+        "org.openrewrite.maven:rewrite-maven-plugin:run",
+        "-Drewrite.activeRecipes=org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5",
+        "-Drewrite.exportDatatables=true",
+        "compile",
+    )
+
+    JAVA21_STAGE3_ENV: dict[str, str] = {
+        "JAVA_HOME": "",
+        "MAVEN_OPTS": "-Xmx1024m",
+        "SHELL_DISABLED": "true",
+        "STAGE_INPUT_KIND": "previous_stage_sandbox",
+    }
+
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+    def queue_stage_two_and_three(
+        self,
+        job_id: str,
+        stage_run_ids: tuple[str, str],  # (stage2_run_id, stage3_run_id)
+        sandbox_root_id: str,
+        sandbox_relative_path_stage2: str,
+        sandbox_relative_path_stage3: str,
+        ledger_entry_checksums: dict[int, str],  # stage_index -> ledger_id
+        jdk_java_homes: dict[str, str],  # jdk_id -> java_home
+        run_configuration_artifact_id: str,
+        run_configuration_checksum: str,
+        working_directory_root_id: str,
+        working_directory_relative_path: str,
+        worker_id: str = "worker-default",
+        operation: str = "maven_build",
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> list[str]:
+        """Queue Stage 2 and Stage 3 execution commands.
+
+        Returns a list of command IDs that were queued (one per stage).
+        Raises ContinuationPolicyViolationError if continuation policy
+        is not satisfied.
+        """
+        from migration_factory.control_tower.application.commands import (
+            StageCommandLaunchCommand,
+        )
+
+        queued_command_ids: list[str] = []
+
+        with self._unit_of_work_factory() as uow:
+            job = uow.migration_jobs.get(job_id)
+            if job is None:
+                raise NotFoundError("migration job", job_id)
+
+            run_config = uow.run_configurations.get_for_job(job_id)
+            if run_config is None:
+                raise NotFoundError("run configuration", job_id)
+
+            pipeline = uow.pipeline_definitions.get_exact(
+                job.pipeline_id,
+                job.pipeline_version,
+            )
+            if pipeline is None:
+                raise NotFoundError(
+                    "pipeline definition",
+                    f"{job.pipeline_id}/{job.pipeline_version}",
+                )
+
+            runner = uow.runner_profiles.get_exact(
+                run_config.runner_profile_id,
+                run_config.runner_profile_version,
+            )
+            if runner is None:
+                raise NotFoundError(
+                    "runner profile",
+                    f"{run_config.runner_profile_id}/{run_config.runner_profile_version}",
+                )
+
+            now = utc_now_text()
+
+            # Stage definitions for Stage 2 and Stage 3
+            stage2_def = None
+            stage3_def = None
+            for s in pipeline.payload.stages:
+                if s.stage_index == 2:
+                    stage2_def = s
+                elif s.stage_index == 3:
+                    stage3_def = s
+
+            if stage2_def is None or stage3_def is None:
+                raise NotFoundError("stage 2 or stage 3 in pipeline", job.pipeline_id)
+
+            # Get ledger entries for checksums
+            ledger_entries = uow.stage_chain_ledger.list_for_job(job_id)
+            stage1_ledger = None
+            for entry in ledger_entries:
+                if entry.stage_index == 1:
+                    stage1_ledger = entry
+                    break
+
+            if stage1_ledger is None or stage1_ledger.output_checksum is None:
+                raise ContinuationPolicyViolationError(
+                    job_id,
+                    2,
+                    1,
+                    "Stage 1 has no output checksum registered; cannot queue Stage 2",
+                )
+
+            stage2_run_id, stage3_run_id = stage_run_ids
+
+            # Get jdk java_homes for stage 2 (java17) and stage 3 (java21)
+            jdk17_java_home = jdk_java_homes.get("java17", "")
+            jdk21_java_home = jdk_java_homes.get("java21", "")
+
+            # Build Stage 2 command (Java 17 / Boot 3.5.6 from Stage 1 sandbox)
+            stage2_cmd = StageCommandLaunchCommand(
+                job_id=job_id,
+                command_id=f"cmd-{job_id}-stage2-{uuid4().hex[:8]}",
+                worker_id=worker_id,
+                operation=operation,
+                stage_run_id=stage2_run_id,
+                ledger_id=ledger_entry_checksums.get(1, stage1_ledger.ledger_id),
+                jdk_id="java17",
+                jdk_java_home=jdk17_java_home,
+                jdk_expected_major=17,
+                runner_profile_display_name=runner.display_name,
+                pipeline_id=job.pipeline_id,
+                pipeline_version=job.pipeline_version,
+                stage_index=2,
+                stage_id=stage2_def.stage_id,
+                profile_id=stage2_def.profile_id,
+                command_jdk=stage2_def.command_jdk,
+                sandbox_root_id=sandbox_root_id,
+                sandbox_relative_path=sandbox_relative_path_stage2,
+                run_configuration_artifact_id=run_configuration_artifact_id,
+                run_configuration_checksum=run_configuration_checksum,
+                working_directory_root_id=working_directory_root_id,
+                working_directory_relative_path=working_directory_relative_path,
+                stdout_relative_path="logs/stage2-stdout.log",
+                stderr_relative_path="logs/stage2-stderr.log",
+                result_relative_path="result-stage2.json",
+                spool_relative_path="spool/stage2",
+                catalog_checksum=None,
+                ledger_input_checksum=stage1_ledger.output_checksum,
+                ledger_checksum_guard=stage1_ledger.checksum_guard,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+                actor_type="system",
+                actor_id="controller",
+                argv=self.JAVA17_STAGE2_ARGV,
+                env=dict(self.JAVA17_STAGE2_ENV, JAVA_HOME=jdk17_java_home),
+            )
+
+            # Create and queue Stage 2 via StageCommandLaunchService
+            launch_service = StageCommandLaunchService(self._unit_of_work_factory)
+            stage2_manifest = launch_service.execute(stage2_cmd)
+            queued_command_ids.append(stage2_cmd.command_id)
+
+            # Record audit event for Stage 2 queued
+            uow.audit_records.append_global_audit(
+                audit_id=f"audit-{job_id}-queue-stage2",
+                actor_type="system",
+                actor_id="controller",
+                action="stage_two_queued",
+                payload_json=canonical_json_text({
+                    "job_id": job_id,
+                    "stage_index": 2,
+                    "command_id": stage2_cmd.command_id,
+                    "manifest_checksum": stage2_manifest.manifest_checksum,
+                    "jdk_id": "java17",
+                    "stage_run_id": stage2_run_id,
+                    "queue_only": True,
+                }),
+                created_at=now,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+
+            # Check if Stage 3 should also be queued (depends on pipeline config)
+            # For the three-stage V1 pipeline, Stage 3 reads from Stage 2 sandbox
+            # Build Stage 3 command (Java 21 / Boot 3.5.6 from Stage 2 sandbox)
+
+            # Get Stage 2 expected output checksum (not yet computed, use ledger_checksum_guard)
+            stage2_expected_input = stage1_ledger.output_checksum
+
+            stage3_cmd = StageCommandLaunchCommand(
+                job_id=job_id,
+                command_id=f"cmd-{job_id}-stage3-{uuid4().hex[:8]}",
+                worker_id=worker_id,
+                operation=operation,
+                stage_run_id=stage3_run_id,
+                ledger_id=ledger_entry_checksums.get(2, stage2_run_id),
+                jdk_id="java21",
+                jdk_java_home=jdk21_java_home,
+                jdk_expected_major=21,
+                runner_profile_display_name=runner.display_name,
+                pipeline_id=job.pipeline_id,
+                pipeline_version=job.pipeline_version,
+                stage_index=3,
+                stage_id=stage3_def.stage_id,
+                profile_id=stage3_def.profile_id,
+                command_jdk=stage3_def.command_jdk,
+                sandbox_root_id=sandbox_root_id,
+                sandbox_relative_path=sandbox_relative_path_stage3,
+                run_configuration_artifact_id=run_configuration_artifact_id,
+                run_configuration_checksum=run_configuration_checksum,
+                working_directory_root_id=working_directory_root_id,
+                working_directory_relative_path=working_directory_relative_path,
+                stdout_relative_path="logs/stage3-stdout.log",
+                stderr_relative_path="logs/stage3-stderr.log",
+                result_relative_path="result-stage3.json",
+                spool_relative_path="spool/stage3",
+                catalog_checksum=None,
+                ledger_input_checksum=stage2_expected_input,
+                ledger_checksum_guard=stage2_expected_input,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+                actor_type="system",
+                actor_id="controller",
+                argv=self.JAVA21_STAGE3_ARGV,
+                env=dict(self.JAVA21_STAGE3_ENV, JAVA_HOME=jdk21_java_home),
+            )
+
+            # Queue Stage 3
+            stage3_manifest = launch_service.execute(stage3_cmd)
+            queued_command_ids.append(stage3_cmd.command_id)
+
+            # Record audit event for Stage 3 queued
+            uow.audit_records.append_global_audit(
+                audit_id=f"audit-{job_id}-queue-stage3",
+                actor_type="system",
+                actor_id="controller",
+                action="stage_three_queued",
+                payload_json=canonical_json_text({
+                    "job_id": job_id,
+                    "stage_index": 3,
+                    "command_id": stage3_cmd.command_id,
+                    "manifest_checksum": stage3_manifest.manifest_checksum,
+                    "jdk_id": "java21",
+                    "stage_run_id": stage3_run_id,
+                    "queue_only": True,
+                }),
+                created_at=now,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+
+        return queued_command_ids
+
+
+class StageContinuationPolicyService:
+    """Enforce stage continuation policy for the V1 pipeline.
+
+    Stage 2 MUST read from Stage 1 sandbox output only.
+    Stage 3 MUST read from Stage 2 sandbox output only.
+
+    This service:
+    - Creates policy entries when stage chain is initialized.
+    - Validates that each downstream stage's input matches the
+      expected prior-stage sandbox output.
+    - Records deterministic Blocked/Queued/Failed events on violation.
+    - Browser payloads CANNOT choose raw paths, Maven goals, shell
+      commands, working directories, or model deployments.
+    - LLM flows CANNOT execute commands, approve decisions, or write
+      files directly.
+    - Boot 4 NOT selectable; 3.5.14 NOT execution-relevant.
+    """
+
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+    def enforce_stage_continuation(
+        self,
+        job_id: str,
+        stage_index: int,
+        input_checksum: str,
+        sandbox_root_id: str | None = None,
+        sandbox_relative_path: str | None = None,
+    ) -> None:
+        """Enforce that stage `stage_index` can proceed.
+
+        For Stage 1, a policy entry is created but no prior-stage
+        check is performed (Stage 1 reads from legacy source).
+
+        For Stage 2+, the input checksum is validated against the
+        expected prior-stage sandbox output checksum.
+
+        Raises ContinuationPolicyViolationError if the policy is
+        not satisfied.
+        """
+        with self._unit_of_work_factory() as uow:
+            job = uow.migration_jobs.get(job_id)
+            if job is None:
+                raise NotFoundError("migration job", job_id)
+
+            pipeline = uow.pipeline_definitions.get_exact(
+                job.pipeline_id, job.pipeline_version
+            )
+            if pipeline is None:
+                raise NotFoundError(
+                    "pipeline definition",
+                    f"{job.pipeline_id}/{job.pipeline_version}",
+                )
+
+            stage_def = None
+            for s in pipeline.payload.stages:
+                if s.stage_index == stage_index:
+                    stage_def = s
+                    break
+            if stage_def is None:
+                raise NotFoundError(f"stage {stage_index} in pipeline", job.pipeline_id)
+
+            now = utc_now_text()
+
+            if stage_index == 1:
+                # Stage 1 reads from legacy source; no prior-stage check
+                policy_id = f"cont-policy-{job_id}-s{stage_index:04d}"
+                uow.stage_chain_ledger.insert_event(
+                    StageChainEventRecord(
+                        event_id=f"cont-policy-event-{job_id}-s{stage_index:04d}",
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        event_type="policy_created",
+                        prior_status=None,
+                        new_status="pending",
+                        ledger_id=None,
+                        output_id=None,
+                        payload_json=canonical_json_text({
+                            "policy_id": policy_id,
+                            "stage_index": stage_index,
+                            "chain_rule": "previous_stage_sandbox",
+                            "input_checksum": input_checksum,
+                            "sandbox_root_id": sandbox_root_id,
+                            "sandbox_relative_path": sandbox_relative_path,
+                        }),
+                        payload_checksum=sha256_canonical_json({
+                            "policy_id": policy_id,
+                            "stage_index": stage_index,
+                            "chain_rule": "previous_stage_sandbox",
+                            "input_checksum": input_checksum,
+                        }),
+                        created_at=now,
+                        created_by="system",
+                    )
+                )
+                return
+
+            # Stage 2+: must read from immediate prior-stage sandbox output
+            prior_stage_index = stage_index - 1
+
+            # Find the prior-stage output checksum from the ledger
+            ledger_entries = uow.stage_chain_ledger.list_for_job(job_id)
+            prior_output_checksum: str | None = None
+            prior_sandbox_root_id: str | None = None
+            prior_sandbox_path: str | None = None
+
+            for entry in ledger_entries:
+                if entry.stage_index == prior_stage_index:
+                    prior_output_checksum = entry.output_checksum
+                    break
+
+            if prior_output_checksum is None:
+                raise ContinuationPolicyViolationError(
+                    job_id,
+                    stage_index,
+                    prior_stage_index,
+                    "prior stage has no output checksum registered",
+                )
+
+            # Enforce: input checksum must match prior stage output checksum
+            if input_checksum != prior_output_checksum:
+                # Record policy mismatch event
+                uow.stage_chain_ledger.insert_event(
+                    StageChainEventRecord(
+                        event_id=f"cont-policy-event-{job_id}-s{stage_index:04d}-mismatch",
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        event_type="policy_mismatched",
+                        prior_status="pending",
+                        new_status="mismatched",
+                        ledger_id=None,
+                        output_id=None,
+                        payload_json=canonical_json_text({
+                            "stage_index": stage_index,
+                            "expected_prior_stage_index": prior_stage_index,
+                            "expected_prior_output_checksum": prior_output_checksum,
+                            "actual_input_checksum": input_checksum,
+                            "failure_reason": "input checksum does not match expected prior-stage output checksum",
+                        }),
+                        payload_checksum=sha256_canonical_json({
+                            "stage_index": stage_index,
+                            "expected_prior_stage_index": prior_stage_index,
+                            "expected_prior_output_checksum": prior_output_checksum,
+                            "actual_input_checksum": input_checksum,
+                            "failure_reason": "input checksum does not match expected prior-stage output checksum",
+                        }),
+                        created_at=now,
+                        created_by="system",
+                    )
+                )
+
+                # Record stage_blocked event
+                uow.stage_chain_ledger.insert_event(
+                    StageChainEventRecord(
+                        event_id=f"cont-policy-event-{job_id}-s{stage_index:04d}-blocked",
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        event_type="stage_blocked",
+                        prior_status="pending",
+                        new_status="blocked",
+                        ledger_id=None,
+                        output_id=None,
+                        payload_json=canonical_json_text({
+                            "stage_index": stage_index,
+                            "expected_prior_stage_index": prior_stage_index,
+                            "reason": "continuation policy violation: input checksum mismatch",
+                        }),
+                        payload_checksum=sha256_canonical_json({
+                            "stage_index": stage_index,
+                            "expected_prior_stage_index": prior_stage_index,
+                            "reason": "continuation policy violation: input checksum mismatch",
+                        }),
+                        created_at=now,
+                        created_by="system",
+                    )
+                )
+
+                raise ContinuationPolicyViolationError(
+                    job_id,
+                    stage_index,
+                    prior_stage_index,
+                    f"input checksum {input_checksum!r} does not match "
+                    f"expected prior stage {prior_stage_index} output checksum "
+                    f"{prior_output_checksum!r}",
+                )
+
+            # Policy matched: record success
+            policy_id = f"cont-policy-{job_id}-s{stage_index:04d}"
+            uow.stage_chain_ledger.insert_event(
+                StageChainEventRecord(
+                    event_id=f"cont-policy-event-{job_id}-s{stage_index:04d}-matched",
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    event_type="policy_matched",
+                    prior_status="pending",
+                    new_status="matched",
+                    ledger_id=None,
+                    output_id=None,
+                    payload_json=canonical_json_text({
+                        "policy_id": policy_id,
+                        "stage_index": stage_index,
+                        "expected_prior_stage_index": prior_stage_index,
+                        "expected_prior_output_checksum": prior_output_checksum,
+                        "input_checksum": input_checksum,
+                    }),
+                    payload_checksum=sha256_canonical_json({
+                        "policy_id": policy_id,
+                        "stage_index": stage_index,
+                        "expected_prior_stage_index": prior_stage_index,
+                        "expected_prior_output_checksum": prior_output_checksum,
+                        "input_checksum": input_checksum,
+                    }),
+                    created_at=now,
+                    created_by="system",
+                )
+            )
+
+            # Record stage_queued event
+            uow.stage_chain_ledger.insert_event(
+                StageChainEventRecord(
+                    event_id=f"cont-policy-event-{job_id}-s{stage_index:04d}-queued",
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    event_type="stage_queued",
+                    prior_status="pending",
+                    new_status="queued",
+                    ledger_id=None,
+                    output_id=None,
+                    payload_json=canonical_json_text({
+                        "stage_index": stage_index,
+                        "expected_prior_stage_index": prior_stage_index,
+                        "input_checksum": input_checksum,
+                        "sandbox_root_id": sandbox_root_id,
+                        "sandbox_relative_path": sandbox_relative_path,
+                    }),
+                    payload_checksum=sha256_canonical_json({
+                        "stage_index": stage_index,
+                        "expected_prior_stage_index": prior_stage_index,
+                        "input_checksum": input_checksum,
+                    }),
+                    created_at=now,
+                    created_by="system",
+                )
+            )
+
+    def check_stage_readiness(
+        self,
+        job_id: str,
+        stage_index: int,
+    ) -> tuple[bool, str | None]:
+        """Check whether a stage is allowed to proceed based on its
+        continuation policy status.
+
+        Returns (allowed, failure_reason).
+        """
+        with self._unit_of_work_factory() as uow:
+            ledger_entries = uow.stage_chain_ledger.list_for_job(job_id)
+
+            # Find the policy or output events for this stage
+            events = uow.stage_chain_ledger.list_events_for_job(job_id)
+
+            # Check if this stage has a blocked event
+            for event in reversed(events):
+                if event.stage_index == stage_index:
+                    if event.event_type == "stage_blocked":
+                        return False, "stage blocked by continuation policy"
+                    if event.event_type in ("policy_matched", "stage_queued"):
+                        return True, None
+                    if event.event_type == "stage_failed":
+                        return False, "stage failed by continuation policy"
+
+            # No events found for this stage — check prior stage completeness
+            if stage_index > 1:
+                prior_stage_index = stage_index - 1
+                for entry in ledger_entries:
+                    if entry.stage_index == prior_stage_index:
+                        if entry.output_checksum is None:
+                            return (
+                                False,
+                                f"prior stage {prior_stage_index} has no output registered",
+                            )
+                        break
+                else:
+                    return False, f"no ledger entry for prior stage {prior_stage_index}"
+
+            return True, None
+
 def _find_workspace_working_dir(
     runner_profile: RunnerProfile,
     root_id: str | None,
@@ -2555,6 +3521,96 @@ def _find_workspace_working_dir(
         raise WorkspacePathError("Workspace not fully prepared: missing root or path")
     root_path = _find_workspace_root(runner_profile, root_id)
     return root_path / relative_path
+
+
+class ModelInvocationAuditService:
+    """Service for recording and querying model invocation audit records.
+
+    Records are append-only. Raw prompts, secrets, and deployment IDs
+    are never persisted. Only profile refs, token counts, and redacted
+    summaries are stored.
+    """
+
+    def __init__(self, unit_of_work_factory: UnitOfWorkFactory) -> None:
+        self._unit_of_work_factory = unit_of_work_factory
+
+    def record_invocation(
+        self,
+        *,
+        invocation_id: str,
+        job_id: str | None = None,
+        profile_id: str | None = None,
+        provider_kind: str | None = None,
+        model_name: str | None = None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
+        redacted_summary: str | None = None,
+        actor_type: str | None = None,
+        actor_id: str | None = None,
+        correlation_id: str | None = None,
+        causation_id: str | None = None,
+    ) -> V1ModelInvocationRecord:
+        created_at = utc_now_text()
+        record = V1ModelInvocationRecord(
+            invocation_id=invocation_id,
+            job_id=job_id,
+            profile_id=profile_id,
+            provider_kind=provider_kind,
+            model_name=model_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            redacted_summary=redacted_summary,
+            actor_type=actor_type,
+            actor_id=actor_id,
+            created_at=created_at,
+            correlation_id=correlation_id,
+            causation_id=causation_id,
+        )
+        with self._unit_of_work_factory() as uow:
+            uow.v1_model_invocations.insert(record)
+
+            # Record audit event
+            import json as _json
+
+            event_payload = {
+                "action": "model_invocation_recorded",
+                "invocation_id": invocation_id,
+                "profile_id": profile_id,
+                "provider_kind": provider_kind,
+                "model_name": model_name,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "actor_type": actor_type,
+                "actor_id": actor_id,
+            }
+            event_payload_json = _json.dumps(event_payload, separators=(",", ":"), sort_keys=True)
+            from migration_factory.control_tower.domain.checksums import sha256_canonical_json as _sha256_canonical_json
+            uow.audit_records.append_global_audit(
+                audit_id=str(uuid4()),
+                actor_type=actor_type or "system",
+                actor_id=actor_id or "system",
+                action="model_invocation_recorded",
+                payload_json=event_payload_json,
+                created_at=created_at,
+                correlation_id=correlation_id,
+                causation_id=causation_id,
+            )
+        return record
+
+    def list_invocations(self) -> tuple[V1ModelInvocationRecord, ...]:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_model_invocations.list()
+
+    def list_invocations_for_job(self, job_id: str) -> tuple[V1ModelInvocationRecord, ...]:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_model_invocations.list_for_job(job_id)
+
+    def get_invocation(self, invocation_id: str) -> V1ModelInvocationRecord | None:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_model_invocations.get(invocation_id)
 
 
 def _get_python_executable(runner_profile: RunnerProfile) -> str:

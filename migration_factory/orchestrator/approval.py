@@ -4,6 +4,7 @@ from typing import Any
 
 from langgraph.types import interrupt
 
+from migration_factory.orchestrator.events import emit_control_tower_event
 from migration_factory.orchestrator.state import (
     APPROVAL_DECISION_VALUES,
     FULL_SANDBOX_MIGRATION_MODE,
@@ -38,6 +39,12 @@ def build_approval_payload(state: MigrationState) -> dict[str, Any]:
 
 def approval_node(state: MigrationState) -> MigrationState:
     _write_interrupt_checkpoint_snapshot(state)
+    emit_control_tower_event(
+        phase="approval",
+        status="blocked",
+        message="Human approval required.",
+        run_id=state.get("run_id", ""),
+    )
     resume_payload = interrupt(build_approval_payload(state))
     decision = (
         resume_payload.get("decision")

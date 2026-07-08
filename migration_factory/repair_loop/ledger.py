@@ -78,6 +78,7 @@ def base_attempt(
         "repair_plan_ref": repair_plan_ref,
         "patch_gate_status": "NOT_EVALUATED",
         "deterministic_rule_id": "",
+        "repair_proposal_checksum": "",
         "patch_ref": "",
         "patch_result_ref": "",
         "validation": {
@@ -126,6 +127,18 @@ def write_patch_attempt_result(
         "errors": list(errors or []),
     }
     path = Path(run_dir) / "repairs" / f"patch_attempt_{attempt}_result.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return path
+
+
+def write_patch_draft(
+    *,
+    run_dir: str | Path,
+    attempt: int,
+    payload: dict[str, Any],
+) -> Path:
+    path = Path(run_dir) / "repairs" / f"patch_draft_{attempt}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path

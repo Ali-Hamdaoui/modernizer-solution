@@ -20,10 +20,12 @@ from .executor import CommandResult, run_command
 from .plan import MigrationPlan, MigrationUnit, load_migration_plan
 from .pom_patches import (
     patch_batch_config_flat_file_item_reader_constructor,
+    detect_spring_boot_version,
     patch_maven_enforcer_java_version,
     patch_pom_property,
     patch_security_config_authorize_http_requests,
     patch_spring_boot_version,
+    is_stable_spring_boot_35_version,
 )
 from .rewrite import build_rewrite_run_command, rewrite_plugin_version_from_xml
 
@@ -239,17 +241,63 @@ def _run_unit(
                 new_value=new_value,
             )
             required = transformation.get("required", True) is not False
-            if required and not dry_run and not patches:
-                _mark_unit_blocked(
-                    plan,
-                    unit,
-                    "REQUIRED_POM_PATCH_NOT_APPLIED spring_boot_version",
-                    command_results,
-                    recorded_transformations=recorded_transformations,
+            if required and not dry_run:
+                detection = detect_spring_boot_version(plan.target_path)
+                if detection is None:
+                    reason = (
+                        "REQUIRED_POM_PATCH_NOT_APPLIED spring_boot_version "
+                        "detected_locations=[] expected_target_line=3.5.x"
+                    )
+                    _mark_unit_blocked(
+                        plan,
+                        unit,
+                        reason,
+                        command_results,
+                        recorded_transformations=recorded_transformations,
+                    )
+                    raise TransformationAgentError(reason)
+                if not is_stable_spring_boot_35_version(detection.version):
+                    reason = (
+                        "REQUIRED_POM_PATCH_NOT_APPLIED spring_boot_version "
+                        f"detected_version={detection.version} expected_target_line=3.5.x "
+                        f"detected_location={detection.location}"
+                    )
+                    _mark_unit_blocked(
+                        plan,
+                        unit,
+                        reason,
+                        command_results,
+                        recorded_transformations=recorded_transformations,
+                    )
+                    raise TransformationAgentError(reason)
+                print(
+                    "spring_boot_version_status=satisfied "
+                    f"spring_boot_version_detected={detection.version} "
+                    "spring_boot_version_target=3.5.x "
+                    f"spring_boot_version_location={detection.location}"
                 )
-                raise TransformationAgentError(
-                    "REQUIRED_POM_PATCH_NOT_APPLIED spring_boot_version"
+                recorded_transformations.append(
+                    {
+                        "type": transformation_type,
+                        "status": "satisfied",
+                        "file": "pom.xml",
+                        "spring_boot_version_status": "satisfied",
+                        "spring_boot_version_detected": detection.version,
+                        "spring_boot_version_target": "3.5.x",
+                        "spring_boot_version_location": detection.location,
+                        "patches": [
+                            {
+                                "file": patch.file,
+                                "location": patch.location,
+                                "old_value": patch.old_value,
+                                "new_value": patch.new_value,
+                                "unit": patch.unit,
+                            }
+                            for patch in patches
+                        ],
+                    }
                 )
+                continue
             for patch in patches:
                 print(
                     f"unit={patch.unit} patch=spring_boot_version file={patch.file} "

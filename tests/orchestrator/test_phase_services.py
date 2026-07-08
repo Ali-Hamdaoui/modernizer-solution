@@ -1,12 +1,15 @@
 from dataclasses import fields
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
 
 from migration_factory.orchestrator.phase_services import (
     PhaseServices,
+    _merge_repair_updates,
     default_phase_services,
     run_analysis_phase,
+    run_sandbox_transform_phase,
 )
 from migration_factory.orchestrator.state import MigrationState, build_initial_state
 
@@ -86,3 +89,102 @@ def test_phase_failure_sets_fail_and_blocker_error(
     assert state["current_unit"] == "analysis"
     assert state["errors"] == ["analysis phase failed: analysis exploded"]
     assert state["blockers"] == ["analysis phase failed: analysis exploded"]
+
+
+def test_repair_merge_does_not_call_legacy_copilot_loop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import migration_factory.repair_loop.orchestrator as legacy_repair
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("legacy Copilot repair loop must not be called")
+
+    monkeypatch.setattr(legacy_repair, "run_post_failure_repair_loop", fail_if_called)
+
+    result = _merge_repair_updates(
+        {
+            **_state(tmp_path),
+            "artifact_refs": {"failure": "failure.json"},
+            "final_status": "BUILD_FAILED",
+            "stop_reason": "build failed",
+        },
+        h2_startup_report={"status": "FAILED"},
+    )
+
+    assert result["repair_loop_status"] == "REPAIR_REVIEW_REQUIRED"
+    assert result["repair_blocker"] == "f5_reviewed_repair_required"
+    assert result["artifact_refs"] == {"failure": "failure.json"}
+
+
+def test_sandbox_transform_phase_resolves_runtime_profile_from_route_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_apply_approved_sandbox_transform(*, profile: str, **kwargs):
+        captured["profile"] = profile
+        run_dir = Path(kwargs["run_dir"])
+        sandbox_path = run_dir / "workspaces" / "sandbox"
+        log_file = run_dir / "logs" / "phase2_transform.log"
+        sandbox_path.mkdir(parents=True, exist_ok=True)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        log_file.write_text("ok\n", encoding="utf-8")
+        return SimpleNamespace(
+            exit_code=0,
+            status="TRANSFORM_APPLIED_IN_SANDBOX",
+            message="ok",
+            sandbox_path=sandbox_path,
+            log_file=log_file,
+            generated_plan=None,
+            plugin_xml=None,
+            ledger_file=None,
+            build_status="BUILD_PASSED_IN_SANDBOX",
+            test_status="TEST_PASSED",
+            test_totals={},
+            test_report_path=None,
+            test_summary_path=None,
+            test_log_path=None,
+            test_phase="post_transform",
+            dependency_policy_artifact_refs={},
+            dependency_policy_report_path=None,
+            dependency_policy_summary_path=None,
+            dependency_policy_status="SKIPPED",
+            dependency_policy_risks_count=0,
+            dependency_policy_blockers_count=0,
+            copilot_dependency_advisory_status="SKIPPED",
+            policy_patch_applied=False,
+        )
+
+    monkeypatch.setattr(
+        "migration_factory.transform_v1_after_approval.apply_approved_sandbox_transform",
+        fake_apply_approved_sandbox_transform,
+    )
+
+    state = build_initial_state(
+        run_id="run-route",
+        legacy_app_path=str(tmp_path / "legacy"),
+        modernized_app_path=str(tmp_path / "modernized"),
+        ai_hub_path=str(tmp_path / "ai-hub"),
+        profile_id="springboot-2.7-java11",
+        mode="full_sandbox_migration",
+    )
+    Path(state["legacy_app_path"]).mkdir(parents=True, exist_ok=True)
+    Path(state["modernized_app_path"]).mkdir(parents=True, exist_ok=True)
+    Path(state["ai_hub_path"]).mkdir(parents=True, exist_ok=True)
+    Path(state["run_dir"]).mkdir(parents=True, exist_ok=True)
+    state["approved_by"] = "reviewer"
+    state["artifact_refs"] = {
+        "approval_review": {
+            "profile_metadata": {
+                "source_profile": "springboot-3.5-java17",
+                "target_profile": "springboot-3.5-java21",
+            }
+        }
+    }
+
+    result = run_sandbox_transform_phase(state)
+
+    assert captured["profile"] == "springboot-3.5-java17-to-java21"
+    assert result["profile_id"] == "springboot-3.5-java17-to-java21"

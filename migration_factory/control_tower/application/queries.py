@@ -24,6 +24,8 @@ from migration_factory.control_tower.application.dto import (
     StageRunDto,
 )
 from migration_factory.control_tower.application.services import UnitOfWorkFactory
+from migration_factory.control_tower.domain.entities import V1ContextPackManifestRecord
+from migration_factory.control_tower.domain.entities import V1ModelInvocationRecord
 from migration_factory.control_tower.domain.errors import (
     EventCursorConflictError,
     InvalidEventCursorError,
@@ -149,6 +151,15 @@ class ControlTowerQueryService:
                 for r in records
             )
 
+    def get_continuation_policy_events(
+        self, job_id: str
+    ) -> tuple[StageChainEventRecord, ...]:
+        """Return continuation policy events for a job."""
+        from migration_factory.control_tower.domain.entities import StageChainEventRecord
+
+        with self._unit_of_work_factory() as uow:
+            return uow.stage_chain_ledger.list_events_for_job(job_id)
+
     # ── RunEvent ─────────────────────────────────────────────────
 
     def list_run_events(self, job_id: str) -> tuple[RunEventDto, ...]:
@@ -198,6 +209,42 @@ class ControlTowerQueryService:
     def list_audit_records_for_job(self, job_id: str) -> tuple[AuditRecordDto, ...]:
         with self._unit_of_work_factory() as uow:
             return uow.audit_records.list_for_job(job_id)
+
+    # ── ModelInvocation ──────────────────────────────────────────
+
+    def list_model_invocations(self) -> tuple[V1ModelInvocationRecord, ...]:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_model_invocations.list()
+
+    def list_model_invocations_for_job(
+        self, job_id: str
+    ) -> tuple[V1ModelInvocationRecord, ...]:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_model_invocations.list_for_job(job_id)
+
+    def get_model_invocation(
+        self, invocation_id: str
+    ) -> V1ModelInvocationRecord | None:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_model_invocations.get(invocation_id)
+
+    # ── ContextPackManifest ──────────────────────────────────────
+
+    def list_context_pack_manifests(self) -> tuple[V1ContextPackManifestRecord, ...]:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_context_pack_manifests.list()
+
+    def list_context_pack_manifests_for_job(
+        self, job_id: str
+    ) -> tuple[V1ContextPackManifestRecord, ...]:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_context_pack_manifests.list_for_job(job_id)
+
+    def get_context_pack_manifest(
+        self, manifest_id: str
+    ) -> V1ContextPackManifestRecord | None:
+        with self._unit_of_work_factory() as uow:
+            return uow.v1_context_pack_manifests.get(manifest_id)
 
     # ── RunnerProfile ────────────────────────────────────────────
 

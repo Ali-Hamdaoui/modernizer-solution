@@ -208,7 +208,10 @@ def test_resume_cli_accepts_required_approval_fields(monkeypatch, tmp_path: Path
         "approved_by": "reviewer",
         "comments": "go",
     }
-    assert json.loads(capsys.readouterr().out)["final_status"] == STATUS_APPLIED
+    out = capsys.readouterr().out.strip()
+    if out.startswith("CONTROL_TOWER_FINAL_JSON "):
+        out = out[len("CONTROL_TOWER_FINAL_JSON "):]
+    assert json.loads(out)["final_status"] == STATUS_APPLIED
 
 
 def test_resume_rejected_records_decision_and_does_not_run_transform(

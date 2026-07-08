@@ -5,8 +5,6 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
-from migration_factory.copilot_repair.feature_probe import probe_copilot_availability
-from migration_factory.copilot_repair.adapter import invoke_copilot_repair
 from migration_factory.repair_loop.evidence_collector import collect_failure_evidence
 from migration_factory.repair_loop.fallback_planner import generate_deterministic_fallback
 from migration_factory.repair_loop.ledger import (
@@ -29,7 +27,7 @@ def run_post_failure_repair_loop(
     state: dict[str, Any],
     *,
     h2_startup_report: dict[str, Any] | None = None,
-    copilot_invoker: CopilotInvoker = invoke_copilot_repair,
+    copilot_invoker: CopilotInvoker | None = None,
     validation_runner: ValidationRunner = run_validation_after_patch,
 ) -> dict[str, Any]:
     if not bool(state.get("copilot_failure_agent_enabled") or state.get("repair_loop_enabled")):
@@ -37,6 +35,16 @@ def run_post_failure_repair_loop(
             "repair_loop_status": "DISABLED",
             "repair_loop_enabled": False,
         }
+    return {
+        "repair_loop_status": "BLOCKED",
+        "repair_loop_enabled": False,
+        "repair_loop_quarantined": True,
+        "repair_blocker": "copilot_removed_from_v2_f5",
+        "repair_message": (
+            "Legacy Copilot repair loop is quarantined. F5 repair proposals must be "
+            "created through the Azure proposer/reviewer reviewed-diff chain."
+        ),
+    }
 
     run_id = str(state.get("run_id") or "")
     run_dir = Path(str(state.get("run_dir") or ""))
@@ -622,11 +630,8 @@ def _load_or_probe_copilot_availability(
     if from_file.get("status") and from_file.get("status") != "SKIPPED":
         return from_file
 
-    return probe_copilot_availability(
-        repo_root=Path(__file__).resolve().parents[2],
-        run_dir=run_dir,
-        provider=str(state.get("copilot_provider") or "copilot_cli"),
-        model=str(state.get("copilot_model") or ""),
-        required=bool(state.get("copilot_required", False)),
-        timeout_seconds=min(int(state.get("copilot_timeout_seconds") or 300), 30),
-    )
+    return {
+        "status": "UNAVAILABLE",
+        "reason": "Legacy Copilot repair loop is quarantined for V2/F5.",
+        "errors": ["copilot_removed_from_v2_f5"],
+    }

@@ -167,3 +167,130 @@ class ControllerOwnershipReleaseError(ControlTowerError):
 
     def __init__(self) -> None:
         super().__init__("Local Control Tower controller ownership could not be released cleanly")
+
+
+class ContinuationPolicyViolationError(ControlTowerError):
+    """Raised when a stage continuation policy check fails.
+
+    The stage cannot proceed because its input source does not match
+    the expected prior-stage sandbox output.
+    """
+
+    def __init__(
+        self,
+        job_id: str,
+        stage_index: int,
+        expected_prior_stage_index: int,
+        reason: str,
+    ) -> None:
+        self.job_id = job_id
+        self.stage_index = stage_index
+        self.expected_prior_stage_index = expected_prior_stage_index
+        self.reason = reason
+        super().__init__(
+            f"Stage {stage_index} continuation policy violation for job {job_id!r}: "
+            f"expected prior stage {expected_prior_stage_index} sandbox - {reason}"
+        )
+
+
+class ContinuationPolicyNotFoundError(ControlTowerError):
+    """Raised when no continuation policy entry exists for a job/stage."""
+
+    def __init__(self, job_id: str, stage_index: int) -> None:
+        self.job_id = job_id
+        self.stage_index = stage_index
+        super().__init__(
+            f"No continuation policy entry found for job {job_id!r} stage {stage_index}"
+        )
+
+
+class PlanAmendmentValidationError(ControlTowerError):
+    """Raised when a plan amendment or revision payload is invalid."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class PlanRevisionConflictError(ControlTowerError):
+    """Raised when ordered or terminal revision rules are violated."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class PlanAdvisoryValidationError(ControlTowerError):
+    """Raised when an advisory validation report cannot be projected safely."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class PlanReviewConflictError(ControlTowerError):
+    """Raised when a revision receives a conflicting second review decision."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class PlanReviewChecksumMismatchError(ControlTowerError):
+    """Raised when reviewer approval targets a stale revision checksum."""
+
+    def __init__(self, revision_id: str) -> None:
+        super().__init__(f"Review checksum does not match current revision payload for {revision_id!r}")
+
+
+class RepairClassificationError(ControlTowerError):
+    """Raised when repair classification cannot be created safely."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class RepairAttemptLimitExceededError(ControlTowerError):
+    """Raised when deterministic fake repair attempt limits are exhausted."""
+
+    def __init__(self, command_id: str, attempt_limit: int) -> None:
+        super().__init__(
+            f"Fake repair attempt limit reached for command {command_id!r}: {attempt_limit}"
+        )
+
+
+class RepairProposalValidationError(ControlTowerError):
+    """Raised when fake repair proposal input is unsafe or malformed."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class PatchPolicyValidationError(ControlTowerError):
+    """Raised when patch content fails policy validation."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+class PatchContentEscapeError(PatchPolicyValidationError):
+    """Raised when patch content contains escape or shell metacharacters."""
+
+
+class PatchContentMismatchError(PatchPolicyValidationError):
+    """Raised when patch content does not match the expected target path or context."""
+
+
+class PatchContentOversizeError(PatchPolicyValidationError):
+    """Raised when patch content exceeds allowed size limits."""
+
+
+class PatchNotApprovedError(PatchPolicyValidationError):
+    """Raised when an unapproved patch is submitted for application."""
+
+
+class PatchSnapshotNotFoundError(PatchPolicyValidationError):
+    """Raised when no snapshot exists before patch application."""
+
+
+class PatchRollbackError(ControlTowerError):
+    """Raised when sandbox rollback fails."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)

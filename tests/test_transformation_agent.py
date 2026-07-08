@@ -24,6 +24,8 @@ from migration_factory.agents.transformation_agent.execution_plan import (
 from migration_factory.agents.transformation_agent.executor import CommandResult
 from migration_factory.agents.transformation_agent.plan import load_migration_plan
 from migration_factory.agents.transformation_agent.pom_patches import (
+    detect_spring_boot_version,
+    is_stable_spring_boot_35_version,
     patch_batch_config_flat_file_item_reader_constructor,
     patch_maven_enforcer_java_version,
     patch_pom_property,
@@ -397,6 +399,243 @@ migration_units:
             self.assertIn("<spring-boot.version>3.5.6</spring-boot.version>", pom_text)
             self.assertIn("<org.springframework.version>3.5.6</org.springframework.version>", pom_text)
             self.assertIn("<version>3.5.6</version>", pom_text)
+
+    def test_spring_boot_version_accepts_35_patch_line_when_profile_targets_35(self) -> None:
+        self.assertTrue(is_stable_spring_boot_35_version("3.5.6"))
+        self.assertTrue(is_stable_spring_boot_35_version("3.5.15"))
+        self.assertFalse(is_stable_spring_boot_35_version("3.4.9"))
+        self.assertFalse(is_stable_spring_boot_35_version("3.6.0"))
+        self.assertFalse(is_stable_spring_boot_35_version("3.5.15-SNAPSHOT"))
+
+    def test_spring_boot_version_required_patch_accepts_already_migrated_property_version(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project>
+  <properties>
+    <spring-boot.version>3.5.15</spring-boot.version>
+  </properties>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            plan = _write_spring_boot_transform_plan(app, run_id="run-1")
+            with mock.patch(
+                "migration_factory.agents.transformation_agent.agent._verify_build_validation",
+                return_value=BuildValidationStatus.PASSED,
+            ) as verify_mock:
+                result = run_transformation_agent(app, plan["plugin_xml"], plan["plan_yaml"], wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            unit = ledger["units"]["spring-boot-3-5"]
+            self.assertEqual(result.status, LedgerStatus.COMPLETED)
+            self.assertEqual(ledger["status"], LedgerStatus.COMPLETED)
+            self.assertEqual(unit["transformations"][0]["status"], "satisfied")
+            self.assertEqual(unit["transformations"][0]["spring_boot_version_status"], "satisfied")
+            self.assertEqual(unit["transformations"][0]["spring_boot_version_detected"], "3.5.15")
+            self.assertEqual(unit["transformations"][0]["spring_boot_version_target"], "3.5.x")
+            self.assertEqual(unit["transformations"][0]["spring_boot_version_location"], "property")
+            verify_mock.assert_called_once()
+
+    def test_spring_boot_version_accepts_bom_property_reference_35x(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project>
+  <properties>
+    <spring.boot.version>3.5.15</spring.boot.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring.boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            detection = detect_spring_boot_version(app)
+            self.assertIsNotNone(detection)
+            self.assertEqual(detection.version, "3.5.15")
+            self.assertEqual(detection.location, "bom")
+
+    def test_spring_boot_version_accepts_direct_bom_35x(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>3.5.15</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            detection = detect_spring_boot_version(app)
+            self.assertIsNotNone(detection)
+            self.assertEqual(detection.version, "3.5.15")
+            self.assertEqual(detection.location, "bom")
+
+    def test_spring_boot_version_accepts_plugin_property_35x(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project>
+  <properties>
+    <spring-boot.version>3.5.15</spring-boot.version>
+  </properties>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <version>${spring-boot.version}</version>
+      </plugin>
+    </plugins>
+  </build>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            detection = detect_spring_boot_version(app)
+            self.assertIsNotNone(detection)
+            self.assertEqual(detection.version, "3.5.15")
+            self.assertEqual(detection.location, "plugin")
+
+    def test_spring_boot_version_rejects_34x_with_detected_expected_details(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>3.4.9</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            plan = _write_spring_boot_transform_plan(app, run_id="run-reject-34")
+            with self.assertRaises(TransformationAgentError) as exc:
+                run_transformation_agent(app, plan["plugin_xml"], plan["plan_yaml"], wait_for_continue=False)
+
+            self.assertIn("REQUIRED_POM_PATCH_NOT_APPLIED spring_boot_version", str(exc.exception))
+            self.assertIn("detected_version=3.4.9", str(exc.exception))
+            self.assertIn("expected_target_line=3.5.x", str(exc.exception))
+            self.assertIn("detected_location=bom", str(exc.exception))
+            ledger = load_ledger(app / ".migration" / "ledger.json")
+            self.assertIn("detected_version=3.4.9", ledger["units"]["spring-boot-3-5"]["blocking_reason"])
+
+    def test_spring_boot_version_rejects_36x_with_detected_expected_details(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project>
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.6.0</version>
+  </parent>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            plan = _write_spring_boot_transform_plan(app, run_id="run-reject-36")
+            with self.assertRaises(TransformationAgentError) as exc:
+                run_transformation_agent(app, plan["plugin_xml"], plan["plan_yaml"], wait_for_continue=False)
+
+            self.assertIn("REQUIRED_POM_PATCH_NOT_APPLIED spring_boot_version", str(exc.exception))
+            self.assertIn("detected_version=3.6.0", str(exc.exception))
+            self.assertIn("expected_target_line=3.5.x", str(exc.exception))
+            self.assertIn("detected_location=parent", str(exc.exception))
+            ledger = load_ledger(app / ".migration" / "ledger.json")
+            self.assertIn("detected_version=3.6.0", ledger["units"]["spring-boot-3-5"]["blocking_reason"])
+
+    def test_spring_boot_version_rejects_missing_version_with_detected_locations_empty(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text("<project><properties /></project>", encoding="utf-8")
+
+            plan = _write_spring_boot_transform_plan(app, run_id="run-reject-missing")
+            with self.assertRaises(TransformationAgentError) as exc:
+                run_transformation_agent(app, plan["plugin_xml"], plan["plan_yaml"], wait_for_continue=False)
+
+            self.assertIn("REQUIRED_POM_PATCH_NOT_APPLIED spring_boot_version", str(exc.exception))
+            self.assertIn("detected_locations=[]", str(exc.exception))
+            self.assertIn("expected_target_line=3.5.x", str(exc.exception))
+            ledger = load_ledger(app / ".migration" / "ledger.json")
+            self.assertIn("detected_locations=[]", ledger["units"]["spring-boot-3-5"]["blocking_reason"])
+
+    def test_stage2_does_not_stop_before_build_when_pom_already_satisfies_boot_target(self) -> None:
+        with workspace_temp_dir() as tmp:
+            app = tmp / "modernized-app"
+            app.mkdir()
+            (app / "pom.xml").write_text(
+                """<project>
+  <properties>
+    <spring-boot.version>3.5.15</spring-boot.version>
+  </properties>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring-boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+</project>
+""",
+                encoding="utf-8",
+            )
+
+            plan = _write_spring_boot_transform_plan(app, run_id="run-stage2")
+            with mock.patch(
+                "migration_factory.agents.transformation_agent.agent._verify_build_validation",
+                return_value=BuildValidationStatus.PASSED,
+            ):
+                result = run_transformation_agent(app, plan["plugin_xml"], plan["plan_yaml"], wait_for_continue=False)
+
+            ledger = load_ledger(result.ledger_file)
+            self.assertEqual(result.status, LedgerStatus.COMPLETED)
+            self.assertEqual(ledger["status"], LedgerStatus.COMPLETED)
+            self.assertEqual(ledger["units"]["spring-boot-3-5"]["transformations"][0]["status"], "satisfied")
 
     def test_boot4_source_patches_update_security_and_batch_config(self) -> None:
         with workspace_temp_dir() as tmp:
@@ -1850,6 +2089,43 @@ recipe_artifacts:
 """.lstrip(),
         encoding="utf-8",
     )
+
+
+def _write_spring_boot_transform_plan(app: Path, *, run_id: str) -> dict[str, Path]:
+    run_dir = app / ".migration" / "runs" / run_id
+    plugin_xml = run_dir / "rewrite-plugin.xml"
+    plan_yaml = run_dir / "transformation" / "transformation_execution_plan.yaml"
+    plugin_xml.parent.mkdir(parents=True, exist_ok=True)
+    plan_yaml.parent.mkdir(parents=True, exist_ok=True)
+    plugin_xml.write_text(PLUGIN_XML, encoding="utf-8")
+    plan_yaml.write_text(
+        f"""schema_version: "1.3"
+migration:
+  id: "{run_id}"
+  name: "Spring Boot validation"
+workspaces:
+  target:
+    path: "{app.as_posix()}"
+    migration_dir: ".migration"
+    ledger_file: ".migration/ledger.json"
+migration_units:
+  - id: "spring-boot-3-5"
+    title: "Spring Boot target"
+    expected_files:
+      - "pom.xml"
+    transformations:
+      - type: "spring_boot_version"
+        old_value: "3.5.14"
+        new_value: "3.5.6"
+        required: true
+    checks:
+      - id: "build"
+        command: "mvn clean test -DskipITs"
+        required: true
+""",
+        encoding="utf-8",
+    )
+    return {"plugin_xml": plugin_xml, "plan_yaml": plan_yaml}
 
 
 if __name__ == "__main__":

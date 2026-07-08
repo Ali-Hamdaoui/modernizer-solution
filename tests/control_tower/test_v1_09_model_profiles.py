@@ -328,10 +328,6 @@ class TestV1ModelProfilesApi:
         payload = {
             "profile_id": profile_id,
             "display_name": "Test Azure OpenAI",
-            "provider_kind": "azure_openai",
-            "model_env_ref": "AZURE_MODEL_NAME",
-            "endpoint_env_ref": "AZURE_ENDPOINT_URL",
-            "deployment_env_ref": "AZURE_DEPLOYMENT_ID",
             "actor_id": "test-user",
         }
         resp = client.post("/v1/model-profiles", content=json.dumps(payload), headers=_MUTATION_HEADERS)
@@ -339,7 +335,8 @@ class TestV1ModelProfilesApi:
         created = resp.json()
         assert created["profile_id"] == profile_id
         assert created["display_name"] == "Test Azure OpenAI"
-        assert created["provider_kind"] == "azure_openai"
+        assert created["status"] == "active"
+        assert "provider_kind" not in created
         assert created["is_active"] is True
 
         # Retrieve by ID.
@@ -347,9 +344,27 @@ class TestV1ModelProfilesApi:
         assert get_resp.status_code == 200
         fetched = get_resp.json()
         assert fetched["profile_id"] == profile_id
-        assert fetched["model_env_ref"] == "AZURE_MODEL_NAME"
-        assert fetched["endpoint_env_ref"] == "AZURE_ENDPOINT_URL"
-        assert fetched["deployment_env_ref"] == "AZURE_DEPLOYMENT_ID"
+        serialized = json.dumps(fetched)
+        for forbidden in (
+            "provider_kind",
+            "model_env_ref",
+            "endpoint_env_ref",
+            "deployment_env_ref",
+        ):
+            assert forbidden not in serialized
+
+    def test_register_model_profile_rejects_runtime_fields(self, tmp_path, control_tower_app) -> None:
+        client = control_tower_app
+        payload = {
+            "profile_id": "runtime-fields",
+            "display_name": "Runtime fields",
+            "provider_kind": "azure_openai",
+            "model_env_ref": "AZURE_MODEL_NAME",
+            "endpoint_env_ref": "AZURE_ENDPOINT_URL",
+            "deployment_env_ref": "AZURE_DEPLOYMENT_ID",
+        }
+        resp = client.post("/v1/model-profiles", content=json.dumps(payload), headers=_MUTATION_HEADERS)
+        assert resp.status_code == 422
 
     def test_register_model_profile_missing_fields(self, tmp_path, control_tower_app) -> None:
         """POST without required fields returns 400."""
@@ -359,7 +374,7 @@ class TestV1ModelProfilesApi:
             content=json.dumps({"provider_kind": "fake"}),
             headers=_MUTATION_HEADERS,
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 422
 
     def test_register_model_profile_invalid_provider_defaults_to_fake(
         self, tmp_path, control_tower_app
@@ -371,17 +386,13 @@ class TestV1ModelProfilesApi:
             content=json.dumps({
                 "profile_id": "test-invalid-provider",
                 "display_name": "Invalid provider test",
-                "provider_kind": "unknown_provider_xyz",
-                "model_env_ref": "TEST_MODEL",
-                "endpoint_env_ref": "TEST_ENDPOINT",
-                "deployment_env_ref": "TEST_DEPLOYMENT",
             }),
             headers=_MUTATION_HEADERS,
         )
         assert resp.status_code == 201
-        # Provider kind defaults to fake via validation.
         data = resp.json()
         assert data["profile_id"] == "test-invalid-provider"
+        assert "provider_kind" not in data
 
     def test_get_nonexistent_model_profile_returns_404(
         self, tmp_path, control_tower_app

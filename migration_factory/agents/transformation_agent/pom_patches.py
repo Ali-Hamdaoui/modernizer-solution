@@ -7,6 +7,8 @@ import xml.etree.ElementTree as ET
 
 
 LEGACY_JAVA8_ENFORCER_RANGES = {"[1.8,1.9)", "[8,9)", "1.8", "8"}
+_SPRING_BOOT_35_RE = re.compile(r"^3\.5\.\d+$")
+_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+].+)?$")
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,14 @@ class SpringBootVersionPatch:
     old_value: str
     new_value: str
     unit: str
+
+
+@dataclass(frozen=True)
+class SpringBootVersionDetection:
+    version: str
+    location: str
+    property_name: str | None = None
+    detected_locations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -221,6 +231,144 @@ def patch_spring_boot_version(
     return patches
 
 
+def detect_spring_boot_version(project_path: Path) -> SpringBootVersionDetection | None:
+    pom_path = project_path / "pom.xml"
+    if not pom_path.is_file():
+        return None
+
+    tree = ET.parse(pom_path)
+    root = tree.getroot()
+    namespace = _namespace(root.tag)
+
+    if namespace:
+        ET.register_namespace("", namespace)
+
+    properties = _spring_boot_properties(root, namespace)
+
+    parent = root.find(_tag(namespace, "parent"))
+    if parent is not None:
+        group_id = parent.find(_tag(namespace, "groupId"))
+        artifact_id = parent.find(_tag(namespace, "artifactId"))
+        version = parent.find(_tag(namespace, "version"))
+        if (
+            group_id is not None
+            and artifact_id is not None
+            and version is not None
+            and group_id.text is not None
+            and artifact_id.text is not None
+            and version.text is not None
+            and group_id.text.strip() == "org.springframework.boot"
+            and artifact_id.text.strip() == "spring-boot-starter-parent"
+        ):
+            resolved = _resolve_pom_version(version.text, properties)
+            if resolved is not None:
+                return SpringBootVersionDetection(
+                    version=resolved,
+                    location="parent",
+                    detected_locations=("parent",),
+                )
+
+    for dependency in root.findall(f".//{_tag(namespace, 'dependency')}"):
+        group_id = dependency.find(_tag(namespace, "groupId"))
+        artifact_id = dependency.find(_tag(namespace, "artifactId"))
+        version = dependency.find(_tag(namespace, "version"))
+        if (
+            group_id is None
+            or artifact_id is None
+            or version is None
+            or group_id.text is None
+            or artifact_id.text is None
+            or version.text is None
+        ):
+            continue
+        if (
+            group_id.text.strip() == "org.springframework.boot"
+            and artifact_id.text.strip() == "spring-boot-dependencies"
+        ):
+            resolved = _resolve_pom_version(version.text, properties)
+            if resolved is not None:
+                return SpringBootVersionDetection(
+                    version=resolved,
+                    location="bom",
+                    detected_locations=("bom",),
+                )
+
+    for plugin in root.findall(f".//{_tag(namespace, 'plugin')}"):
+        group_id = plugin.find(_tag(namespace, "groupId"))
+        artifact_id = plugin.find(_tag(namespace, "artifactId"))
+        version = plugin.find(_tag(namespace, "version"))
+        if (
+            group_id is None
+            or artifact_id is None
+            or version is None
+            or group_id.text is None
+            or artifact_id.text is None
+            or version.text is None
+        ):
+            continue
+        if (
+            group_id.text.strip() == "org.springframework.boot"
+            and artifact_id.text.strip() == "spring-boot-maven-plugin"
+        ):
+            resolved = _resolve_pom_version(version.text, properties)
+            if resolved is not None:
+                return SpringBootVersionDetection(
+                    version=resolved,
+                    location="plugin",
+                    detected_locations=("plugin",),
+                )
+
+    for property_name in ("spring-boot.version", "spring.boot.version", "org.springframework.version"):
+        version = _resolve_pom_version(properties.get(property_name), properties)
+        if version is not None:
+            return SpringBootVersionDetection(
+                version=version,
+                location="property",
+                property_name=property_name,
+                detected_locations=("property",),
+            )
+
+    return None
+
+
+def is_stable_spring_boot_35_version(version: str) -> bool:
+    return bool(_SPRING_BOOT_35_RE.fullmatch(str(version or "").strip()))
+
+
+def _spring_boot_properties(root: ET.Element, namespace: str) -> dict[str, str]:
+    properties: dict[str, str] = {}
+    properties_node = root.find(_tag(namespace, "properties"))
+    if properties_node is None:
+        return properties
+
+    for child in list(properties_node):
+        key = _tag_name(child.tag)
+        value = (child.text or "").strip()
+        if key and value:
+            properties[key] = value
+    return properties
+
+
+def _resolve_pom_version(value: str | None, properties: dict[str, str]) -> str | None:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return None
+
+    for _ in range(8):
+        updated = re.sub(
+            r"\$\{([^}]+)\}",
+            lambda match: properties.get(match.group(1), match.group(0)),
+            candidate,
+        ).strip()
+        if updated == candidate:
+            break
+        candidate = updated
+
+    if "${" in candidate or not _SEMVER_RE.fullmatch(candidate):
+        return None
+    return candidate
+
+
 def patch_security_config_authorize_http_requests(
     project_path: Path,
     *,
@@ -334,3 +482,9 @@ def _tag(namespace: str, name: str) -> str:
     if namespace:
         return f"{{{namespace}}}{name}"
     return name
+
+
+def _tag_name(tag: str) -> str:
+    if tag.startswith("{") and "}" in tag:
+        return tag[tag.index("}") + 1 :]
+    return tag

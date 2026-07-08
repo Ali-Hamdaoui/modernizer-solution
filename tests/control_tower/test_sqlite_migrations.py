@@ -12,6 +12,7 @@ from migration_factory.control_tower.infrastructure.sqlite.connection import (
 )
 from migration_factory.control_tower.infrastructure.sqlite.migrations import (
     AppliedMigrationChecksumMismatchError,
+    AppliedMigrationMissingError,
     MigrationDiscoveryError,
     MigrationExecutionError,
     apply_pending_migrations,
@@ -101,6 +102,75 @@ def test_changed_checksum_for_applied_migration_is_rejected(tmp_path: Path) -> N
     finally:
         connection.close()
 
+
+def test_applied_migration_missing_from_disk_is_rejected_outside_dev_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    _write_sql(
+        migrations_dir,
+        "0001_foundation.sql",
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        );
+        CREATE TABLE retained_table (id INTEGER PRIMARY KEY);
+        """,
+    )
+    connection = connect_control_tower(tmp_path / "control_tower.sqlite3")
+    monkeypatch.setenv("CONTROL_TOWER_DEV_MODE", "0")
+    try:
+        apply_pending_migrations(connection, migrations_dir=migrations_dir)
+        connection.execute(
+            "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (2, 'removed', 'stale', 'now')"
+        )
+
+        with pytest.raises(AppliedMigrationMissingError, match="Applied migration missing from disk: 0002"):
+            apply_pending_migrations(connection, migrations_dir=migrations_dir)
+    finally:
+        connection.close()
+
+
+def test_applied_migration_missing_from_disk_resets_dev_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    _write_sql(
+        migrations_dir,
+        "0001_foundation.sql",
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        );
+        CREATE TABLE retained_table (id INTEGER PRIMARY KEY);
+        """,
+    )
+    connection = connect_control_tower(tmp_path / "control_tower.sqlite3")
+    monkeypatch.setenv("CONTROL_TOWER_DEV_MODE", "1")
+    try:
+        apply_pending_migrations(connection, migrations_dir=migrations_dir)
+        connection.execute(
+            "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (2, 'removed', 'stale', 'now')"
+        )
+        connection.execute("CREATE TABLE stale_branch_table (id INTEGER PRIMARY KEY)")
+
+        pending = apply_pending_migrations(connection, migrations_dir=migrations_dir)
+
+        assert [migration.version for migration in pending] == [1]
+        versions = connection.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
+        assert [row[0] for row in versions] == [1]
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retained_table'"
+        ).fetchone() is not None
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'stale_branch_table'"
+        ).fetchone() is None
+    finally:
+        connection.close()
 
 def test_migration_execution_does_not_use_executescript() -> None:
     import migration_factory.control_tower.infrastructure.sqlite.migrations as migrations_module
@@ -445,6 +515,11 @@ def test_migration_jobs_composite_foreign_keys_match_contract(tmp_path: Path) ->
         "to": ["runner_profile_id", "runner_profile_version"],
     } in foreign_keys
     assert {
+        "table": "migration_jobs",
+        "from": ["job_id"],
+        "to": ["job_id"],
+    } not in foreign_keys
+    assert {
         "table": "pipeline_definitions",
         "from": ["pipeline_id", "pipeline_version"],
         "to": ["pipeline_id", "pipeline_version"],
@@ -703,6 +778,187 @@ def test_one_active_job_index_and_status_active_slot_check_exist_and_work(tmp_pa
                 "tester",
             ),
         )
+    finally:
+        connection.close()
+
+
+def _apply_up_to_0045(conn: sqlite3.Connection) -> None:
+    from migration_factory.control_tower.infrastructure.sqlite.migrations import (
+        _apply_single_migration,
+        discover_migrations,
+    )
+    for m in discover_migrations():
+        _apply_single_migration(conn, m)
+        if m.version == 45:
+            break
+
+
+def test_migration_0046_upgrade_preserves_data(tmp_path: Path) -> None:
+    connection = connect_control_tower(tmp_path / "test_0046.sqlite3")
+    try:
+        _apply_up_to_0045(connection)
+
+        job_id = "job-0046"
+
+        # Seed all seven stage-bearing tables with Stage 1-3 data
+
+        # 1. v2_stage_commands — include gate_id/decision_id from 0043
+        connection.execute(
+            "INSERT INTO v2_stage_commands (command_id, job_id, stage_index, manifest_checksum, created_at, updated_at, gate_id, decision_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("cmd-1", job_id, 1, "chk1", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", None, None),
+        )
+        connection.execute(
+            "INSERT INTO v2_stage_commands (command_id, job_id, stage_index, manifest_checksum, created_at, updated_at, gate_id, decision_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("cmd-2", job_id, 3, "chk2", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z", "gate-1", "dec-1"),
+        )
+
+        # 2. v2_approval_decisions — includes job_id from 0035
+        connection.execute(
+            "INSERT INTO v2_approval_decisions (card_id, interrupt_id, request_checksum, stage_index, summary, status, created_at, job_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("card-1", "int-1", "chk1", 2, "", "pending", "2026-01-01T00:00:00Z", job_id),
+        )
+
+        # 3. v2_resume_commands
+        connection.execute(
+            "INSERT INTO v2_resume_commands (resume_id, card_id, decision, job_id, stage_index, command_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("res-1", "card-1", "continue", job_id, 2, "[]", "2026-01-01T00:00:00Z"),
+        )
+
+        # 4. v2_pending_action_drafts
+        connection.execute(
+            "INSERT INTO v2_pending_action_drafts (action_id, job_id, action_type, reason, stage_index, payload_checksum, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("act-1", job_id, "repair", "", 1, "", "draft", "2026-01-01T00:00:00Z"),
+        )
+
+        # 5. v2_job_events
+        connection.execute(
+            "INSERT INTO v2_job_events (event_id, job_id, stage, type, status, message, payload_json, created_at, sequence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("evt-1", job_id, 1, "stage_start", "running", "", "{}", "2026-01-01T00:00:00Z", 1),
+        )
+        connection.execute(
+            "INSERT INTO v2_job_events (event_id, job_id, stage, type, status, message, payload_json, created_at, sequence) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("evt-2", job_id, 3, "stage_end", "completed", "", "{}", "2026-01-01T00:00:00Z", 2),
+        )
+
+        # 6. v2_phase_gates
+        connection.execute(
+            "INSERT INTO v2_phase_gates (gate_id, job_id, gate_phase, stage_index, gate_status, gate_decision, source_artifact_checksum, source_artifact_refs_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("gate-0046", job_id, "analysis_review", 1, "open", "pending", "chk", "[]", "2026-01-01T00:00:00Z"),
+        )
+
+        # 7. v2_artifact_revisions
+        connection.execute(
+            "INSERT INTO v2_artifact_revisions (revision_id, job_id, stage_index, revision_kind, revision_status, revision_order, evidence_checksum, artifact_refs_json, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("rev-0046", job_id, 2, "analysis", "draft", 0, "chk", "[]", "2026-01-01T00:00:00Z", "system"),
+        )
+
+        # Apply 0046 migration
+        apply_pending_migrations(connection)
+
+        # ── Verify values survive ──────────────────────────────────
+
+        # 1. v2_stage_commands
+        row = connection.execute("SELECT stage_index, gate_id, decision_id FROM v2_stage_commands WHERE command_id = 'cmd-1'").fetchone()
+        assert row["stage_index"] == 1
+        assert row["gate_id"] is None
+        row = connection.execute("SELECT stage_index, gate_id, decision_id FROM v2_stage_commands WHERE command_id = 'cmd-2'").fetchone()
+        assert row["stage_index"] == 3
+        assert row["gate_id"] == "gate-1"
+        assert row["decision_id"] == "dec-1"
+
+        # 2. v2_approval_decisions
+        row = connection.execute("SELECT stage_index, job_id FROM v2_approval_decisions WHERE card_id = 'card-1'").fetchone()
+        assert row["stage_index"] == 2
+        assert row["job_id"] == job_id
+
+        # 3. v2_resume_commands
+        row = connection.execute("SELECT stage_index FROM v2_resume_commands WHERE resume_id = 'res-1'").fetchone()
+        assert row["stage_index"] == 2
+
+        # 4. v2_pending_action_drafts
+        row = connection.execute("SELECT stage_index FROM v2_pending_action_drafts WHERE action_id = 'act-1'").fetchone()
+        assert row["stage_index"] == 1
+
+        # 5. v2_job_events
+        row = connection.execute("SELECT stage FROM v2_job_events WHERE event_id = 'evt-1'").fetchone()
+        assert row["stage"] == 1
+        row = connection.execute("SELECT stage FROM v2_job_events WHERE event_id = 'evt-2'").fetchone()
+        assert row["stage"] == 3
+
+        # 6. v2_phase_gates
+        row = connection.execute("SELECT stage_index FROM v2_phase_gates WHERE gate_id = 'gate-0046'").fetchone()
+        assert row["stage_index"] == 1
+
+        # 7. v2_artifact_revisions
+        row = connection.execute("SELECT stage_index FROM v2_artifact_revisions WHERE revision_id = 'rev-0046'").fetchone()
+        assert row["stage_index"] == 2
+
+        # ── Stage 4 inserts succeed in all seven tables ────────────
+        connection.execute(
+            "INSERT INTO v2_stage_commands (command_id, job_id, stage_index, manifest_checksum, created_at, updated_at) VALUES ('cmd-s4', ?, 4, 'chk', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            (job_id,),
+        )
+        connection.execute(
+            "INSERT INTO v2_approval_decisions (card_id, interrupt_id, request_checksum, stage_index, created_at, job_id) VALUES ('card-s4', 'int', 'chk', 4, '2026-01-01T00:00:00Z', ?)",
+            (job_id,),
+        )
+        connection.execute(
+            "INSERT INTO v2_resume_commands (resume_id, card_id, decision, job_id, stage_index, created_at) VALUES ('res-s4', 'card-s4', 'continue', ?, 4, '2026-01-01T00:00:00Z')",
+            (job_id,),
+        )
+        connection.execute(
+            "INSERT INTO v2_pending_action_drafts (action_id, job_id, action_type, stage_index, created_at) VALUES ('act-s4', ?, 'repair', 4, '2026-01-01T00:00:00Z')",
+            (job_id,),
+        )
+        connection.execute(
+            "INSERT INTO v2_job_events (event_id, job_id, stage, type, status, created_at, sequence) VALUES ('evt-s4', ?, 4, 'stage_start', 'running', '2026-01-01T00:00:00Z', 100)",
+            (job_id,),
+        )
+        connection.execute(
+            "INSERT INTO v2_phase_gates (gate_id, job_id, gate_phase, stage_index, source_artifact_checksum, source_artifact_refs_json, created_at) VALUES ('gate-s4', ?, 'review', 4, 'chk', '[]', '2026-01-01T00:00:00Z')",
+            (job_id,),
+        )
+        connection.execute(
+            "INSERT INTO v2_artifact_revisions (revision_id, job_id, stage_index, revision_kind, evidence_checksum, artifact_refs_json, created_at, created_by) VALUES ('rev-s4', ?, 4, 'analysis', 'chk', '[]', '2026-01-01T00:00:00Z', 'system')",
+            (job_id,),
+        )
+
+        # ── Stage 5 inserts fail in all seven tables ───────────────
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO v2_stage_commands (command_id, job_id, stage_index, manifest_checksum, created_at, updated_at) VALUES ('cmd-s5', ?, 5, 'chk', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                (job_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO v2_approval_decisions (card_id, interrupt_id, request_checksum, stage_index, created_at, job_id) VALUES ('card-s5', 'int', 'chk', 5, '2026-01-01T00:00:00Z', ?)",
+                (job_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO v2_resume_commands (resume_id, card_id, decision, job_id, stage_index, created_at) VALUES ('res-s5', 'card-s5', 'continue', ?, 5, '2026-01-01T00:00:00Z')",
+                (job_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO v2_pending_action_drafts (action_id, job_id, action_type, stage_index, created_at) VALUES ('act-s5', ?, 'repair', 5, '2026-01-01T00:00:00Z')",
+                (job_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO v2_job_events (event_id, job_id, stage, type, status, created_at, sequence) VALUES ('evt-s5', ?, 5, 'stage_start', 'running', '2026-01-01T00:00:00Z', 200)",
+                (job_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO v2_phase_gates (gate_id, job_id, gate_phase, stage_index, source_artifact_checksum, source_artifact_refs_json, created_at) VALUES ('gate-s5', ?, 'review', 5, 'chk', '[]', '2026-01-01T00:00:00Z')",
+                (job_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO v2_artifact_revisions (revision_id, job_id, stage_index, revision_kind, evidence_checksum, artifact_refs_json, created_at, created_by) VALUES ('rev-s5', ?, 5, 'analysis', 'chk', '[]', '2026-01-01T00:00:00Z', 'system')",
+                (job_id,),
+            )
     finally:
         connection.close()
 

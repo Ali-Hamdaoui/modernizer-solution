@@ -16,8 +16,8 @@ APPROVAL_DECISION_VALUES = {"approved", "rejected", "replan_required"}
 COPILOT_ASSIST_MODE_VALUES = {"off", "failures", "warnings", "always"}
 COPILOT_PROVIDER_VALUES = {"cli", "sdk", "deterministic", "copilot_cli"}
 
-DEFAULT_COPILOT_ASSIST_MODE = "failures"
-DEFAULT_COPILOT_REPORT_ENABLED = True
+DEFAULT_COPILOT_ASSIST_MODE = "off"
+DEFAULT_COPILOT_REPORT_ENABLED = False
 DEFAULT_COPILOT_PROVIDER = "copilot_cli"
 DEFAULT_COPILOT_MODEL = "gpt-5-mini"
 DEFAULT_COPILOT_TIMEOUT_SECONDS = 300
@@ -51,6 +51,7 @@ class CopilotConfigError(ValueError):
 class MigrationState(TypedDict, total=False):
     run_id: str
     mode: str
+    phase: str
     legacy_app_path: str
     modernized_app_path: str
     ai_hub_path: str

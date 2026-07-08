@@ -11,7 +11,10 @@ from migration_factory.control_tower.domain.errors import CompatibilityError, No
 from migration_factory.control_tower.domain.states import JobState, TargetProofLevel
 from migration_factory.control_tower.infrastructure.sqlite.connection import connect_control_tower
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteControlTowerUnitOfWork
-from migration_factory.control_tower.schemas.run_configuration import RunConfiguration, RunPolicy
+from migration_factory.control_tower.schemas.run_configuration import (
+    RunConfiguration,
+    RunPolicy,
+)
 
 from ._helpers import (
     canonical_json,
@@ -77,12 +80,19 @@ def test_create_migration_job_writes_everything_atomically(tmp_path: Path) -> No
             "runner_profile_version": command.runner_profile_version,
             "pipeline_id": command.pipeline_id,
             "pipeline_version": command.pipeline_version,
+            "source_profile": None,
+            "target_profile": None,
             "target_proof_level": command.target_proof_level.value,
             "enabled_gates": list(command.enabled_gates),
             "policy": {
                 "continue_after_warning": False,
+                "enable_build_repair": True,
                 "enable_runtime_gate": False,
                 "enable_endpoint_gate": False,
+                "enable_llm_repair_proposal": True,
+                "max_repair_attempts": 3,
+                "repair_scope": "build_only",
+                "stage_continuation_policy": "auto_on_green",
             },
         }
         assert run_configuration_row["payload_json"] == canonical_json(expected_run_configuration)
@@ -166,6 +176,63 @@ def test_missing_runner_profile_raises_not_found(tmp_path: Path) -> None:
     }
 
 
+def test_create_migration_job_can_persist_manual_stage_continuation_policy(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "control_tower.sqlite3"
+    connection = make_migrated_connection(tmp_path)
+    seed_runner_profile(connection)
+    seed_pipeline_definition(connection)
+    connection.close()
+
+    service = _service_for(db_path)
+    command = _create_command(policy=RunPolicy.f15_manual())
+    result = service.execute(command)
+
+    with connect_control_tower(db_path) as verification_connection:
+        row = verification_connection.execute(
+            """
+            SELECT policy_json, payload_json
+            FROM run_configurations
+            WHERE job_id = ?
+            """,
+            (result.job_id,),
+        ).fetchone()
+
+    assert row is not None
+    assert row["policy_json"] == canonical_json(
+        {
+            "continue_after_warning": False,
+            "enable_runtime_gate": False,
+            "enable_endpoint_gate": False,
+            "enable_build_repair": True,
+            "enable_llm_repair_proposal": True,
+            "max_repair_attempts": 3,
+            "repair_scope": "build_only",
+            "stage_continuation_policy": "manual",
+        }
+    )
+    assert '"stage_continuation_policy":"manual"' in row["payload_json"]
+
+
+def test_run_configuration_rejects_invalid_profile_pair_for_job_creation() -> None:
+    with pytest.raises(ValueError, match="target profile must be higher"):
+        RunConfiguration(
+            schema_version="1.0.0",
+            run_configuration_id="run-config-invalid",
+            job_id="job-invalid",
+            runner_profile_id="runner-default",
+            runner_profile_version="2026.06",
+            pipeline_id="pipeline-default",
+            pipeline_version="2026.06",
+            target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED,
+            enabled_gates=(),
+            policy=RunPolicy(),
+            source_profile="springboot-3.5-java21",
+            target_profile="springboot-3.5-java17",
+        )
+
+
 def test_pipeline_runner_compatibility_failure_rolls_back_everything(tmp_path: Path) -> None:
     db_path = tmp_path / "control_tower.sqlite3"
     connection = make_migrated_connection(tmp_path)
@@ -199,7 +266,7 @@ def _service_for(db_path: Path) -> CreateMigrationJobService:
     return CreateMigrationJobService(factory)
 
 
-def _create_command() -> CreateMigrationJobCommand:
+def _create_command(policy: RunPolicy | None = None) -> CreateMigrationJobCommand:
     return CreateMigrationJobCommand(
         actor="tester",
         legacy_source_ref="C:/legacy/source",
@@ -210,7 +277,7 @@ def _create_command() -> CreateMigrationJobCommand:
         pipeline_version="2026.06",
         target_proof_level=TargetProofLevel.BUILD_TEST_VERIFIED,
         enabled_gates=("build", "test"),
-        policy=RunPolicy(),
+        policy=policy or RunPolicy(),
         correlation_id="corr-1",
     )
 

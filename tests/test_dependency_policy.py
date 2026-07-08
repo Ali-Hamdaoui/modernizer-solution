@@ -34,6 +34,24 @@ def test_target_dependency_plan_generated_for_boot35(tmp_path: Path) -> None:
     assert payload["auto_apply_copilot_allowed"] is False
 
 
+def test_target_dependency_plan_not_jakarta_required_for_java21_runtime_validation_route(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+
+    path = write_target_dependency_plan(
+        run_dir=run_dir,
+        source_boot_version="3.5.14",
+        target_boot_version="3.5.14",
+        target_java_version="21",
+        profile_id="springboot-3.5-java17-to-java21",
+        migration_unit_ids=["baseline", "java-21-runtime-validation"],
+        openrewrite_recipes_expected=["org.openrewrite.java.migrate.UpgradeToJava21"],
+    )
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["target_jakarta_required"] is False
+    assert payload["openrewrite_recipes_expected"] == ["org.openrewrite.java.migrate.UpgradeToJava21"]
+
+
 def test_scanner_detects_tomcat9_override_as_v2_runtime_warning_after_build_pass(tmp_path: Path) -> None:
     app = _app_with_pom(tmp_path, properties={"tomcat.version": "9.0.102"})
     report = scan_dependency_policy(
@@ -268,6 +286,19 @@ def test_boot35_final_sandbox_can_pass_tests_with_dependency_warnings(tmp_path: 
     assert report.status == "PASS_WITH_WARNINGS"
     assert report.blocked_for_build_test is False
     assert report.blocked_for_runtime is True
+
+
+def test_target_dependency_plan_still_requires_jakarta_for_boot2_to_boot3(tmp_path: Path) -> None:
+    path = write_target_dependency_plan(
+        run_dir=tmp_path / "run",
+        source_boot_version="2.7.18",
+        target_boot_version="3.5.14",
+        target_java_version="17",
+        openrewrite_recipes_expected=["org.openrewrite.java.spring.boot3.UpgradeSpringBoot_3_5"],
+    )
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["target_jakarta_required"] is True
 
 
 def _risk(payload: dict, rule_id: str) -> dict:

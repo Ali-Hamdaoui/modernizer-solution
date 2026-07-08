@@ -117,7 +117,10 @@ def test_main_invokes_graph(monkeypatch, tmp_path: Path, capsys) -> None:
     assert runner.main(_argv(tmp_path)) == 0
 
     assert calls == ["invoke"]
-    assert json.loads(capsys.readouterr().out)["finished"] is True
+    out = capsys.readouterr().out.strip()
+    if out.startswith("CONTROL_TOWER_FINAL_JSON "):
+        out = out[len("CONTROL_TOWER_FINAL_JSON "):]
+    assert json.loads(out)["finished"] is True
 
 
 def test_main_writes_summary_after_completed_graph(monkeypatch, tmp_path: Path) -> None:
@@ -177,7 +180,10 @@ def test_pass_flow_reaches_approval_interrupt(monkeypatch, tmp_path: Path, capsy
 
     assert runner.main(_argv(tmp_path)) == 0
 
-    payload = json.loads(capsys.readouterr().out)
+    out = capsys.readouterr().out.strip()
+    if out.startswith("CONTROL_TOWER_FINAL_JSON "):
+        out = out[len("CONTROL_TOWER_FINAL_JSON "):]
+    payload = json.loads(out)
     assert payload["status"] == "human_approval_required"
     assert payload["approval_status"] == "INTERRUPTED"
     assert payload["run_id"] == "run-001"

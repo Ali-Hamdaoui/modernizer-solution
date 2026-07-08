@@ -20,6 +20,8 @@ from migration_factory.control_tower.application.dto import (
 )
 from migration_factory.control_tower.domain.commands import CommandState
 from migration_factory.control_tower.domain.entities import (
+    ApprovalRecord,
+    ApprovalResumeRecord,
     ArtifactRecord,
     AuditRecord,
     CommandExecutionRecord,
@@ -33,7 +35,27 @@ from migration_factory.control_tower.domain.entities import (
     StageChainLedgerRecord,
     StageOutputRegistryRecord,
     StageRunRecord,
+    V1FakeRepairProposalRecord,
+    V1PatchApplicationRecord,
+    V1PatchMavenValidationRecord,
+    V1PatchRollbackRecord,
+    V1PlanAmendmentRecord,
+    V1PlanReviewDecisionRecord,
+    V1PatchPolicyValidationRecord,
+    V1RepairClassificationRecord,
+    V1PlanRevisionRecord,
+    V1SandboxSnapshotRecord,
 )
+from migration_factory.control_tower.domain.entities import V1ContextPackManifestRecord
+from migration_factory.control_tower.domain.entities import V1ModelInvocationRecord
+from migration_factory.control_tower.infrastructure.sqlite.v2_llm_invocation_repository import (
+    V2LLMInvocationRecord,
+)
+from migration_factory.control_tower.domain.entities import V1PrivilegedActionDecisionRecord
+from migration_factory.control_tower.domain.entities import V1PrivilegedActionExecutionRecord
+from migration_factory.control_tower.domain.entities import V1PrivilegedActionRecord
+from migration_factory.control_tower.domain.entities import V1ProofReportRecord
+from migration_factory.control_tower.domain.entities import V1ProofReportGateRecord
 from migration_factory.control_tower.domain.model_profiles import V1ModelProfileRecord
 from migration_factory.control_tower.domain.manifests import CommandManifest
 from migration_factory.control_tower.domain.states import JobState
@@ -290,6 +312,58 @@ class V1ModelProfileRepository(Protocol):
     def list(self) -> tuple[V1ModelProfileRecord, ...]: ...
 
 
+class V1ModelInvocationRepository(Protocol):
+    """Append-only repository for model invocation audit records."""
+
+    def insert(self, invocation: V1ModelInvocationRecord) -> None: ...
+
+    def get(self, invocation_id: str) -> V1ModelInvocationRecord | None: ...
+
+    def list(self) -> tuple[V1ModelInvocationRecord, ...]: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1ModelInvocationRecord, ...]: ...
+
+
+class V2LLMInvocationRepository(Protocol):
+    """Append-only repository for governed LLM invocation ledger."""
+
+    def save(self, invocation: V2LLMInvocationRecord) -> None: ...
+
+    def get(self, invocation_id: str) -> V2LLMInvocationRecord | None: ...
+
+    def list_by_job(self, job_id: str) -> tuple[V2LLMInvocationRecord, ...]: ...
+
+    def list_by_proposal(self, proposal_id: str) -> tuple[V2LLMInvocationRecord, ...]: ...
+
+    def update_status(
+        self,
+        invocation_id: str,
+        status: str,
+        *,
+        output_checksum: str | None = None,
+        redacted_error: str | None = None,
+        redacted_summary: str | None = None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
+        latency_ms: int | None = None,
+        completed_at: str | None = None,
+        fallback_used: int | None = None,
+    ) -> None: ...
+
+
+class V1ContextPackManifestRepository(Protocol):
+    """Append-only repository for context pack manifest records."""
+
+    def insert(self, manifest: V1ContextPackManifestRecord) -> None: ...
+
+    def get(self, manifest_id: str) -> V1ContextPackManifestRecord | None: ...
+
+    def list(self) -> tuple[V1ContextPackManifestRecord, ...]: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1ContextPackManifestRecord, ...]: ...
+
+
 class V1ModelProfileEventRepository(Protocol):
     def insert_event(
         self,
@@ -308,6 +382,224 @@ class V1ModelProfileEventRepository(Protocol):
     ) -> None: ...
 
 
+class V1ApprovalRepository(Protocol):
+    def insert(self, approval: ApprovalRecord) -> None: ...
+
+    def get(self, approval_id: str) -> ApprovalRecord | None: ...
+
+    def get_by_interrupt(
+        self, interrupt_id: str, request_checksum: str
+    ) -> ApprovalRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[ApprovalRecord, ...]: ...
+
+
+class V1ApprovalResumeRepository(Protocol):
+    def insert(self, resume: ApprovalResumeRecord) -> None: ...
+
+    def list_pending(self) -> tuple[ApprovalResumeRecord, ...]: ...
+
+    def list_for_approval(
+        self, approval_id: str
+    ) -> tuple[ApprovalResumeRecord, ...]: ...
+
+    def update_status(
+        self,
+        resume_id: str,
+        status: str,
+        executed_at: str | None = None,
+        failure_reason: str | None = None,
+    ) -> None: ...
+
+
+class V1PrivilegedActionRepository(Protocol):
+    """Append-only repository for privileged action records."""
+
+    def insert(self, action: V1PrivilegedActionRecord) -> None: ...
+
+    def get(self, action_id: str) -> V1PrivilegedActionRecord | None: ...
+
+    def list(self) -> tuple[V1PrivilegedActionRecord, ...]: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1PrivilegedActionRecord, ...]: ...
+
+    def list_by_status(self, status: str) -> tuple[V1PrivilegedActionRecord, ...]: ...
+
+
+class V1PlanAmendmentRepository(Protocol):
+    def insert(self, amendment: V1PlanAmendmentRecord) -> None: ...
+
+    def get(self, amendment_id: str) -> V1PlanAmendmentRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1PlanAmendmentRecord, ...]: ...
+
+
+class V1PlanRevisionRepository(Protocol):
+    def insert(self, revision: V1PlanRevisionRecord) -> None: ...
+
+    def get(self, revision_id: str) -> V1PlanRevisionRecord | None: ...
+
+    def list_for_amendment(self, amendment_id: str) -> tuple[V1PlanRevisionRecord, ...]: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1PlanRevisionRecord, ...]: ...
+
+    def next_revision_order(self, amendment_id: str) -> int: ...
+
+    def has_terminal_revision(self, amendment_id: str) -> bool: ...
+
+
+class V1PlanReviewDecisionRepository(Protocol):
+    def insert(self, review_decision: V1PlanReviewDecisionRecord) -> None: ...
+
+    def get_for_revision(self, revision_id: str) -> V1PlanReviewDecisionRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1PlanReviewDecisionRecord, ...]: ...
+
+
+class V1RepairClassificationRepository(Protocol):
+    def insert(self, classification: V1RepairClassificationRecord) -> None: ...
+
+    def get_by_command_and_checksum(
+        self,
+        command_id: str,
+        evidence_checksum: str,
+    ) -> V1RepairClassificationRecord | None: ...
+
+    def get_latest_for_command(self, command_id: str) -> V1RepairClassificationRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1RepairClassificationRecord, ...]: ...
+
+
+class V1FakeRepairProposalRepository(Protocol):
+    def insert(self, proposal: V1FakeRepairProposalRecord) -> None: ...
+
+    def get_for_classification_and_checksum(
+        self,
+        classification_id: str,
+        proposal_checksum: str,
+    ) -> V1FakeRepairProposalRecord | None: ...
+
+    def list_for_classification(
+        self,
+        classification_id: str,
+    ) -> tuple[V1FakeRepairProposalRecord, ...]: ...
+
+    def get_for_classification_kind_and_context(
+        self,
+        classification_id: str,
+        proposal_kind: str,
+        context_checksum: str,
+    ) -> V1FakeRepairProposalRecord | None: ...
+
+
+class V1PrivilegedActionExecutionRepository(Protocol):
+    """Append-only repository for privileged action execution records."""
+
+    def insert(self, execution: V1PrivilegedActionExecutionRecord) -> None: ...
+
+    def get(self, action_id: str) -> V1PrivilegedActionExecutionRecord | None: ...
+
+    def list(self) -> tuple[V1PrivilegedActionExecutionRecord, ...]: ...
+
+    def list_by_status(self, status: str) -> tuple[V1PrivilegedActionExecutionRecord, ...]: ...
+
+
+class V1PrivilegedActionDecisionRepository(Protocol):
+    """Append-only repository for privileged action decision records."""
+
+    def insert(self, decision: V1PrivilegedActionDecisionRecord) -> None: ...
+
+    def get(self, action_id: str) -> V1PrivilegedActionDecisionRecord | None: ...
+
+    def list(self) -> tuple[V1PrivilegedActionDecisionRecord, ...]: ...
+
+    def list_by_decision(self, decision: str) -> tuple[V1PrivilegedActionDecisionRecord, ...]: ...
+
+
+class V1PatchPolicyValidationRepository(Protocol):
+    """Append-only repository for patch policy validation records."""
+
+    def insert(self, validation: V1PatchPolicyValidationRecord) -> None: ...
+
+    def get(self, validation_id: str) -> V1PatchPolicyValidationRecord | None: ...
+
+    def list_for_command(self, command_id: str) -> tuple[V1PatchPolicyValidationRecord, ...]: ...
+
+    def get_latest_for_command(self, command_id: str) -> V1PatchPolicyValidationRecord | None: ...
+
+
+class V1SandboxSnapshotRepository(Protocol):
+    """Append-only repository for sandbox snapshot records."""
+
+    def insert(self, snapshot: V1SandboxSnapshotRecord) -> None: ...
+
+    def get(self, snapshot_id: str) -> V1SandboxSnapshotRecord | None: ...
+
+    def get_for_command(self, command_id: str) -> V1SandboxSnapshotRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1SandboxSnapshotRecord, ...]: ...
+
+
+class V1PatchApplicationRepository(Protocol):
+    """Append-only repository for patch application records."""
+
+    def insert(self, application: V1PatchApplicationRecord) -> None: ...
+
+    def get(self, application_id: str) -> V1PatchApplicationRecord | None: ...
+
+    def get_for_command(self, command_id: str) -> V1PatchApplicationRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1PatchApplicationRecord, ...]: ...
+
+
+class V1PatchRollbackRepository(Protocol):
+    """Append-only repository for patch rollback records."""
+
+    def insert(self, rollback: V1PatchRollbackRecord) -> None: ...
+
+    def get(self, rollback_id: str) -> V1PatchRollbackRecord | None: ...
+
+    def get_for_command(self, command_id: str) -> V1PatchRollbackRecord | None: ...
+
+    def get_for_application(self, application_id: str) -> V1PatchRollbackRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1PatchRollbackRecord, ...]: ...
+
+
+class V1PatchMavenValidationRepository(Protocol):
+    """Append-only repository for Maven validation records."""
+
+    def insert(self, validation: V1PatchMavenValidationRecord) -> None: ...
+
+    def get(self, maven_validation_id: str) -> V1PatchMavenValidationRecord | None: ...
+
+    def get_for_application(self, application_id: str) -> V1PatchMavenValidationRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1PatchMavenValidationRecord, ...]: ...
+
+
+class V1ProofReportRepository(Protocol):
+    """Append-only repository for proof report artifacts."""
+
+    def insert(self, report: V1ProofReportRecord) -> None: ...
+
+    def get(self, report_id: str) -> V1ProofReportRecord | None: ...
+
+    def get_latest_for_job(self, job_id: str) -> V1ProofReportRecord | None: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1ProofReportRecord, ...]: ...
+
+
+class V1ProofReportGateRepository(Protocol):
+    """Append-only repository for proof report gate associations."""
+
+    def insert(self, gate: V1ProofReportGateRecord) -> None: ...
+
+    def list_for_report(self, report_id: str) -> tuple[V1ProofReportGateRecord, ...]: ...
+
+    def list_for_job(self, job_id: str) -> tuple[V1ProofReportGateRecord, ...]: ...
+
+
 class ControlTowerUnitOfWork(Protocol):
     runner_profiles: RunnerProfileRepository
     pipeline_definitions: PipelineDefinitionRepository
@@ -322,6 +614,26 @@ class ControlTowerUnitOfWork(Protocol):
     stage_chain_ledger: StageChainLedgerRepository
     v1_model_profiles: V1ModelProfileRepository
     v1_model_profile_events: V1ModelProfileEventRepository
+    v1_approvals: V1ApprovalRepository
+    v1_approval_resume: V1ApprovalResumeRepository
+    v1_model_invocations: V1ModelInvocationRepository
+    v1_context_pack_manifests: V1ContextPackManifestRepository
+    v1_privileged_actions: V1PrivilegedActionRepository
+    v1_plan_amendments: V1PlanAmendmentRepository
+    v1_plan_revisions: V1PlanRevisionRepository
+    v1_plan_review_decisions: V1PlanReviewDecisionRepository
+    v1_repair_classifications: V1RepairClassificationRepository
+    v1_fake_repair_proposals: V1FakeRepairProposalRepository
+    v1_privileged_action_decisions: V1PrivilegedActionDecisionRepository
+    v1_privileged_action_executions: V1PrivilegedActionExecutionRepository
+    v1_patch_policy_validations: V1PatchPolicyValidationRepository
+    v1_sandbox_snapshots: V1SandboxSnapshotRepository
+    v1_patch_applications: V1PatchApplicationRepository
+    v1_patch_maven_validations: V1PatchMavenValidationRepository
+    v1_patch_rollbacks: V1PatchRollbackRepository
+    v1_proof_reports: V1ProofReportRepository
+    v1_proof_report_gates: V1ProofReportGateRepository
+    v2_llm_invocations: V2LLMInvocationRepository
 
     def __enter__(self) -> Self: ...
 

@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
 from migration_factory.approval.approve_run import record_approval_decision_for_run
+from migration_factory.agents.build_agent.agent import BuildRunResult
+from migration_factory.agents.transformation_agent.agent import TransformationRunResult
+from migration_factory.agents.test_agent.agent import TestAgentResult
+from migration_factory.contracts.migration import LedgerStatus
 from migration_factory.transform_v1_after_approval import (
     STATUS_APPROVAL_FAILED,
+    STATUS_APPLIED,
     STATUS_FAILED,
     apply_approved_sandbox_transform,
 )
@@ -60,6 +66,89 @@ def test_transform_does_not_mutate_or_create_sandbox_before_approval(tmp_path: P
     assert source_file.read_text(encoding="utf-8") == before
     assert not (run_dir / "workspaces" / "sandbox").exists()
     assert not (run_dir / "transformation" / "transformation_execution_plan.yaml").exists()
+
+
+def test_final_contract_records_build_and_test_after_boot_version_satisfied(tmp_path: Path) -> None:
+    legacy, modernized, run_dir = _approved_run(tmp_path, profile="springboot-2.7-to-3.5-java17")
+    ledger_file = run_dir / ".migration" / "ledger.json"
+    ledger_file.parent.mkdir(parents=True, exist_ok=True)
+    ledger_file.write_text(
+        json.dumps(
+            {
+                "status": "AWAITING_BUILD_AGENT",
+                "current_unit": "spring-boot-3-5",
+                "build_validation": {
+                    "required": True,
+                    "status": "PENDING",
+                    "unit_id": "spring-boot-3-5",
+                    "command": ["mvn", "clean", "test", "-DskipITs"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with mock.patch("migration_factory.transform_v1_after_approval.run_transformation_agent") as run_transform_agent_mock, mock.patch(
+        "migration_factory.transform_v1_after_approval.run_build_agent"
+    ) as run_build_agent_mock, mock.patch(
+        "migration_factory.transform_v1_after_approval.run_test_agent"
+    ) as run_test_agent_mock, mock.patch(
+        "migration_factory.transform_v1_after_approval._next_unit_after",
+        return_value=None,
+    ), mock.patch(
+        "migration_factory.transform_v1_after_approval._run_dependency_policy_layer",
+        return_value={
+            "dependency_policy_report_path": None,
+            "dependency_policy_summary_path": None,
+            "dependency_policy_status": "SKIPPED",
+            "dependency_policy_risks_count": 0,
+            "dependency_policy_blockers_count": 0,
+            "copilot_dependency_advisory_status": "SKIPPED",
+            "policy_patch_applied": False,
+            "artifact_refs": {},
+        },
+    ):
+        run_transform_agent_mock.return_value = TransformationRunResult(
+            ledger_file=ledger_file,
+            status=LedgerStatus.AWAITING_BUILD_AGENT,
+            completed_units=["spring-boot-3-5"],
+        )
+        run_build_agent_mock.return_value = BuildRunResult(
+            succeeded=True,
+            result_kind="success",
+            message="build passed",
+            error_contract_path=None,
+            exit_code=0,
+            matched_line=None,
+            command=["mvn", "clean", "test", "-DskipITs"],
+            cwd=legacy,
+            command_duration_seconds=0.1,
+        )
+        run_test_agent_mock.return_value = TestAgentResult(
+            test_status="TEST_PASSED",
+            totals={"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
+            report_path=run_dir / "test" / "post_transform" / "test_report.json",
+            summary_path=run_dir / "test" / "post_transform" / "test_summary.md",
+            log_path=run_dir / "test" / "post_transform" / "test_agent.log",
+            report_paths=[],
+            parse_duration_seconds=0.01,
+        )
+
+        result = apply_approved_sandbox_transform(
+            run_dir=run_dir,
+            legacy_app=legacy,
+            modernized_app=modernized,
+            ai_hub=str(AI_HUB),
+            profile="springboot-2.7-to-3.5-java17",
+            approved_by="reviewer",
+            quiet=True,
+            status_writer=None,
+        )
+
+    assert result.status == STATUS_APPLIED
+    assert result.build_status == "BUILD_PASSED_IN_SANDBOX"
+    assert result.test_status == "TEST_PASSED"
+    assert result.sandbox_path is not None
 
 
 def _approved_run(tmp_path: Path, *, profile: str) -> tuple[Path, Path, Path]:

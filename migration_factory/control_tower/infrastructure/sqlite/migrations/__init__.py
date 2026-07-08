@@ -1,10 +1,45 @@
-"""Safe SQLite migration runner for Control Tower."""
+"""Safe SQLite migration runner for Control Tower.
+
+Immutable migration policy
+---------------------------
+* Every migration file (NNNN_name.sql) is **append-only** and must never be
+  modified after it is merged to the default branch.
+* Any schema change that follows an already-merged migration MUST be a NEW
+  file (0036, 0037, …).  Do NOT edit an existing migration file.
+* The migration runner verifies a SHA-256 checksum of every applied
+  migration against the current file on disk.  A mismatch is a hard error
+  in production to prevent silent drift.
+* In local dev (``CONTROL_TOWER_DEV_MODE=1``), a checksum mismatch
+  auto-resets the dev database and re-applies all migrations from scratch.
+
+Recovering from a checksum mismatch in local dev
+------------------------------------------------
+If you hit ``AppliedMigrationChecksumMismatchError`` during local
+development::
+
+   1. Stop the backend process.
+   2. Set ``CONTROL_TOWER_DEV_MODE=1`` (already set in dev_app.py).
+   3. Restart – the runner will auto-delete the stale database and
+      re-migrate.
+   4. All local state (jobs, runs) is lost; this is expected for dev.
+
+Alternative (manual)::
+
+   1. Stop the backend.
+   2. Delete ``%USERPROFILE%\\.local\\state\\ai-migration-control-tower\\control_tower.sqlite3``
+      (or the path in ``CONTROL_TOWER_DB_PATH``).
+   3. Restart.
+
+Do NOT auto-delete the database in production or in any path where
+``CONTROL_TOWER_DEV_MODE`` is absent or set to ``0``.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -29,6 +64,10 @@ class MigrationError(Exception):
 
 class MigrationDiscoveryError(MigrationError):
     """Raised when migration files are missing or invalid."""
+
+
+class AppliedMigrationMissingError(MigrationDiscoveryError):
+    """Raised when schema history references a migration no longer on disk."""
 
 
 class MigrationSafetyError(MigrationError):
@@ -82,7 +121,13 @@ def apply_pending_migrations(
 ) -> list[MigrationFile]:
     discovered = discover_migrations(migrations_dir)
     applied = _load_applied_migrations(connection)
-    _verify_applied_checksums(applied, discovered)
+    try:
+        _verify_applied_checksums(applied, discovered)
+    except (AppliedMigrationChecksumMismatchError, AppliedMigrationMissingError):
+        if not _is_dev_mode():
+            raise
+        _dev_reset_database(connection)
+        applied = {}
 
     pending = [migration for migration in discovered if migration.version not in applied]
     for migration in pending:
@@ -475,7 +520,7 @@ def _verify_applied_checksums(
     for version, row in applied.items():
         migration = by_version.get(version)
         if migration is None:
-            raise MigrationDiscoveryError(
+            raise AppliedMigrationMissingError(
                 f"Applied migration missing from disk: {version:04d}"
             )
         actual_checksum = str(row["checksum"])
@@ -504,3 +549,41 @@ def _utc_now_text() -> str:
         .isoformat(timespec="microseconds")
         .replace("+00:00", "Z")
     )
+
+
+def _is_dev_mode() -> bool:
+    """Return True when CONTROL_TOWER_DEV_MODE is set to a truthy value.
+
+    Only in dev mode may the migration runner auto-reset the database on
+    stale local schema history.
+    """
+    val = os.environ.get("CONTROL_TOWER_DEV_MODE", "").strip().lower()
+    return val in {"1", "true", "yes", "on"}
+
+
+def _dev_reset_database(connection: sqlite3.Connection) -> None:
+    """Drop every user table in the database so migrations start clean.
+
+    This is only called in dev mode after stale schema history is detected.
+    The schema_migrations table itself is dropped last so the next
+    apply_pending_migrations call sees zero applied migrations.
+    """
+    # Get all user table names (exclude sqlite_ internal tables)
+    rows = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    table_names = [row[0] for row in rows]
+
+    # Drop in dependency-safe order: schema_migrations last
+    if "schema_migrations" in table_names:
+        table_names.remove("schema_migrations")
+        table_names.append("schema_migrations")
+
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        for name in table_names:
+            # Use double-quote escaping (SQLite standard)
+            safe_name = name.replace('"', '""')
+            connection.execute(f'DROP TABLE IF EXISTS "{safe_name}"')
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")

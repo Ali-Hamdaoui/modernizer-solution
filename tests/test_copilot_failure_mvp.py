@@ -126,18 +126,11 @@ def test_copilot_repair_subprocess_uses_availability_full_path(tmp_path: Path) -
     assert calls[0][0] not in {"copilot", "copilot.CMD"}
 
 
-def test_copilot_availability_required_blocks_preflight(tmp_path: Path, monkeypatch) -> None:
+def test_copilot_availability_required_does_not_block_preflight(tmp_path: Path, monkeypatch) -> None:
     state = _valid_state(tmp_path)
     state["copilot_required"] = True
 
-    monkeypatch.setattr(
-        preflight_module,
-        "probe_copilot_availability",
-        lambda **kwargs: {"status": "UNAVAILABLE", "reason": "missing flags"},
-    )
-
-    with pytest.raises(PreflightError, match="Copilot repair proposal preflight failed"):
-        validate_preflight(state, build_langgraph_config(state["run_id"]))
+    validate_preflight(state, build_langgraph_config(state["run_id"]))
 
 
 def test_evidence_session_does_not_use_repo_or_sandbox_cwd(tmp_path: Path) -> None:
@@ -465,19 +458,10 @@ def test_required_h2_failure_routes_into_repair_loop_after_sandbox_transform(tmp
             "security_env_warnings": ["JWTValidator failed to load common config file"],
         }
 
-    def fake_repair_loop(state, **kwargs):
-        repair_calls.append({"state": dict(state), "kwargs": kwargs})
-        return {
-            "repair_loop_enabled": True,
-            "repair_loop_status": "PROPOSAL_ONLY",
-            "copilot_invocation_status": "COMPLETED",
-            "failure_classification_status": "COMPLETED",
-            "artifact_refs": {},
-        }
-
     monkeypatch.setattr("migration_factory.transform_v1_after_approval.apply_approved_sandbox_transform", fake_transform)
     monkeypatch.setattr("migration_factory.agents.h2_runtime_startup_agent.build_h2_startup_report", fake_h2_report)
-    monkeypatch.setattr(repair_orchestrator, "run_post_failure_repair_loop", fake_repair_loop)
+    # The repair loop is now deferred — _merge_repair_updates sets REPAIR_REVIEW_REQUIRED.
+    # run_post_failure_repair_loop is no longer called from this code path.
 
     result = phase_services_module.run_sandbox_transform_phase(
         {
@@ -496,13 +480,10 @@ def test_required_h2_failure_routes_into_repair_loop_after_sandbox_transform(tmp
         }
     )
 
-    assert repair_calls
-    assert repair_calls[0]["state"]["h2_startup_status"] == "H2_STARTUP_FAILED"
-    assert repair_calls[0]["kwargs"]["h2_startup_report"]["h2_status"] == "H2_STARTUP_FAILED"
-    assert result["failure_classification_status"] == "COMPLETED"
-    assert result["copilot_invocation_status"] == "COMPLETED"
-    assert result["repair_loop_status"] == "PROPOSAL_ONLY"
-    assert result["final_status"] == "PROPOSAL_ONLY"
+    assert result["h2_startup_status"] == "H2_STARTUP_FAILED"
+    assert result["final_status"] == "REPAIR_REVIEW_REQUIRED"
+    assert result["repair_loop_status"] == "REPAIR_REVIEW_REQUIRED"
+    assert result["repair_blocker"] == "f5_reviewed_repair_required"
     assert result["final_proof_level"] == "not_verified"
 
 
@@ -534,23 +515,10 @@ def test_required_h2_invalid_copilot_response_merges_repair_state(tmp_path: Path
             "stdout_tail": ["BeanCreationException creating bean 'cachingConfig'"],
         }
 
-    def fake_repair_loop(state, **kwargs):
-        return {
-            "repair_loop_enabled": True,
-            "repair_loop_status": "FALLBACK_REPAIR_PLAN",
-            "repair_attempts_count": 1,
-            "repair_fallback_generated": True,
-            "copilot_availability_status": "AVAILABLE",
-            "copilot_invocation_status": "INVALID_RESPONSE",
-            "failure_classification_status": "COMPLETED",
-            "h2_startup_status": "H2_STARTUP_FAILED",
-            "final_proof_level": "not_verified",
-            "artifact_refs": {"repair_ledger": str(run_dir / "repairs" / "repair_ledger.json")},
-        }
-
     monkeypatch.setattr("migration_factory.transform_v1_after_approval.apply_approved_sandbox_transform", fake_transform)
     monkeypatch.setattr("migration_factory.agents.h2_runtime_startup_agent.build_h2_startup_report", fake_h2_report)
-    monkeypatch.setattr(repair_orchestrator, "run_post_failure_repair_loop", fake_repair_loop)
+    # The repair loop is now deferred — _merge_repair_updates sets REPAIR_REVIEW_REQUIRED.
+    # Previously passed copilot state is not merged in the new flow.
 
     result = phase_services_module.run_sandbox_transform_phase(
         {
@@ -566,21 +534,13 @@ def test_required_h2_invalid_copilot_response_merges_repair_state(tmp_path: Path
             "copilot_failure_agent_enabled": True,
             "repair_loop_enabled": True,
             "auto_apply_safe_repairs": False,
-            "copilot_availability_status": "SKIPPED",
-            "copilot_invocation_status": "SKIPPED",
-            "failure_classification_status": "PENDING",
-            "repair_loop_status": "NOT_IMPLEMENTED",
         }
     )
 
-    assert result["copilot_availability_status"] == "AVAILABLE"
-    assert result["copilot_invocation_status"] == "INVALID_RESPONSE"
-    assert result["failure_classification_status"] == "COMPLETED"
-    assert result["repair_loop_status"] == "FALLBACK_REPAIR_PLAN"
-    assert result["repair_attempts_count"] == 1
-    assert result["repair_fallback_generated"] is True
     assert result["h2_startup_status"] == "H2_STARTUP_FAILED"
-    assert result["final_status"] == "FALLBACK_REPAIR_PLAN"
+    assert result["final_status"] == "REPAIR_REVIEW_REQUIRED"
+    assert result["repair_loop_status"] == "REPAIR_REVIEW_REQUIRED"
+    assert result["repair_blocker"] == "f5_reviewed_repair_required"
     assert result["final_proof_level"] == "not_verified"
 
 

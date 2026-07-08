@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +24,20 @@ _COPILOT_STATEMENT_ENV = "AI_MIGRATION_ENABLE_COPILOT_STATEMENT"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 _SANDBOX_ONLY_DISCLAIMER = (
     "This is a sandbox migration candidate only; no production promotion, no PR, no deployment."
+)
+_AI_TRACE_GUARDRAIL = (
+    "LLM proposed or reviewed migration intent only; human approval and backend sandbox "
+    "repair-loop validation are the source of truth."
+)
+_SECRET_VALUE_PATTERNS = (
+    re.compile(r"gh[pousr]_[A-Za-z0-9_]{20,}"),
+    re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
+    re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{12,}"),
+    re.compile(r"(?im)^(\s*authorization\s*:\s*).+$"),
+    re.compile(r"(?i)\b[A-Za-z_]*(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API_KEY)[A-Za-z_]*\s*=\s*[^\s]+"),
+    re.compile(r"(?i)(jdbc:[a-z0-9:]+://)([^/\s:@]+):([^@\s/]+)@"),
+    re.compile(r"(?i)([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@\s/]+)@"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.DOTALL),
 )
 
 
@@ -90,11 +105,25 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
     validation_scope = _validation_scope(state)
     repair_loop = _repair_loop_context(state, artifact_refs)
     dependency_policy = _dependency_policy_context(state, artifact_refs, dependency_policy_report)
+    ai_trace = _ai_trace_context(state, artifact_refs, repair_loop, run_dir)
+
+    pipeline_history = _pipeline_history_context(state)
+    total_timing = _timing_context(pipeline_history)
+    full_source = source_stack
+    full_target = _completed_target_stack(pipeline_history, state)
+    change_summary_data = _change_summary(full_source, full_target, pipeline_history)
 
     report_payload = {
         "run_id": state.get("run_id", ""),
         "source_stack": source_stack,
         "target_stack": target_stack,
+        "full_migration_source_stack": full_source,
+        "full_migration_target_stack": full_target,
+        "pipeline_history": pipeline_history,
+        "total_duration_seconds": total_timing.get("total_duration_seconds", 0),
+        "timing": total_timing,
+        "report_summary": change_summary_data.get("description", ""),
+        "change_summary": change_summary_data,
         "risk_level": profile_governance.get("risk_level") or (migration_plan or {}).get("risk", ""),
         "strategy": profile_governance.get("strategy", ""),
         "fallback_profile": profile_governance.get("fallback_profile", ""),
@@ -123,6 +152,7 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
         "validated": validation_scope["validated"],
         "not_validated": validation_scope["not_validated"],
         "repair_loop": repair_loop,
+        "ai_trace": ai_trace,
         "dependency_policy": dependency_policy,
         "target_dependency_plan_ref": artifact_refs.get("target_dependency_plan", ""),
         "dependency_policy_report_ref": artifact_refs.get("dependency_policy_report", ""),
@@ -200,11 +230,18 @@ def generate_final_migration_report(state: dict[str, Any]) -> FinalReportResult:
 def _build_markdown_summary(payload: dict[str, Any]) -> str:
     totals = payload.get("test_totals", {}) or {}
     target_stack = dict(payload.get("target_stack", {}) or {})
+    full_source = dict(payload.get("full_migration_source_stack", {}) or {})
+    full_target = dict(payload.get("full_migration_target_stack", {}) or {})
+    pipeline_history = list(payload.get("pipeline_history", []) or [])
     recipes = list(payload.get("recipes", []) or [])
+    total_seconds = payload.get("total_duration_seconds", 0)
+
     lines = [
         "# Migration Summary",
         "",
         f"- Run ID: {payload.get('run_id', '')}",
+        f"- Full Source: {_stack_path_text(full_source)}",
+        f"- Full Target: {_stack_path_text(full_target)}",
         f"- Target Java: {target_stack.get('java', '')}",
         f"- Target Spring Boot: {target_stack.get('spring_boot', '')}",
         f"- Target Spring Framework: {target_stack.get('spring_framework', '')}",
@@ -230,6 +267,28 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
         f"- Executed Recipes: {', '.join(str(recipe) for recipe in recipes) if recipes else 'none'}",
         "- Scope Limits: no production promotion, no PR creation, no deployment, no automatic merge",
         "",
+    ]
+
+    if pipeline_history:
+        lines.extend([
+            "## Stage-by-Stage Journey",
+            "",
+        ])
+        for stage in pipeline_history:
+            if not isinstance(stage, dict):
+                continue
+            idx = stage.get("stage_index", "")
+            status = stage.get("status", "")
+            profile = stage.get("profile", "")
+            duration = stage.get("duration_seconds")
+            duration_text = f" ({duration}s)" if isinstance(duration, (int, float)) else ""
+            label = _stage_label(int(idx)) if isinstance(idx, (int, str)) and str(idx).isdigit() else f"Stage {idx}"
+            lines.append(f"- **{label}**: {status}{duration_text}")
+            if profile:
+                lines.append(f"  - Profile: {profile}")
+        lines.append("")
+
+    lines.extend([
         "## Validated",
         "",
         *[f"- {item}" for item in list(payload.get("validated", []) or [])],
@@ -239,7 +298,7 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
         *[f"- {item}" for item in list(payload.get("not_validated", []) or [])],
         "",
         "POC-ready sandbox migration artifacts are captured under this run directory.",
-    ]
+    ])
     boot4_warnings = list(payload.get("boot4_warnings", []) or [])
     if boot4_warnings:
         lines.extend(["", "## Boot 4 Warnings", ""])
@@ -261,6 +320,24 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
                 f"- Human Review Required: {str(repair_loop.get('human_review_required', False)).lower()}",
             ]
         )
+    ai_trace = list(payload.get("ai_trace", []) or [])
+    if ai_trace:
+        lines.extend(["", "## AI Trace", "", _AI_TRACE_GUARDRAIL, ""])
+        for index, item in enumerate(ai_trace, start=1):
+            row = dict(item or {})
+            lines.extend(
+                [
+                    f"- Trace {index}: event={row.get('event', '')}; agent={row.get('agent', '')}",
+                    f"  - Evidence: {', '.join(str(ref) for ref in list(row.get('evidence_refs', []) or [])) or 'not_captured'}",
+                    f"  - Context Pack: {row.get('context_pack_checksum', '') or 'not_captured'}",
+                    f"  - Diagnosis: {row.get('diagnosis', '') or 'not_captured'}",
+                    f"  - Proposal: {row.get('proposal_ref', '') or 'not_captured'} ({row.get('proposal_checksum', '') or 'checksum not captured'})",
+                    f"  - Reviewer Verdict: {row.get('reviewer_verdict', '') or 'not_captured'}",
+                    f"  - Human Decision: {row.get('human_decision', '') or 'not_captured'}",
+                    f"  - Validation Result: {row.get('validation_result', '') or 'not_captured'}",
+                    f"  - Ledger: {row.get('ledger_ref', '') or 'not_captured'}",
+                ]
+            )
     dependency_policy = dict(payload.get("dependency_policy", {}) or {})
     if dependency_policy:
         lines.extend(
@@ -296,7 +373,7 @@ def _build_markdown_summary(payload: dict[str, Any]) -> str:
 
 
 def _copilot_statement_enabled() -> bool:
-    return os.getenv(_COPILOT_STATEMENT_ENV, "").strip().lower() in _TRUE_VALUES
+    return False
 
 
 def _validation_scope(state: dict[str, Any]) -> dict[str, Any]:
@@ -344,6 +421,96 @@ def _repair_loop_context(state: dict[str, Any], artifact_refs: dict[str, str]) -
             "h2": state.get("h2_startup_status", "H2_STARTUP_SKIPPED"),
         },
     }
+
+
+def _ai_trace_context(
+    state: dict[str, Any],
+    artifact_refs: dict[str, str],
+    repair_loop: dict[str, Any],
+    run_dir: Path,
+) -> list[dict[str, Any]]:
+    raw_records = state.get("ai_trace")
+    if raw_records is None:
+        raw_records = state.get("ai_trace_records")
+    if raw_records is None:
+        raw_records = _read_ai_trace_artifact(artifact_refs)
+    if not isinstance(raw_records, list):
+        return []
+    return [
+        normalized
+        for record in raw_records
+        if isinstance(record, dict)
+        for normalized in [_normalize_ai_trace_record(record, artifact_refs, repair_loop, run_dir)]
+        if _ai_trace_has_real_record(normalized)
+    ]
+
+
+def _read_ai_trace_artifact(artifact_refs: dict[str, str]) -> Any:
+    for key in ("ai_trace", "ai_trace_records", "final_report_ai_trace"):
+        ref = str(artifact_refs.get(key) or "")
+        if not ref:
+            continue
+        path = Path(ref)
+        if path.is_file():
+            return _read_json(path, [])
+    return None
+
+
+def _normalize_ai_trace_record(
+    record: dict[str, Any],
+    artifact_refs: dict[str, str],
+    repair_loop: dict[str, Any],
+    run_dir: Path,
+) -> dict[str, Any]:
+    proposal_ref = _first_text(
+        record.get("proposal_ref"),
+        record.get("repair_proposal_id"),
+        record.get("proposal_id"),
+    )
+    ledger_ref = _first_text(record.get("ledger_ref"), repair_loop.get("ledger_ref"), artifact_refs.get("repair_ledger"))
+    validation_result = _first_text(
+        record.get("validation_result"),
+        record.get("validation_status"),
+        _validation_result_from_repair_loop(repair_loop),
+    )
+    normalized = {
+        "event": _first_text(record.get("event"), record.get("event_type")),
+        "agent": _first_text(record.get("agent"), record.get("agent_name"), record.get("model_invocation_id")),
+        "evidence_refs": [_safe_report_value(item, run_dir) for item in _list(record.get("evidence_refs"))],
+        "context_pack_checksum": _first_text(record.get("context_pack_checksum")),
+        "diagnosis": _first_text(record.get("diagnosis"), record.get("diagnosis_id"), record.get("failure_type")),
+        "proposal_ref": proposal_ref,
+        "proposal_checksum": _first_text(record.get("proposal_checksum")),
+        "reviewer_verdict": _first_text(record.get("reviewer_verdict"), record.get("reviewer_decision"), record.get("decision")),
+        "human_decision": _first_text(record.get("human_decision"), record.get("approval_decision")),
+        "validation_result": validation_result,
+        "ledger_ref": ledger_ref,
+    }
+    return {key: _safe_report_value(value, run_dir) for key, value in normalized.items()}
+
+
+def _validation_result_from_repair_loop(repair_loop: dict[str, Any]) -> str:
+    final_status = str(repair_loop.get("final_status") or "")
+    validation = repair_loop.get("validation_after_repair")
+    if isinstance(validation, dict) and any(validation.values()):
+        return ", ".join(f"{key}={value}" for key, value in sorted(validation.items()) if value)
+    return final_status
+
+
+def _ai_trace_has_real_record(record: dict[str, Any]) -> bool:
+    return any(
+        record.get(key)
+        for key in (
+            "context_pack_checksum",
+            "diagnosis",
+            "proposal_ref",
+            "proposal_checksum",
+            "reviewer_verdict",
+            "human_decision",
+            "validation_result",
+            "ledger_ref",
+        )
+    )
 
 
 def _dependency_policy_context(
@@ -620,6 +787,50 @@ def _object_or_empty(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _first_text(*values: Any) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _safe_report_value(value: Any, run_dir: Path) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _safe_report_value(item, run_dir) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_safe_report_value(item, run_dir) for item in value]
+    if not isinstance(value, str):
+        return value
+    text = value
+    if "://" not in text:
+        path = Path(text)
+        if path.is_absolute():
+            try:
+                text = path.resolve().relative_to(run_dir.resolve()).as_posix()
+            except ValueError:
+                pass
+    text = _redact_report_text(text)
+    home = str(Path.home())
+    if home and home not in {".", "/"}:
+        text = text.replace(home, "%USERPROFILE%")
+        text = text.replace(home.replace("\\", "/"), "%USERPROFILE%")
+    return text
+
+
+def _redact_report_text(text: str) -> str:
+    redacted = text
+    for pattern in _SECRET_VALUE_PATTERNS:
+        redacted = pattern.sub("[REDACTED]", redacted)
+    return redacted
+
+
 def _read_json(path: Path, warnings: list[str]) -> dict[str, Any] | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -652,3 +863,152 @@ def _read_yaml(path: Path, warnings: list[str]) -> dict[str, Any] | None:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _pipeline_history_context(state: dict[str, Any]) -> list[dict[str, Any]]:
+    pipeline_history = state.get("pipeline_history")
+    if isinstance(pipeline_history, list):
+        return pipeline_history
+    history: list[dict[str, Any]] = []
+    artifact_refs = dict(state.get("artifact_refs", {}) or {})
+    orchestration_summary = _read_json(
+        Path(str(artifact_refs.get("orchestration_summary") or "")),
+        [],
+    )
+    if isinstance(orchestration_summary, dict):
+        stages = orchestration_summary.get("stages") or orchestration_summary.get("stage_history")
+        if isinstance(stages, list):
+            for stage in stages:
+                if isinstance(stage, dict):
+                    history.append({
+                        "stage_index": stage.get("stage_index", ""),
+                        "status": stage.get("status", ""),
+                        "profile": stage.get("profile", ""),
+                        "duration_seconds": stage.get("duration_seconds"),
+                    })
+    if not history:
+        stage_index = state.get("stage_index", state.get("stage", ""))
+        history.append({
+            "stage_index": stage_index,
+            "status": state.get("status", ""),
+            "profile": state.get("profile", ""),
+            "duration_seconds": state.get("duration_seconds"),
+        })
+    return history
+
+
+def _stack_path_text(stack: dict[str, Any]) -> str:
+    java = stack.get("java", "")
+    spring_boot = stack.get("spring_boot", "")
+    framework = stack.get("spring_framework", "")
+    parts = [f"Java {java}"] if java else []
+    if spring_boot:
+        parts.append(f"Spring Boot {spring_boot}")
+    if framework:
+        parts.append(f"Spring Framework {framework}")
+    return " / ".join(parts) if parts else "not recorded"
+
+
+def _stack_transition_text(source: dict[str, Any], target: dict[str, Any]) -> str:
+    return f"{_stack_path_text(source)} → {_stack_path_text(target)}"
+
+
+def _completed_target_stack(
+    pipeline_history: list[dict[str, Any]],
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    latest = None
+    for stage in reversed(pipeline_history):
+        if isinstance(stage, dict) and stage.get("status") in ("PASS", "completed"):
+            profile = stage.get("profile", "")
+            if profile:
+                latest = profile
+                break
+    if latest is None:
+        return dict(state.get("target_stack", {}) or {})
+    target_stack = dict(state.get("target_stack", {}) or {})
+    return target_stack
+
+
+def _latest_completed_stage(pipeline_history: list[dict[str, Any]]) -> int:
+    for stage in reversed(pipeline_history):
+        if isinstance(stage, dict) and stage.get("status") in ("PASS", "completed"):
+            idx = stage.get("stage_index", 0)
+            if isinstance(idx, int):
+                return idx
+    return 0
+
+
+def _stage_label(stage_index: int) -> str:
+    labels = {
+        1: "Java 11 / Spring Boot 2.1.6 → Spring Boot 2.7 / Java 11",
+        2: "Spring Boot 2.7 / Java 11 → Spring Boot 3.5 / Java 17",
+        3: "Spring Boot 3.5 / Java 17 → Spring Boot 3.5 / Java 21",
+        4: "Spring Boot 3.5 / Java 21 → Spring Boot 4 / Java 21",
+    }
+    return labels.get(stage_index, f"Stage {stage_index}")
+
+
+def _dedupe_strings(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def _report_summary(
+    source_stack: dict[str, Any],
+    target_stack: dict[str, Any],
+    pipeline_history: list[dict[str, Any]],
+) -> str:
+    transition = _stack_transition_text(source_stack, target_stack)
+    completed = _latest_completed_stage(pipeline_history)
+    return (
+        f"Migration from {transition}. "
+        f"Completed through stage {completed} of 4. "
+        f"{_SANDBOX_ONLY_DISCLAIMER}"
+    )
+
+
+def _change_summary(
+    source_stack: dict[str, Any],
+    target_stack: dict[str, Any],
+    pipeline_history: list[dict[str, Any]],
+) -> dict[str, Any]:
+    changes: list[str] = []
+    source_java = str(source_stack.get("java", ""))
+    target_java = str(target_stack.get("java", ""))
+    source_boot = str(source_stack.get("spring_boot", ""))
+    target_boot = str(target_stack.get("spring_boot", ""))
+    if source_java and target_java and source_java != target_java:
+        changes.append(f"Java upgrade: {source_java} → {target_java}")
+    if source_boot and target_boot:
+        changes.append(f"Spring Boot upgrade: {source_boot} → {target_boot}")
+    changes.append("Sandbox-only transform and build artifact generation")
+    return {
+        "description": _report_summary(source_stack, target_stack, pipeline_history),
+        "changes": changes,
+    }
+
+
+def _timing_context(pipeline_history: list[dict[str, Any]]) -> dict[str, Any]:
+    total = 0.0
+    stage_timings: list[dict[str, Any]] = []
+    for stage in pipeline_history:
+        if not isinstance(stage, dict):
+            continue
+        duration = stage.get("duration_seconds")
+        if isinstance(duration, (int, float)):
+            total += duration
+            stage_timings.append({
+                "stage_index": stage.get("stage_index", ""),
+                "status": stage.get("status", ""),
+                "duration_seconds": duration,
+            })
+    return {
+        "total_duration_seconds": total,
+        "stages": stage_timings,
+    }
