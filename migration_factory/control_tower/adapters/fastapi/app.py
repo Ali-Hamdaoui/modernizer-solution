@@ -4217,13 +4217,14 @@ def create_app(
 
         return result.to_public_dict()
 
-    @app.post("/v1/v2/jobs/{job_id}/stage/4/pom/apply-target-version-changes")
-    def apply_stage4_target_version_changes(
+    @app.post("/v1/v2/jobs/{job_id}/stage/{stage_index}/pom/apply-target-version-changes")
+    def apply_stage_target_version_changes(
         job_id: str,
+        stage_index: int,
         payload: TargetVersionApplyRequestSchema,
         request: Request,
     ) -> dict[str, Any]:
-        """Apply CSV target dependency versions to the backend-resolved Stage 4 POM."""
+        """Apply file target dependency versions to the backend-resolved stage POM."""
         with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
             events = tuple(uow.v2_events.list_by_job(job_id))
@@ -4231,7 +4232,7 @@ def create_app(
 
         preview = _resolve_root_pom_file_alias_preview(
             job_id=job_id,
-            stage_index=4,
+            stage_index=stage_index,
             events=events,
             commands=commands,
             max_bytes=32768,
@@ -4240,11 +4241,11 @@ def create_app(
             raise _error(
                 status.HTTP_400_BAD_REQUEST,
                 "ROOT_POM_NOT_AVAILABLE",
-                f"Stage 4 root pom.xml is not available: {preview.get('reason') or 'not_available'}",
+                f"Stage {stage_index} root pom.xml is not available: {preview.get('reason') or 'not_available'}",
             )
         pom_path = preview.get("_path")
         if not isinstance(pom_path, Path) or not pom_path.is_file():
-            raise _error(status.HTTP_400_BAD_REQUEST, "ROOT_POM_NOT_AVAILABLE", "Stage 4 root pom.xml is not readable")
+            raise _error(status.HTTP_400_BAD_REQUEST, "ROOT_POM_NOT_AVAILABLE", f"Stage {stage_index} root pom.xml is not readable")
 
         try:
             pom_text = pom_path.read_text(encoding="utf-8")

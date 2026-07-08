@@ -143,9 +143,9 @@ def test_apply_target_versions_blocks_invalid_requested_versions() -> None:
     assert result["items"][0]["reason"] == "invalid target version"
     assert result["pom_content"] == pom
 
-def test_apply_target_versions_endpoint_updates_stage4_backend_pom(tmp_path: Path) -> None:
+def test_apply_target_versions_endpoint_updates_requested_stage_backend_pom(tmp_path: Path) -> None:
     client, conn = _client_with_job(tmp_path)
-    sandbox = tmp_path / "stage4-sandbox"
+    sandbox = tmp_path / "stage3-sandbox"
     sandbox.mkdir()
     pom_path = sandbox / "pom.xml"
     pom_path.write_text(
@@ -162,11 +162,11 @@ def test_apply_target_versions_endpoint_updates_stage4_backend_pom(tmp_path: Pat
 """.strip(),
         encoding="utf-8",
     )
-    _seed_stage_command(conn, stage=4, command_id="cmd-s4", sandbox_path=sandbox)
-    _seed_stage_event(conn, stage=4, event_type="stage_completed")
+    _seed_stage_command(conn, stage=3, command_id="cmd-s3", sandbox_path=sandbox)
+    _seed_stage_event(conn, stage=3, event_type="stage_completed")
 
     response = client.post(
-        "/v1/v2/jobs/job-stage4/stage/4/pom/apply-target-version-changes",
+        "/v1/v2/jobs/job-stage4/stage/3/pom/apply-target-version-changes",
         headers=_mutation_headers(),
         json={
             "idempotency_key": "csv-update-1",
