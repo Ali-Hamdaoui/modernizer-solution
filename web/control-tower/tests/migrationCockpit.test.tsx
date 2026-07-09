@@ -2195,20 +2195,23 @@ describe("F15 Final Report and Stage 4 cockpit", () => {
     expect(readyMarkup).toContain("Final Report");
   });
 
-  it("generate does not auto-download", () => {
-    const generateMarkup = renderToStaticMarkup(
-      <div>
-        <button type="button">Generate report</button>
-        <div className="report-artifact-row">
-          <a href="/v1/reports/r1" download>Download</a>
-        </div>
-      </div>
-    );
-    expect(generateMarkup).toContain("Generate report");
-    expect(generateMarkup).toContain("Download");
-    // Generate button itself has no download attribute
-    expect(generateMarkup).toContain("<button");
-    expect(generateMarkup).not.toMatch(/<button[^>]*download/);
+  it("generate automatically downloads the returned PDF artifact", () => {
+    const source = MigrationCockpit.toString();
+    expect(source).toContain('artifact.kind === "final_report_pdf"');
+    expect(source).toContain('document.createElement("a")');
+    expect(source).toContain("download.click()");
+    expect(source).toContain("download.remove()");
+    expect(source).toContain("migration-report-");
+    expect(source).toContain("Download PDF report");
+    expect(source).toContain("Generating detailed PDF...");
+  });
+
+  it("refreshes report eligibility after important lifecycle events", () => {
+    const source = MigrationCockpit.toString();
+    const refreshCalls = source.match(/void refreshReport\(\);/g) ?? [];
+
+    expect(source).toContain("IMPORTANT_SSE_TYPES.has(event.type)");
+    expect(refreshCalls.length).toBeGreaterThanOrEqual(2);
   });
 
   it("explicit download uses returned API URL", () => {

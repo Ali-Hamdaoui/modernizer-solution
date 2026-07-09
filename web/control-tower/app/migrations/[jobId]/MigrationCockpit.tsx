@@ -1008,6 +1008,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [gateState, setGateState] = useState<GatePanelState>({ status: "loading" });
   const [report, setReport] = useState<V2FinalReportResponse | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const normalizedJobId = jobId?.trim() ?? "";
@@ -1070,8 +1071,23 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   async function handleGenerateReport() {
     if (!normalizedJobId || !report?.eligible) return;
     setReportBusy(true);
+    setReportError(null);
     try {
-      setReport(await generateV2FinalReport(normalizedJobId));
+      const generated = await generateV2FinalReport(normalizedJobId);
+      setReport(generated);
+      const pdf = generated.artifacts.find((artifact) => artifact.kind === "final_report_pdf");
+      if (!pdf) {
+        throw new Error("The report was generated, but no PDF artifact is available.");
+      }
+      const download = document.createElement("a");
+      download.href = resolveReportDownloadUrl(pdf.download_url);
+      download.download = `migration-report-${normalizedJobId}.pdf`;
+      download.style.display = "none";
+      document.body.appendChild(download);
+      download.click();
+      download.remove();
+    } catch (e) {
+      setReportError(e instanceof Error ? e.message : "Failed to generate the migration report.");
     } finally {
       setReportBusy(false);
     }
@@ -1230,8 +1246,8 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         };
       });
       // On important events, refresh from backend (async, non-blocking).
-      // Gate state is refreshed too so the open-gate slot and approvalReviewOpen
-      // stay current as later-stage gates open/resolve (not just on mount).
+      // Gate and report state are refreshed too so the open-gate slot,
+      // approvalReviewOpen flag, and Generate Report availability stay current.
       if (IMPORTANT_SSE_TYPES.has(event.type)) {
         void refreshLiveState().catch(() => {
           setLiveRefreshWarning("Live refresh temporarily failed. Retrying...");
@@ -1239,6 +1255,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         void refreshGateState().catch(() => {
           // keep existing gate state on refresh failure
         });
+        void refreshReport();
       }
     } catch {
       setStreamState("reconnecting");
@@ -1914,7 +1931,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       {/* Proof & Report */}
       <section className="panel">
         <h2>Proof & Report</h2>
-        <p className="meta">Final proof report generated when all three deterministic gates pass.</p>
+        <p className="meta">The detailed PDF report becomes available after the selected migration route completes and no approval gate remains open.</p>
       </section>
 
       {/* Final Report Panel */}
@@ -1926,17 +1943,20 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         {report && !report.eligible && (
           <p className="meta">Report generation not yet available for this job.</p>
         )}
+        {reportError && <p className="warning-text" role="alert">{reportError}</p>}
         <button
           type="button"
           disabled={reportBusy || !report?.eligible}
           onClick={() => void handleGenerateReport()}
         >
-          {report?.status === "generated" ? "Regenerate report" : "Generate report"}
+          {report?.status === "generated" ? "Download PDF report" : "Generate report"}
         </button>
-        {reportBusy && <span className="meta"> Generating...</span>}
+        {reportBusy && <span className="meta"> Generating detailed PDF...</span>}
         {report?.artifacts.map((artifact) => (
           <div key={artifact.artifact_id} className="report-artifact-row">
-            <span className="meta">{artifact.kind}</span>
+            <span className="meta">
+              {artifact.kind === "final_report_pdf" ? "Detailed PDF report" : artifact.kind}
+            </span>
             <span className="checksum">{artifact.checksum_sha256.slice(0, 16)}...</span>
             <a
               href={resolveReportDownloadUrl(artifact.download_url)}
