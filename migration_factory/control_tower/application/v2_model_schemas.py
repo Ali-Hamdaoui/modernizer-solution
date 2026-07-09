@@ -88,9 +88,11 @@ REPAIR_PRIMARY_OUTPUT_SCHEMA = {
         "fix_strategy",
         "changed_files",
         "proposed_diff",
+        "deterministic_rule_id",
         "risk",
         "confidence",
         "rationale",
+        "no_fix_reason",
     ],
     "properties": {
         "root_cause": {"type": "string"},
@@ -98,7 +100,6 @@ REPAIR_PRIMARY_OUTPUT_SCHEMA = {
         "changed_files": {"type": "array", "items": {"type": "string"}},
         "proposed_diff": {
             "type": "string",
-            "minLength": 20,
             "description": (
                 "Raw Git-style unified diff. Must include file headers and hunk markers. "
                 "Must not be Markdown fenced. Must be directly applyable as a patch."
@@ -106,13 +107,11 @@ REPAIR_PRIMARY_OUTPUT_SCHEMA = {
         },
         "deterministic_rule_id": {"type": "string"},
         "risk": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
-        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "confidence": {"type": "number"},
         "rationale": {"type": "string"},
         "no_fix_reason": {
-            "type": "string",
-            "description": "Only set when the provided evidence is insufficient or no safe patch can be produced.",
+            "type": ["string", "null"],
         },
-        "machine_readable_metadata": {"type": "object"},
     },
 }
 
@@ -133,12 +132,11 @@ REPAIR_REVIEWER_OUTPUT_SCHEMA = {
         "decision": {"type": "string", "enum": ["accept", "revise", "reject"]},
         "notes": {"type": "array", "items": {"type": "string"}},
         "risks": {"type": "array", "items": {"type": "string"}},
-        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "confidence": {"type": "number"},
         "policy_concerns": {"type": "array", "items": {"type": "string"}},
         "reviewed_context_checksum": {"type": "string"},
         "reviewed_primary_output_checksum": {"type": "string"},
         "reviewed_diff_checksum": {"type": "string"},
-        "review_dimensions": {"type": "object"},
     },
 }
 

@@ -204,6 +204,7 @@ from migration_factory.repair_loop.repair_context import (
     build_repair_context_pack,
     context_pack_to_dict,
 )
+from migration_factory.repair_loop.rule_registry import ALLOWED_RULE_IDS
 from migration_factory.control_tower.application.v2_evidence_pack_builder import (
     EvidencePackBuilder,
     evidence_pack_to_dict,
@@ -2662,7 +2663,7 @@ def create_app(
         job_id: str,
     ) -> dict[str, Any]:
         """List assistant messages for a job."""
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             service = V2AssistantService(
                 assistant_repo=uow.v2_assistant,
             )
@@ -3428,6 +3429,14 @@ def create_app(
         reviewer_decision = getattr(record, "reviewer_decision", None)
 
         if status == "user_review_required" and reviewer_decision == "accept":
+            rule_id = str(getattr(record, "deterministic_rule_id", "") or "").strip()
+            if not rule_id or rule_id == "no_safe_rule":
+                return base_actions
+            if rule_id not in ALLOWED_RULE_IDS:
+                return base_actions
+            risk = str(getattr(record, "risk", "") or "").strip().upper()
+            if risk != "LOW":
+                return base_actions
             try:
                 preview = build_safe_diff_preview(
                     proposal_id=str(getattr(record, "proposal_id", "")),
@@ -12549,14 +12558,34 @@ def _resolve_repair_proposal_runtime_context(
         except HTTPException:
             return None
 
-    # Resolve runtime info from context pack if available
-    deterministic_rule_id = str(context_data.get("deterministic_rule_id", "") or "")
+    deterministic_rule_id = str(getattr(record, "deterministic_rule_id", "") or "")
+    if not deterministic_rule_id:
+        deterministic_rule_id = str(context_data.get("deterministic_rule_id", "") or "")
     if not deterministic_rule_id:
         deterministic_rule_id = str(context_data.get("base_repo_state_checksum", "") or "")
     if not deterministic_rule_id:
         deterministic_rule_id = getattr(record, "diff_checksum", "") or "repair_apply"
 
-    risk = "LOW"
+    raw_risk = getattr(record, "risk", None)
+    if raw_risk is None:
+        raise _error(
+            status.HTTP_400_BAD_REQUEST,
+            "REVIEWED_RISK_MISSING",
+            "Reviewed risk is missing; cannot proceed without safety metadata.",
+        )
+    risk = str(raw_risk).strip().upper()
+    if not risk:
+        raise _error(
+            status.HTTP_400_BAD_REQUEST,
+            "REVIEWED_RISK_MISSING",
+            "Reviewed risk is empty; cannot proceed without safety metadata.",
+        )
+    if risk not in {"LOW", "MEDIUM", "HIGH"}:
+        raise _error(
+            status.HTTP_400_BAD_REQUEST,
+            "REVIEWED_RISK_INVALID",
+            f"Reviewed risk is {risk!r}; must be LOW, MEDIUM, or HIGH.",
+        )
     h2_required = False
 
     return {

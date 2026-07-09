@@ -706,6 +706,8 @@ class V2RepairGateService:
             gate_id=None,
             reviewer_verdict_id=None,
             reviewer_decision=reviewer_decision,
+            deterministic_rule_id=str(review_chain.get("deterministic_rule_id", "")),
+            risk=str(review_chain.get("risk", "")),
         )
 
         if uow is not None:
@@ -1741,7 +1743,22 @@ def _failure_evidence_from_dict(data: dict[str, Any]) -> Any:
 
 def _context_pack_from_dict(data: dict[str, Any]) -> Any:
     """Deserialize RepairContextPack from its to_dict() output."""
-    from migration_factory.repair_loop.repair_context import RepairContextPack
+    from migration_factory.repair_loop.repair_context import (
+        RepairContextPack,
+        RepairSourceContext,
+    )
+    raw_contexts = data.get("source_contexts") or ()
+    source_contexts: list[RepairSourceContext] = []
+    for sc in raw_contexts:
+        if isinstance(sc, dict):
+            source_contexts.append(RepairSourceContext(
+                path=str(sc.get("path", "")),
+                content_checksum=str(sc.get("content_checksum", "")),
+                start_line=int(sc.get("start_line", 0)),
+                end_line=int(sc.get("end_line", 0)),
+                content=str(sc.get("content", "")),
+                reason_included=str(sc.get("reason_included", "")),
+            ))
     return RepairContextPack(
         job_id=str(data.get("job_id", "")),
         stage_index=int(data.get("stage_index", 0)),
@@ -1764,4 +1781,5 @@ def _context_pack_from_dict(data: dict[str, Any]) -> Any:
         max_cycles=int(data.get("max_cycles", 3)),
         created_at=str(data.get("created_at", "")),
         schema_version=str(data.get("schema_version", "1.0.0")),
+        source_contexts=tuple(source_contexts),
     )

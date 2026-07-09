@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -37,6 +38,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository
 )
 from migration_factory.repair_loop.failure_evidence import (
     FailureSource,
+    NormalizedCompilerError,
     build_failure_evidence,
     failure_evidence_to_dict,
 )
@@ -554,9 +556,17 @@ class V2OrchestratorRunner:
         if self._is_job_cancelled(job_id):
             return
 
-        stdout_tail = _bounded("\n".join(self._last_stdout_lines) if hasattr(self, "_last_stdout_lines") else "")
+        raw_stdout = "\n".join(self._last_stdout_lines) if hasattr(self, "_last_stdout_lines") and self._last_stdout_lines else ""
+        raw_stderr = stderr
+
+        stdout_tail = _bounded(raw_stdout)
         stderr_tail = _bounded(stderr)
         parse_strategy = "sentinel" if result is not None and "CONTROL_TOWER_FINAL_JSON" in ("".join(getattr(self, "_last_stdout_lines", []))) else "generic_scan"
+
+        compiler_errors = _normalize_compiler_errors(
+            stdout_tail=raw_stdout,
+            stderr_tail=raw_stderr,
+        )
 
         if exit_code != 0:
             if result is not None:
@@ -634,6 +644,7 @@ class V2OrchestratorRunner:
             result=result,
             stdout_tail=stdout_tail,
             stderr_tail=stderr_tail,
+            compiler_errors=compiler_errors,
         )
 
         # ── Phase-specific handling: planning bypasses full-stage proof ──
@@ -1214,6 +1225,7 @@ class V2OrchestratorRunner:
         result: dict[str, Any],
         stdout_tail: str,
         stderr_tail: str,
+        compiler_errors: tuple[NormalizedCompilerError, ...] = (),
     ) -> None:
         build_status = str(result.get("build_status", ""))
         test_status = str(result.get("test_status", ""))
@@ -1252,6 +1264,7 @@ class V2OrchestratorRunner:
             job_id=job_id,
             command_id=command_id,
             failure_summary=failure_summary,
+            compiler_errors=compiler_errors,
             changed_files=changed_files,
             source_profile=str(result.get("source_profile") or ""),
             target_profile=str(result.get("target_profile") or ""),
@@ -1261,6 +1274,21 @@ class V2OrchestratorRunner:
             stderr_tail=stderr_tail,
             safe_log_preview=_first_text(result.get("safe_log_preview"), stderr_tail, stdout_tail),
         )
+        compiler_error_locations: list[tuple[str, int]] = []
+        for err in evidence.compiler_errors:
+            if err.file_path and err.line > 0:
+                compiler_error_locations.append((err.file_path, err.line))
+
+        sandbox_root = str(run_dir / "workspaces" / "sandbox")
+        source_contexts: tuple[Any, ...] = ()
+        if sandbox_root and (compiler_error_locations or changed_files):
+            from migration_factory.repair_loop.repair_context import build_bounded_source_context
+            source_contexts = build_bounded_source_context(
+                sandbox_root=sandbox_root,
+                compiler_errors=compiler_error_locations or None,
+                changed_files=changed_files,
+            )
+
         context_pack = build_repair_context_pack(
             failure_evidence=evidence,
             job_id=job_id,
@@ -1270,6 +1298,7 @@ class V2OrchestratorRunner:
             target_profile=str(result.get("target_profile") or ""),
             changed_files=changed_files,
             accepted_artifact_checksums=accepted_checksums,
+            source_contexts=source_contexts,
         )
 
         repair_dir = run_dir / "repairs"
@@ -2536,8 +2565,6 @@ def _result_sandbox_path(result: dict[str, Any]) -> str:
 
     direct = _first_text(
         result.get("sandbox_path"),
-        result.get("modernized_app_path"),
-        result.get("output_app_path"),
         artifact_refs.get("sandbox"),
         artifact_refs.get("sandbox_path"),
         artifact_refs.get("modernized_app"),
@@ -2566,6 +2593,82 @@ def _result_sandbox_path(result: dict[str, Any]) -> str:
             return ""
 
     return ""
+
+
+_RE_JAVAC_ERROR = re.compile(
+    r'\[ERROR\]\s+(.+?\.[Jj][Aa][Vv][Aa])\s*:\s*\[?(\d+)(?:,\s*(\d+))?\]?\s+(.+)',
+)
+"""Match Maven/javac compiler diagnostic lines.
+
+Supports the standard Maven-compiler-plugin format:
+
+  [ERROR] /path/to/Foo.java:[42,17] cannot find symbol
+
+and the plain-colon format:
+
+  [ERROR] /path/to/Foo.java:42: error: cannot find symbol
+
+Group 1: file path (case-insensitive .java)
+Group 2: line number
+Group 3: column number (optional)
+Group 4: error message
+"""
+
+
+def _normalize_compiler_source_path(value: str) -> str:
+    text = str(value or "").strip()
+    if re.match(r"^/[A-Za-z]:[\\/]", text):
+        return text[1:]
+    return text
+
+
+def _normalize_compiler_errors(
+    *,
+    stdout_tail: str = "",
+    stderr_tail: str = "",
+) -> tuple[NormalizedCompilerError, ...]:
+    """Extract NormalizedCompilerError tuples from Maven/javac build output.
+
+    Parses stdout and stderr for javac compiler diagnostic lines matching
+    the standard Maven-compiler-plugin format. Deduplicates exact duplicates
+    and preserves stable ordering. Malformed lines are silently skipped.
+    """
+    combined = f"{stdout_tail}\n{stderr_tail}"
+    seen: set[tuple[str, int, int]] = set()
+    results: list[NormalizedCompilerError] = []
+
+    for line in combined.splitlines():
+        m = _RE_JAVAC_ERROR.match(line.strip())
+        if not m:
+            continue
+        file_path = _normalize_compiler_source_path(m.group(1))
+        try:
+            line_num = int(m.group(2))
+        except (ValueError, TypeError):
+            continue
+        column_str = m.group(3)
+        try:
+            column = int(column_str) if column_str else 0
+        except (ValueError, TypeError):
+            column = 0
+        message = m.group(4).strip()
+        if line_num <= 0:
+            continue
+        key = (file_path, line_num, column)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(NormalizedCompilerError(
+            message=message,
+            file_path=file_path,
+            line=line_num,
+            column=column,
+            severity="error",
+        ))
+
+    # Sort by (file_path, line, column) for stable deterministic ordering
+    results.sort(key=lambda e: (e.file_path, e.line, e.column))
+    return tuple(results)
 
 
 def _result_run_dir(result: dict[str, Any], *, cwd: Path) -> Path | None:

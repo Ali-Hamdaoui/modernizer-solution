@@ -52,6 +52,8 @@ class V2RepairProposalRecord:
     remaining_attempts: int | None = None
     completed_at: str | None = None
     reviewer_decision: str | None = None
+    deterministic_rule_id: str | None = None
+    risk: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,10 +89,11 @@ class SqliteV2RepairRepository:
                 policy_validation_checksum, gate_id, status_reason,
                 apply_status, rerun_status, rollback_status,
                 validation_result_ref, next_gate_id, next_gate_status,
-                remaining_attempts, completed_at, reviewer_decision
+                remaining_attempts, completed_at, reviewer_decision,
+                deterministic_rule_id, risk
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                      ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.proposal_id,
                 record.command_id,
@@ -132,6 +135,8 @@ class SqliteV2RepairRepository:
                 record.remaining_attempts,
                 record.completed_at,
                 record.reviewer_decision,
+                record.deterministic_rule_id,
+                record.risk,
             ),
         )
 
@@ -316,6 +321,8 @@ class SqliteV2RepairRepository:
             remaining_attempts=int(row["remaining_attempts"]) if "remaining_attempts" in keys and row["remaining_attempts"] is not None else None,
             completed_at=str(row["completed_at"]) if "completed_at" in keys and row["completed_at"] else None,
             reviewer_decision=str(row["reviewer_decision"]) if "reviewer_decision" in keys and row["reviewer_decision"] else None,
+            deterministic_rule_id=str(row["deterministic_rule_id"]) if "deterministic_rule_id" in keys and row["deterministic_rule_id"] else None,
+            risk=str(row["risk"]) if "risk" in keys and row["risk"] else None,
         )
 
     def _row_to_action(self, row: sqlite3.Row) -> V2SandboxActionRecord:

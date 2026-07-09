@@ -237,6 +237,15 @@ class V2AssistantModelClient:
         )
         return self._to_assistant_result(routed)
 
+    @staticmethod
+    def _resolve_transport(
+        role: V2ModelRole,
+        responsibility: str,
+    ) -> str:
+        if role in (V2ModelRole.PROPOSER, V2ModelRole.REVIEWER) and responsibility in ("repair_proposal", "repair_review"):
+            return "chat_completions_v1"
+        return "auto"
+
     def _answer_with_deployment(
         self,
         *,
@@ -270,17 +279,21 @@ class V2AssistantModelClient:
                 "missing_deployment",
             )
 
-        budget = V2ModelRoleRouter().resolve_budget(
+        router = V2ModelRoleRouter()
+        responsibility = "repair_proposal" if output_schema_name in {"RepairPrimaryOutput", "RepairReviewerOutput"} else "assistant_answer"
+        budget = router.resolve_budget(
             role=role,
-            responsibility="repair_proposal" if output_schema_name in {"RepairPrimaryOutput", "RepairReviewerOutput"} else "assistant_answer",
+            responsibility=responsibility,
             output_schema_name=output_schema_name,
         )
+        resolved_timeout = router.resolve_timeout(role=role)
         response_format_candidates = _response_format_candidates(
             role=role,
             output_schema_name=output_schema_name,
             require_schema=require_schema,
         )
         reasoning_effort = budget.reasoning_effort
+        transport = self._resolve_transport(role=role, responsibility=responsibility)
         last_error: tuple[str, str] | None = None
         for response_format_used, response_format in response_format_candidates:
             try:
@@ -290,17 +303,18 @@ class V2AssistantModelClient:
                     deployment=deployment,
                     prompt=prompt,
                     max_completion_tokens=budget.max_output_tokens,
-                    timeout=30,
+                    timeout=resolved_timeout,
                     conversation_history=conversation_history,
                     response_format=response_format,
                     reasoning_effort=reasoning_effort,
+                    force_chat_completions=(transport == "chat_completions_v1"),
+                    role=role,
                 )
-                safe_content = str(redact_public_value(redact_model_summary(content))).strip()
-                if not safe_content:
+                if not content.strip():
                     _log_empty_azure_result_summary(endpoint=endpoint, deployment=deployment)
                     raise RuntimeError("empty_response")
                 return V2AssistantModelResult(
-                    content=safe_content,
+                    content=content,
                     source="azure_openai",
                     model_status="live_ok",
                     provider=self.provider,
@@ -323,6 +337,16 @@ class V2AssistantModelClient:
                 summary = _summary_with_snippet(
                     _http_error_summary(code),
                     snippet,
+                )
+                _log_transport_diagnostic(
+                    role=role.value,
+                    responsibility=responsibility,
+                    transport=transport,
+                    deployment=deployment,
+                    schema_name=output_schema_name or "",
+                    response_format_used=response_format_used,
+                    http_status=code,
+                    error_detail=summary,
                 )
                 last_error = (_http_failure_reason(code), summary)
                 if response_format_used == "json_schema" and any(label == "json_object" for label, _ in response_format_candidates):
@@ -424,7 +448,23 @@ class V2AssistantModelClient:
         conversation_history: list[dict[str, str]] | None = None,
         response_format: dict | None = None,
         reasoning_effort: str | None = None,
+        force_chat_completions: bool = False,
+        role: V2ModelRole = V2ModelRole.ASSISTANT,
     ) -> str:
+        if force_chat_completions:
+            v1_endpoint = self._normalize_v1_endpoint(endpoint)
+            return self._chat_completion_v1(
+                endpoint=v1_endpoint,
+                api_key=api_key,
+                deployment=deployment,
+                prompt=prompt,
+                max_completion_tokens=max_completion_tokens,
+                timeout=timeout,
+                conversation_history=conversation_history,
+                response_format=response_format,
+                reasoning_effort=reasoning_effort,
+                role=role,
+            )
         if self._is_v1_endpoint(endpoint):
             endpoint = self._normalize_v1_endpoint(endpoint)
             try:
@@ -438,6 +478,7 @@ class V2AssistantModelClient:
                     conversation_history=conversation_history,
                     response_format=response_format,
                     reasoning_effort=reasoning_effort,
+                    role=role,
                 )
             except urllib.error.HTTPError as exc:
                 if _should_retry_with_chat_completions(exc):
@@ -463,6 +504,7 @@ class V2AssistantModelClient:
                                 max_tokens=max_completion_tokens,
                                 timeout=timeout,
                                 conversation_history=conversation_history,
+                                role=role,
                             )
                         raise
                 if _should_retry_with_legacy_endpoint(exc):
@@ -474,6 +516,7 @@ class V2AssistantModelClient:
                         max_tokens=max_completion_tokens,
                         timeout=timeout,
                         conversation_history=conversation_history,
+                        role=role,
                     )
                 raise
         return self._chat_completion_legacy(
@@ -484,6 +527,7 @@ class V2AssistantModelClient:
             max_tokens=max_completion_tokens,
             timeout=timeout,
             conversation_history=conversation_history,
+            role=role,
         )
 
     def _chat_completion_v1(
@@ -498,12 +542,13 @@ class V2AssistantModelClient:
         conversation_history: list[dict[str, str]] | None = None,
         response_format: dict | None = None,
         reasoning_effort: str | None = None,
+        role: V2ModelRole = V2ModelRole.ASSISTANT,
     ) -> str:
         return self._post_chat_completion_v1(
             endpoint=endpoint,
             api_key=api_key,
             deployment=deployment,
-            messages=self._build_messages(prompt=prompt, conversation_history=conversation_history),
+            messages=self._build_messages(prompt=prompt, role=role, conversation_history=conversation_history),
             max_completion_tokens=max_completion_tokens,
             timeout=timeout,
             response_format=response_format,
@@ -522,6 +567,7 @@ class V2AssistantModelClient:
         conversation_history: list[dict[str, str]] | None = None,
         response_format: dict | None = None,
         reasoning_effort: str | None = None,
+        role: V2ModelRole = V2ModelRole.ASSISTANT,
     ) -> str:
         return self._post_responses_v1(
             endpoint=endpoint,
@@ -529,6 +575,7 @@ class V2AssistantModelClient:
             deployment=deployment,
             input_items=self._build_response_input_items(
                 prompt=prompt,
+                role=role,
                 conversation_history=conversation_history,
             ),
             max_output_tokens=max_completion_tokens,
@@ -541,17 +588,18 @@ class V2AssistantModelClient:
     def _build_messages(
         *,
         prompt: str,
+        role: V2ModelRole = V2ModelRole.ASSISTANT,
         conversation_history: list[dict[str, str]] | None = None,
     ) -> list[dict[str, str]]:
         messages: list[dict[str, str]] = [
-            {"role": "system", "content": _assistant_system_prompt()},
+            {"role": "system", "content": _system_prompt_for_role(role)},
         ]
         if conversation_history:
             for entry in conversation_history[-6:]:
-                role = str(entry.get("role", "user") or "user")
+                entry_role = str(entry.get("role", "user") or "user")
                 content = str(entry.get("content", "") or "")
                 if content.strip():
-                    messages.append({"role": role, "content": content})
+                    messages.append({"role": entry_role, "content": content})
         messages.append({"role": "user", "content": prompt})
         return messages
 
@@ -559,17 +607,18 @@ class V2AssistantModelClient:
     def _build_response_input_items(
         *,
         prompt: str,
+        role: V2ModelRole = V2ModelRole.ASSISTANT,
         conversation_history: list[dict[str, str]] | None = None,
     ) -> list[dict[str, object]]:
         items: list[dict[str, object]] = [
-            {"type": "message", "role": "system", "content": _assistant_system_prompt()},
+            {"type": "message", "role": "system", "content": _system_prompt_for_role(role)},
         ]
         if conversation_history:
             for entry in conversation_history[-6:]:
-                role = str(entry.get("role", "user") or "user")
+                entry_role = str(entry.get("role", "user") or "user")
                 content = str(entry.get("content", "") or "")
                 if content.strip():
-                    items.append({"type": "message", "role": role, "content": content})
+                    items.append({"type": "message", "role": entry_role, "content": content})
         items.append({"type": "message", "role": "user", "content": prompt})
         return items
 
@@ -700,7 +749,16 @@ class V2AssistantModelClient:
         if max_output_tokens > 0:
             payload["max_output_tokens"] = max_output_tokens
         if response_format is not None:
-            payload["response_format"] = response_format
+            schema_name = response_format.get("json_schema", {}).get("name", "response")
+            json_schema = response_format.get("json_schema", {})
+            payload["text"] = {
+                "format": {
+                    "type": "json_schema",
+                    "name": schema_name,
+                    "strict": json_schema.get("strict", True),
+                    "schema": json_schema.get("schema", {}),
+                }
+            }
         if reasoning_effort is not None:
             payload["reasoning"] = {"effort": reasoning_effort}
         else:
@@ -730,12 +788,13 @@ class V2AssistantModelClient:
         max_tokens: int = 700,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
+        role: V2ModelRole = V2ModelRole.ASSISTANT,
     ) -> str:
         return self._post_chat_completion_legacy(
             endpoint=endpoint,
             api_key=api_key,
             deployment=deployment,
-            messages=self._build_messages(prompt=prompt, conversation_history=conversation_history),
+            messages=self._build_messages(prompt=prompt, role=role, conversation_history=conversation_history),
             max_tokens=max_tokens,
             timeout=timeout,
         )
@@ -769,6 +828,73 @@ class V2AssistantModelClient:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
         return _extract_assistant_content(data)
+
+
+def _system_prompt_for_role(role: V2ModelRole) -> str:
+    if role == V2ModelRole.PROPOSER:
+        return (
+            "You are the AMF-252 repair proposer.\n\n"
+            "CRITICAL PATCH FORMAT CONTRACT:\n"
+            "- proposed_diff MUST contain raw Git unified diff text.\n"
+            "- The first non-whitespace content MUST be: diff --git\n"
+            "- For every modified existing file, use diff --git, --- a/<relative-path>, "
+            "+++ b/<relative-path>, and @@ hunk headers.\n"
+            "- Repository paths inside the diff must be sandbox/repository-relative paths.\n"
+            "- The Codex/apply_patch dialect is invalid for AMF-252.\n"
+            "- If you cannot safely produce the required Git unified diff, return proposed_diff=\"\", "
+            "deterministic_rule_id=\"no_safe_rule\", and no_fix_reason with a specific reason.\n"
+            "- Explicitly forbid *** Begin Patch, *** Update File:, *** Add File:, *** Delete File:, "
+            "Markdown code fences, prose inside proposed_diff, plain source code without diff headers, "
+            "JSON inside proposed_diff, absolute Windows paths, and absolute POSIX host paths.\n\n"
+            "You must never execute commands, modify files, apply patches, "
+            "approve your own proposal, bypass deterministic policy, "
+            "or claim validation that was not performed.\n\n"
+            "Use only supplied evidence and source context.\n"
+            "Return only the requested structured output."
+        )
+    if role == V2ModelRole.REVIEWER:
+        return (
+            "You are the independent AMF-252 repair reviewer.\n\n"
+            "Review the proposed patch against supplied evidence, source context, "
+            "checksums, risk, and policy.\n\n"
+            "You may return accept, revise, or reject.\n\n"
+            "You must never apply the patch, execute commands, modify files, "
+            "or fabricate validation.\n\n"
+            "Only return the requested structured output."
+        )
+    return _assistant_system_prompt()
+
+
+def _log_transport_diagnostic(
+    *,
+    role: str,
+    responsibility: str,
+    transport: str,
+    deployment: str,
+    schema_name: str,
+    response_format_used: str,
+    http_status: int,
+    error_detail: str,
+) -> None:
+    """Log a redacted transport diagnostic for failed model invocations.
+
+    Captures role, transport, HTTP status, and schema without exposing
+    API keys, full prompts, or raw content.
+    """
+    import logging
+    logger = logging.getLogger("v2_assistant_model_client")
+    diag = {
+        "event": "model_transport_failure",
+        "role": role,
+        "responsibility": responsibility,
+        "transport": transport,
+        "deployment": deployment[:64] if deployment else "",
+        "schema_name": schema_name,
+        "response_format": response_format_used,
+        "http_status": http_status,
+        "error_detail": error_detail[:500] if error_detail else "",
+    }
+    logger.warning("TRANSPORT_DIAGNOSTIC: %s", json.dumps(diag, default=str))
 
 
 def _assistant_system_prompt() -> str:

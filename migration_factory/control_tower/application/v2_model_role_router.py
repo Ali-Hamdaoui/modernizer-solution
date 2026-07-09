@@ -314,9 +314,7 @@ class V2ModelRoleRouter:
         role_key = role.value.upper()
         max_input_tokens = self._read_int_env(f"AZURE_OPENAI_{role_key}_MAX_INPUT_TOKENS", 40000)
         max_output_tokens = self._read_int_env(f"AZURE_OPENAI_{role_key}_MAX_OUTPUT_TOKENS", 20000)
-        reasoning_effort = self._read_str_env(f"AZURE_OPENAI_{role_key}_REASONING_EFFORT")
-        if not reasoning_effort:
-            reasoning_effort = self._read_str_env("AZURE_OPENAI_REASONING_EFFORT") or "medium"
+        reasoning_effort = self._resolve_reasoning_effort(role)
         response_format = self._read_str_env(f"AZURE_OPENAI_{role_key}_RESPONSE_FORMAT")
         if not response_format and output_schema_name and responsibility == "repair_proposal":
             response_format = "json_schema"
@@ -326,6 +324,32 @@ class V2ModelRoleRouter:
             reasoning_effort=reasoning_effort,
             response_format=response_format or None,
         )
+
+    def resolve_timeout(self, *, role: V2ModelRole) -> int:
+        role_key = role.value.upper()
+        role_timeout = self._read_int_env(f"AI_MIGRATION_{role_key}_TIMEOUT_SECONDS", 0)
+        if role_timeout > 0:
+            return role_timeout
+        role_timeout = self._read_int_env(f"AZURE_OPENAI_{role_key}_TIMEOUT_SECONDS", 0)
+        if role_timeout > 0:
+            return role_timeout
+        generic_timeout = self._read_int_env("AZURE_OPENAI_TIMEOUT_SECONDS", 0)
+        if generic_timeout > 0:
+            return generic_timeout
+        return 300
+
+    def _resolve_reasoning_effort(self, role: V2ModelRole) -> str | None:
+        role_key = role.value.upper()
+        role_env = f"AZURE_OPENAI_{role_key}_REASONING_EFFORT"
+        if role_env in os.environ:
+            raw = os.environ.get(role_env, "").strip()
+            if raw:
+                return raw
+            return None
+        generic = self._read_str_env("AZURE_OPENAI_REASONING_EFFORT")
+        if generic:
+            return generic
+        return None
 
     @staticmethod
     def _read_int_env(name: str, default: int) -> int:

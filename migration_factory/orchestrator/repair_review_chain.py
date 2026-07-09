@@ -8,6 +8,7 @@ Core rule: A model reviews another model for repair. Reviewer is mandatory.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -85,9 +86,22 @@ def _build_deterministic_repair_payload(
 
 
 def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checksum: str) -> str:
+    context_dict = context_pack_to_dict(context_pack)
+    source_contexts = context_dict.get("source_contexts") or []
+    source_section = ""
+    if source_contexts:
+        parts = []
+        for sc in source_contexts:
+            parts.append(
+                f"--- {sc['path']} (lines {sc['start_line']}-{sc['end_line']}, "
+                f"reason: {sc['reason_included']}) ---\n"
+                f"{sc['content']}\n"
+                f"--- end {sc['path']} ---"
+            )
+        source_section = "\n\nSOURCE CONTEXT:\n" + "\n\n".join(parts)
     return (
         "You are the AMF-252 repair proposer.\n"
-        "Your task is to produce a minimal, safe, raw Git-style unified diff that fixes the failing build/test evidence.\n\n"
+        "Your task is to produce a minimal, safe, raw Git unified diff that fixes the failing build/test evidence.\n\n"
         "Return ONLY valid JSON. Do NOT wrap in Markdown fences or code blocks. "
         "Do NOT include any text before or after the JSON.\n\n"
         "Required JSON keys: "
@@ -96,18 +110,58 @@ def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checks
         "risk (LOW/MEDIUM/HIGH), confidence (0.0-1.0), rationale (string).\n"
         "Only set no_fix_reason when the provided context lacks enough evidence to safely create a patch.\n"
         "If no_fix_reason is set, explain exactly which required evidence is missing.\n\n"
+        "CRITICAL PATCH FORMAT CONTRACT\n"
+        "- proposed_diff MUST contain raw Git unified diff text.\n"
+        "- The first non-whitespace content MUST be: diff --git\n"
+        "- For every modified existing file, require:\n"
+        "  diff --git a/<relative-path> b/<relative-path>\n"
+        "  --- a/<relative-path>\n"
+        "  +++ b/<relative-path>\n"
+        "  @@ -oldStart,oldCount +newStart,newCount @@\n"
+        "- Repository paths inside the diff must be sandbox/repository-relative paths.\n"
+        "- This Codex/apply_patch dialect is invalid for AMF-252.\n"
+        "- If you cannot safely produce the required Git unified diff, return:\n"
+        "  proposed_diff = \"\"\n"
+        "  deterministic_rule_id = \"no_safe_rule\"\n"
+        "  no_fix_reason = \"<specific reason>\"\n\n"
         "CONSTRAINTS:\n"
         "- Do NOT include commands, paths to execute, provider data, endpoint data, "
         "env data, deployment data, or approvals.\n"
-        "- Do NOT include absolute sandbox paths.\n"
-        "- The proposed_diff must be a valid unified diff format. "
-        "Do NOT wrap it in Markdown fences (```diff ... ```).\n"
+        "- Do NOT include absolute Windows paths.\n"
+        "- Do NOT include absolute POSIX host paths.\n"
+        "- Do NOT include markdown code fences in proposed_diff.\n"
+        "- Do NOT include explanatory prose inside proposed_diff.\n"
+        "- Do NOT include plain source code without diff headers.\n"
+        "- Do NOT include JSON embedded inside proposed_diff.\n"
+        "- Do NOT include any Codex/apply_patch markers such as:\n"
+        "  *** Begin Patch\n"
+        "  *** Update File:\n"
+        "  *** Add File:\n"
+        "  *** Delete File:\n"
+        "  *** End Patch\n"
         "- In normal repair mode, proposed_diff must be non-empty.\n"
         "- Empty diff is an unavailable outcome, not an applyable proposal.\n"
         "- Do not skip or disable tests as a fix.\n"
         "- The fix must stay within the sandbox scope and declared changed files.\n\n"
-        f"Deterministic repair artifact checksum: {deterministic_checksum}\n\n"
-        f"Context:\n{json.dumps(context_pack_to_dict(context_pack), sort_keys=True)}"
+        "VALID:\n"
+        "diff --git a/src/main/java/com/example/Foo.java b/src/main/java/com/example/Foo.java\n"
+        "--- a/src/main/java/com/example/Foo.java\n"
+        "+++ b/src/main/java/com/example/Foo.java\n"
+        "@@ -10,1 +10,1 @@\n"
+        "-    final Sort sort = new Sort(direction, column);\n"
+        "+    final Sort sort = Sort.by(direction, column);\n\n"
+        "INVALID:\n"
+        "*** Begin Patch\n"
+        "*** Update File: src/main/java/com/example/Foo.java\n"
+        "@@\n"
+        "- old\n"
+        "+ new\n"
+        "*** End Patch\n\n"
+        f"Deterministic repair artifact checksum: {deterministic_checksum}\n"
+        f"Source context is provided below with exact file contents bounded around error locations.\n"
+        f"Use this source context to produce an exact applicable unified diff.\n"
+        f"{source_section}\n\n"
+        f"Context:\n{json.dumps(context_dict, sort_keys=True)}"
     )
 
 
@@ -180,6 +234,12 @@ def _coerce_primary_repair_output(content: str) -> dict[str, Any]:
     if not _looks_like_unified_diff(proposed_diff):
         raise RepairReviewChainProductionError(
             "invalid_response_non_unified_diff: proposed_diff does not contain unified diff markers"
+        )
+
+    rule_id = str(parsed.get("deterministic_rule_id", "") or "").strip()
+    if not rule_id:
+        raise RepairReviewChainProductionError(
+            "invalid_response_missing_deterministic_rule_id: deterministic_rule_id is empty or missing"
         )
 
     return parsed
@@ -382,6 +442,7 @@ def _build_final_reviewed_repair_artifact(
         "base_repo_state_checksum": context_pack.base_repo_state_checksum,
         "root_cause": str(primary_output.get("root_cause", "")),
         "fix_strategy": str(primary_output.get("fix_strategy", "")),
+        "deterministic_rule_id": str(primary_output.get("deterministic_rule_id", "")),
         "risk": str(primary_output.get("risk", "")),
         "confidence": float(primary_output.get("confidence", 0.0)),
         "reviewer_decision": str(reviewer_output.get("decision", "")),
@@ -426,6 +487,26 @@ def _persist_proposer_diagnostic(
 
     changed_files = parsed_json.get("changed_files")
     changed_files_count = len(changed_files) if isinstance(changed_files, list) else 0
+    proposed_diff = str(parsed_json.get("proposed_diff") or "")
+    proposed_diff_preview = proposed_diff[:1000] if proposed_diff else ""
+    for pattern in (
+        "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
+        "-----BEGIN", "bearer ", "Bearer ",
+    ):
+        if pattern in proposed_diff_preview:
+            proposed_diff_preview = "[REDACTED - pattern detected]"
+
+    normalized_diff = proposed_diff.lstrip()
+    if not proposed_diff.strip():
+        proposed_diff_format = "empty"
+    elif normalized_diff.startswith("diff --git"):
+        proposed_diff_format = "git_unified_diff"
+    elif normalized_diff.startswith("*** Begin Patch"):
+        proposed_diff_format = "apply_patch"
+    elif "```" in proposed_diff:
+        proposed_diff_format = "markdown_fenced"
+    else:
+        proposed_diff_format = "unknown"
 
     safe_preview = raw_content[:1000] if raw_content else ""
     for pattern in (
@@ -443,6 +524,16 @@ def _persist_proposer_diagnostic(
         "validation_error": validation_error,
         "parsed_keys": sorted(parsed_json.keys()) if isinstance(parsed_json, dict) else [],
         "raw_content_preview": safe_preview,
+        "proposed_diff_length": len(proposed_diff),
+        "proposed_diff_checksum": hashlib.sha256(proposed_diff.encode("utf-8")).hexdigest() if proposed_diff else "",
+        "proposed_diff_format": proposed_diff_format,
+        "proposed_diff_preview": proposed_diff_preview,
+        "has_diff_git": normalized_diff.startswith("diff --git"),
+        "has_old_file_marker": "--- a/" in proposed_diff or "--- " in proposed_diff,
+        "has_new_file_marker": "+++ b/" in proposed_diff or "+++ " in proposed_diff,
+        "has_hunk_marker": "@@" in proposed_diff,
+        "has_apply_patch_begin": "*** Begin Patch" in proposed_diff,
+        "has_apply_patch_update_file": "*** Update File:" in proposed_diff,
         "redacted_summary": {
             "root_cause": str(parsed_json.get("root_cause") or ""),
             "fix_strategy": str(parsed_json.get("fix_strategy") or ""),
@@ -715,6 +806,14 @@ def produce_repair_review_chain(
         "reviewer_decision": reviewer_output["decision"],
         "job_id": context_pack.job_id,
         "stage_index": context_pack.stage_index,
+        "deterministic_rule_id": str(final_artifact.get("deterministic_rule_id", "")),
+        "risk": str(final_artifact.get("risk", "")),
+        "root_cause": str(final_artifact.get("root_cause", "")),
+        "fix_strategy": str(final_artifact.get("fix_strategy", "")),
+        "changed_files": list(final_artifact.get("changed_files", [])),
+        "confidence": float(final_artifact.get("confidence", 0.0)),
+        "reviewer_notes": list(final_artifact.get("reviewer_notes", [])),
+        "policy_validation_checksum": str(final_artifact.get("policy_validation_checksum", "")),
         "deterministic_artifact_ref": str(deterministic_path),
         "primary_output_ref": str(primary_path),
         "reviewer_output_ref": str(reviewer_path),
