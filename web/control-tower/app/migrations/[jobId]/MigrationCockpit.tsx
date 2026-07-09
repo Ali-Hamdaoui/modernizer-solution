@@ -1326,7 +1326,7 @@ export function RepairApplyCandidateDetails({
   const approveBusy = busyKey === `approve:${activeCandidate.repair_candidate_id}`;
   const applyBusy = busyKey === `apply:${activeCandidate.repair_candidate_id}`;
   const pendingApproval = activeCandidate.status === "pending_human_approval" && activeCandidate.approval_enabled;
-  const approved = activeCandidate.status === "approved" || activeCandidate.apply_enabled;
+  const approved = activeCandidate.apply_enabled;
   const resolvedStageIndex = stageIndex ?? activeCandidate.stage_index ?? 1;
 
   async function approveFromDetails() {

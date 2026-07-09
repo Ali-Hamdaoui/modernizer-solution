@@ -410,15 +410,56 @@ export async function approveV2RepairCandidate(
   candidate: V2RepairApplyCandidateResponse
 ): Promise<V2RepairCandidateApprovalResponse> {
   const safeJobId = requireJobId(jobId);
+  const requestBody = approvalPayloadForRepairCandidate(candidate);
   return postJson<V2RepairCandidateApprovalResponse>(
     `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/stages/${stageIndex}/repair-candidates/${encodeURIComponent(candidate.repair_candidate_id)}/approve`,
-    {
+    requestBody
+  );
+}
+
+function approvalPayloadForRepairCandidate(
+  candidate: V2RepairApplyCandidateResponse
+): Record<string, string> {
+  if (!isReviewedLlmRepairCandidate(candidate)) {
+    return {
       repair_candidate_id: candidate.repair_candidate_id,
       patch_checksum: candidate.patch_checksum,
       target_file_checksum: candidate.target_file_checksum,
       review_checksum: candidate.review_checksum,
-    }
+    };
+  }
+
+  const requestBody = {
+    repair_candidate_id: candidate.repair_candidate_id,
+    candidate_checksum: candidate.candidate_checksum,
+    reviewed_diff_checksum: candidate.reviewed_diff_checksum ?? candidate.patch_checksum,
+    policy_validation_checksum: candidate.policy_validation_checksum,
+    review_chain_identity_checksum:
+      candidate.review_chain_identity_checksum ?? candidate.proposal_checksum,
+    base_repository_state_checksum:
+      candidate.base_repository_state_checksum ?? candidate.base_repo_state_checksum,
+  };
+  const missingFields = Object.entries(requestBody)
+    .filter(([, value]) => !hasValue(value))
+    .map(([field]) => field);
+  if (missingFields.length > 0) {
+    throw new Error(
+      `Reviewed LLM repair candidate is missing backend-derived checksum bindings: ${missingFields.join(", ")}.`
+    );
+  }
+  return requestBody as Record<string, string>;
+}
+
+function isReviewedLlmRepairCandidate(candidate: V2RepairApplyCandidateResponse): boolean {
+  return (
+    candidate.candidate_kind === "llm_unknown_family"
+    && candidate.patch_source === "llm_reviewed"
+    && candidate.policy_id === "generic_reviewed_llm_patch_v1"
   );
+}
+
+function hasValue(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 export async function applyV2RepairCandidate(

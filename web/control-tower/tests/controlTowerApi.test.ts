@@ -3,6 +3,8 @@ import {
   CONTROL_TOWER_FRONTEND_CLIENT_ID,
   DEFAULT_CONTROL_TOWER_API_BASE_URL,
   allowedStatusCopy,
+  applyV2RepairCandidate,
+  approveV2RepairCandidate,
   createDiagnosticJobPayload,
   createIdempotencyKey,
   createV2JobPayload,
@@ -25,8 +27,47 @@ import {
   resolveReportDownloadUrl
 } from "../lib/controlTowerApi";
 import { applyPublicEvent, latestAppliedSequence, shouldRefetchJobProjection } from "../lib/eventReplay";
-import type { GateActionRequest, GateEvidencePack, V2MigrationJobResponse } from "../lib/contracts";
+import type {
+  GateActionRequest,
+  GateEvidencePack,
+  V2MigrationJobResponse,
+  V2RepairApplyCandidateResponse,
+} from "../lib/contracts";
 import { MIGRATION_PROFILE_OPTIONS, type MigrationProfileId } from "../lib/contracts";
+
+function repairCandidateFixture(
+  overrides: Partial<V2RepairApplyCandidateResponse> = {}
+): V2RepairApplyCandidateResponse {
+  return {
+    job_id: "job-123",
+    stage_index: 1,
+    repair_candidate_id: "repair-candidate-1",
+    status: "pending_human_approval",
+    family: "INITMOCKS_TO_OPENMOCKS_CANDIDATE",
+    patch_source: "backend_deterministic_recipe",
+    llm_source: "advisory_only",
+    target_file: "src/test/java/ExampleTest.java",
+    pre_apply_checksum: "sha256:file-before",
+    target_file_checksum: "sha256:file",
+    patch_checksum: "sha256:patch",
+    review_checksum: "sha256:review",
+    proposal_checksum: "sha256:proposal",
+    candidate_checksum: "sha256:candidate",
+    approval_required: true,
+    apply_enabled: false,
+    approval_enabled: true,
+    sandbox_only: true,
+    legacy_mutation_allowed: false,
+    downstream_start_allowed: false,
+    llm_can_apply: false,
+    browser_can_supply_patch: false,
+    verification_status: "not_started",
+    rollback_status: "not_started",
+    proof_artifact: "",
+    created_at: "2026-07-09T00:00:00Z",
+    ...overrides,
+  };
+}
 
 describe("M2-01 frontend diagnostic contracts", () => {
   afterEach(() => {
@@ -386,6 +427,147 @@ describe("M2-01 frontend diagnostic contracts", () => {
     await expect(runControlledR6RepairDemo("job-123")).rejects.toThrow(
       /R6_DEMO_SANDBOX_MISSING: Controlled R6 repair demo requires an existing Stage1 sandbox/
     );
+  });
+
+  it("keeps deterministic repair candidate approval payload unchanged", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({ approval: {}, candidate: repairCandidateFixture() }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await approveV2RepairCandidate("job-123", 1, repairCandidateFixture());
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body ?? "{}"));
+    expect(body).toEqual({
+      repair_candidate_id: "repair-candidate-1",
+      patch_checksum: "sha256:patch",
+      target_file_checksum: "sha256:file",
+      review_checksum: "sha256:review",
+    });
+  });
+
+  it("sends reviewed LLM repair approval with the full checksum binding chain", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({ approval: {}, candidate: repairCandidateFixture() }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+    const candidate = {
+      ...repairCandidateFixture({
+        candidate_kind: "llm_unknown_family",
+        patch_source: "llm_reviewed",
+        policy_id: "generic_reviewed_llm_patch_v1",
+        policy_validation_checksum: "sha256:policy",
+        review_chain_identity_checksum: undefined,
+        base_repo_state_checksum: "sha256:base-repo",
+        base_repository_state_checksum: undefined,
+      }),
+      approved_by: "browser-user",
+      actor: "browser",
+      actor_id: "browser-actor",
+      username: "browser-user",
+      principal: "browser-principal",
+      patch_text: "raw patch text",
+      diff_text: "raw diff text",
+      path: "src/test/java/ExampleTest.java",
+      sandbox_path: "sandbox/src/test/java/ExampleTest.java",
+      legacy_path: "legacy/src/test/java/ExampleTest.java",
+      command: ["mvn", "test"],
+      environment: { JAVA_HOME: "browser" },
+    };
+
+    await approveV2RepairCandidate("job-123", 1, candidate);
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body ?? "{}"));
+    expect(body).toEqual({
+      repair_candidate_id: "repair-candidate-1",
+      candidate_checksum: "sha256:candidate",
+      reviewed_diff_checksum: "sha256:patch",
+      policy_validation_checksum: "sha256:policy",
+      review_chain_identity_checksum: "sha256:proposal",
+      base_repository_state_checksum: "sha256:base-repo",
+    });
+    const serialized = JSON.stringify(body);
+    for (const forbidden of [
+      "approved_by",
+      "actor",
+      "actor_id",
+      "username",
+      "principal",
+      "raw patch text",
+      "raw diff text",
+      "path",
+      "sandbox_path",
+      "legacy_path",
+      "command",
+      "environment",
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
+  it("uses explicit reviewed LLM checksums when backend projects them", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({ approval: {}, candidate: repairCandidateFixture() }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await approveV2RepairCandidate(
+      "job-123",
+      1,
+      repairCandidateFixture({
+        candidate_kind: "llm_unknown_family",
+        patch_source: "llm_reviewed",
+        policy_id: "generic_reviewed_llm_patch_v1",
+        reviewed_diff_checksum: "sha256:reviewed-diff",
+        policy_validation_checksum: "sha256:policy",
+        review_chain_identity_checksum: "sha256:review-chain",
+        base_repository_state_checksum: "sha256:base-repository",
+      })
+    );
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body ?? "{}"));
+    expect(body.reviewed_diff_checksum).toBe("sha256:reviewed-diff");
+    expect(body.review_chain_identity_checksum).toBe("sha256:review-chain");
+    expect(body.base_repository_state_checksum).toBe("sha256:base-repository");
+  });
+
+  it("rejects incomplete reviewed LLM checksum projections before sending approval", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      approveV2RepairCandidate(
+        "job-123",
+        1,
+        repairCandidateFixture({
+          candidate_kind: "llm_unknown_family",
+          patch_source: "llm_reviewed",
+          policy_id: "generic_reviewed_llm_patch_v1",
+          policy_validation_checksum: "",
+          base_repo_state_checksum: "",
+          base_repository_state_checksum: undefined,
+        })
+      )
+    ).rejects.toThrow(
+      /policy_validation_checksum, base_repository_state_checksum/
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps repair candidate apply request limited to the candidate id", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({ execution: {}, candidate: repairCandidateFixture() }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await applyV2RepairCandidate("job-123", 1, "repair-candidate-1");
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body ?? "{}"));
+    expect(body).toEqual({ repair_candidate_id: "repair-candidate-1" });
   });
 
   // ── V1-18D model activity normalization ────────────────────────────

@@ -1634,6 +1634,12 @@ describe("V2 Migration Cockpit contract", () => {
     };
     const approved = { ...pending, status: "approved", apply_enabled: true, approval_enabled: false };
     const applyFlagOnly = { ...pending, status: "pending_human_approval", apply_enabled: true, approval_enabled: false };
+    const approvedButApplyDisabled = {
+      ...pending,
+      status: "approved",
+      apply_enabled: false,
+      approval_enabled: false,
+    };
     const verified = {
       ...pending,
       status: "verified",
@@ -1653,6 +1659,9 @@ describe("V2 Migration Cockpit contract", () => {
     const applyFlagOnlyMarkup = renderToStaticMarkup(
       <RepairApplyCandidateDetails candidate={applyFlagOnly} jobId="job-123" stageIndex={1} busyKey={null} />
     );
+    const approvedButApplyDisabledMarkup = renderToStaticMarkup(
+      <RepairApplyCandidateDetails candidate={approvedButApplyDisabled} jobId="job-123" stageIndex={1} busyKey={null} />
+    );
     const verifiedMarkup = renderToStaticMarkup(
       <RepairApplyCandidateDetails candidate={verified} jobId="job-123" stageIndex={1} busyKey={null} />
     );
@@ -1662,10 +1671,12 @@ describe("V2 Migration Cockpit contract", () => {
     expect(approvedMarkup).toContain("Apply approved repair");
     expect(approvedMarkup).not.toContain("Approve repair candidate");
     expect(applyFlagOnlyMarkup).toContain("Apply approved repair");
+    expect(approvedButApplyDisabledMarkup).not.toContain("Apply approved repair");
     expect(verifiedMarkup).toContain("Verification: passed");
     expect(verifiedMarkup).toContain("Proof artifact: artifact:repair-proof");
     expect(verifiedMarkup).not.toContain("Apply approved repair");
-    const combinedMarkup = pendingMarkup + approvedMarkup + applyFlagOnlyMarkup + verifiedMarkup;
+    const combinedMarkup =
+      pendingMarkup + approvedMarkup + applyFlagOnlyMarkup + approvedButApplyDisabledMarkup + verifiedMarkup;
     for (const forbiddenControl of [
       "Edit patch",
       "Upload patch",
