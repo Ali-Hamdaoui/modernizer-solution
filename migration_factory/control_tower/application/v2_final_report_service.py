@@ -7,11 +7,16 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from migration_factory.control_tower.application.v2_migration_report import (
+    build_detailed_migration_report,
+    render_detailed_report_markdown,
+    included_stages_for_job,
+    terminal_stage_for_job,
+)
 from migration_factory.control_tower.application.v2_stage_progression import (
     TERMINAL_STAGE_INDEX,
 )
 from migration_factory.control_tower.domain.entities import ArtifactRecord
-from migration_factory.final_report.writer import generate_final_migration_report
 from migration_factory.final_report.pdf_writer import write_text_pdf_from_markdown
 
 UnitOfWorkFactory = Callable[[], Any]
@@ -29,6 +34,7 @@ REPORT_CONTENT_TYPES = {
 }
 
 _ARTIFACT_CREATED_BY = "v2-final-report-service"
+_REPORT_FORMAT_MARKER = "v2-detailed"
 
 
 @dataclass(frozen=True)
@@ -63,8 +69,10 @@ class V2FinalReportService:
     def __init__(
         self,
         unit_of_work_factory: UnitOfWorkFactory,
+        model_client: Any | None = None,
     ) -> None:
         self._uow_factory = unit_of_work_factory
+        self._model_client = model_client
 
     def get_report_status(self, job_id: str) -> V2FinalReportResult:
         with self._uow_factory() as uow:
@@ -72,7 +80,7 @@ class V2FinalReportService:
             if job is None:
                 raise ValueError(f"V2 job {job_id!r} not found")
 
-            eligibility = self._evaluate_eligibility(uow, job_id)
+            eligibility = self._evaluate_eligibility(uow, job_id, job=job)
             artifacts = self._load_report_artifacts(uow, job_id)
 
             status = "not_generated"
@@ -115,7 +123,7 @@ class V2FinalReportService:
             if job is None:
                 raise ValueError(f"V2 job {job_id!r} not found")
 
-            eligibility = self._evaluate_eligibility(uow, job_id)
+            eligibility = self._evaluate_eligibility(uow, job_id, job=job)
             if not eligibility.eligible:
                 return V2FinalReportResult(
                     job_id=job_id,
@@ -179,43 +187,58 @@ class V2FinalReportService:
         self,
         uow: Any,
         job_id: str,
+        *,
+        job: Any | None = None,
     ) -> V2FinalReportEligibility:
         blockers: list[str] = []
+        events = _job_events(uow, job_id)
+        completed_stages = _completed_stages_from_events(events)
 
-        commands = (
-            uow.v2_commands.list_by_job_and_stage(job_id, TERMINAL_STAGE_INDEX)
-            if hasattr(uow, "v2_commands")
-            else []
+        if job is None and hasattr(uow, "v2_jobs"):
+            job = uow.v2_jobs.get(job_id)
+        included_stages = (
+            included_stages_for_job(uow, job)
+            if job is not None
+            else (TERMINAL_STAGE_INDEX,)
         )
-        if not commands:
-            blockers.append("Stage 4 has not been started yet.")
+        terminal_stage = (
+            max(included_stages)
+            if included_stages
+            else 0
+        )
+        if terminal_stage <= 0:
+            blockers.append("This migration route contains no stages to report.")
         else:
-            terminal = commands[0]
-            if terminal.status != "completed":
-                blockers.append(f"Stage 4 is not completed (status: {terminal.status}).")
-            elif terminal.result_json is None:
-                blockers.append("Stage 4 has no result.")
-            else:
-                try:
-                    result = json.loads(terminal.result_json)
-                except (json.JSONDecodeError, TypeError):
-                    result = {}
-                if not _looks_like_success(result):
-                    blockers.append("Stage 4 did not complete successfully.")
+            for stage_index in included_stages:
+                completed_by_event = stage_index in completed_stages
+                commands = (
+                    uow.v2_commands.list_by_job_and_stage(job_id, stage_index)
+                    if hasattr(uow, "v2_commands")
+                    else []
+                )
+                if not commands:
+                    if not completed_by_event:
+                        blockers.append(f"Stage {stage_index} has not been started yet.")
+                    continue
+                latest = commands[0]
+                if latest.status != "completed" and not completed_by_event:
+                    blockers.append(
+                        f"Stage {stage_index} is not completed "
+                        f"(status: {latest.status})."
+                    )
+                    continue
+                if latest.result_json is not None:
+                    try:
+                        result = json.loads(latest.result_json)
+                    except (json.JSONDecodeError, TypeError):
+                        result = {}
+                    if not _looks_like_success(result) and not completed_by_event:
+                        blockers.append(f"Stage {stage_index} did not complete successfully.")
 
         if hasattr(uow, "phase_gates"):
             open_gates = uow.phase_gates.list_open(job_id) if hasattr(uow.phase_gates, "list_open") else []
             if open_gates:
                 blockers.append("There are open phase gates that must be resolved.")
-
-        if hasattr(uow, "artifact_revisions"):
-            accepted = (
-                uow.artifact_revisions.find_accepted(job_id, TERMINAL_STAGE_INDEX, "stage_output")
-                if hasattr(uow.artifact_revisions, "find_accepted")
-                else None
-            )
-            if accepted is None:
-                blockers.append("No accepted Stage 4 output artifact revision exists.")
 
         eligible = len(blockers) == 0
         return V2FinalReportEligibility(eligible=eligible, blockers=blockers)
@@ -230,6 +253,11 @@ class V2FinalReportService:
             records = uow.artifacts.list_for_job(job_id)
             for rec in records:
                 if rec.artifact_type not in REPORT_ARTIFACT_KINDS:
+                    continue
+                normalized_path = str(
+                    getattr(rec, "normalized_relative_path", "") or ""
+                ).replace("\\", "/")
+                if f"/{_REPORT_FORMAT_MARKER}/" not in f"/{normalized_path}":
                     continue
                 snapshots.append(_ArtifactSnapshot(
                     artifact_id=rec.artifact_id,
@@ -251,9 +279,13 @@ class V2FinalReportService:
         result: list[_ArtifactSnapshot] = []
         state: dict[str, Any] = {}
         report_dir = None
+        job = uow.v2_jobs.get(job_id) if hasattr(uow, "v2_jobs") else None
+        if job is None:
+            raise ValueError(f"V2 job {job_id!r} not found")
+        terminal_stage = terminal_stage_for_job(uow, job)
 
         if hasattr(uow, "v2_commands"):
-            commands = uow.v2_commands.list_by_job_and_stage(job_id, TERMINAL_STAGE_INDEX)
+            commands = uow.v2_commands.list_by_job_and_stage(job_id, terminal_stage)
             if commands and commands[0].result_json:
                 try:
                     state = json.loads(commands[0].result_json)
@@ -271,23 +303,31 @@ class V2FinalReportService:
 
         report_dir.mkdir(parents=True, exist_ok=True)
 
-        input_checksum = _compute_input_checksum(state)
+        input_checksum = _compute_report_input_checksum(uow, job)
 
         # Idempotency: check if artifacts with same input checksum already exist
         existing = self._load_report_artifacts(uow, job_id)
         if existing:
             return existing
 
-        writer_result = generate_final_migration_report(state)
-        if writer_result.blockers:
-            raise ValueError(f"Report generation failed: {'; '.join(writer_result.blockers)}")
+        report = build_detailed_migration_report(
+            uow=uow,
+            job=job,
+            model_client=self._model_client,
+        )
+        json_path = report_dir / "detailed_migration_report_v2.json"
+        md_path = report_dir / "detailed_migration_report_v2.md"
+        pdf_path = report_dir / "detailed_migration_report_v2.pdf"
 
-        json_path = Path(str(writer_result.artifact_refs.get("final_migration_report", report_dir / "migration_report.json")))
-        md_path = Path(str(writer_result.artifact_refs.get("final_migration_summary", report_dir / "migration_summary.md")))
-        pdf_path = report_dir / "full_migration_report.pdf"
-
-        if md_path.is_file():
-            write_text_pdf_from_markdown(str(md_path), str(pdf_path))
+        json_path.write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        md_path.write_text(
+            render_detailed_report_markdown(report),
+            encoding="utf-8",
+        )
+        write_text_pdf_from_markdown(str(md_path), str(pdf_path))
 
         from migration_factory.control_tower.domain.checksums import utc_now_text
         created_at = utc_now_text()
@@ -304,7 +344,7 @@ class V2FinalReportService:
             size = path.stat().st_size
             artifact_id = f"report-{uuid4().hex}"
             relative_path = str(path.resolve())
-            normalized = f"reports/{job_id}/{kind}"
+            normalized = f"reports/{job_id}/{_REPORT_FORMAT_MARKER}/{kind}"
             artifact_record = ArtifactRecord(
                 artifact_id=artifact_id,
                 job_id=job_id,
@@ -349,10 +389,126 @@ class _ArtifactSnapshot:
 
 
 def _looks_like_success(result: dict[str, Any]) -> bool:
-    final_status = str(result.get("final_status") or result.get("status") or "")
-    return final_status in ("PASS", "TRANSFORM_APPLIED_IN_SANDBOX", "completed")
+    failure_markers = {
+        "FAIL",
+        "FAILED",
+        "ERROR",
+        "BUILD_FAILED",
+        "TEST_FAILED",
+        "TRANSFORM_FAILED",
+    }
+    status_values = [
+        str(value or "").strip().upper()
+        for value in (
+            result.get("final_status"),
+            result.get("status"),
+            result.get("orchestration_status"),
+            result.get("transform_status"),
+            result.get("build_status"),
+            result.get("test_status"),
+        )
+    ]
+    if any(
+        value in failure_markers
+        or value.endswith("_FAILED")
+        or "FAILED" in value
+        or value.endswith("_ERROR")
+        for value in status_values
+    ):
+        return False
+    success_markers = {
+        "PASS",
+        "COMPLETED",
+        "TRANSFORM_APPLIED_IN_SANDBOX",
+        "BUILD_PASSED_IN_SANDBOX",
+        "TEST_PASSED",
+    }
+    return any(
+        value in success_markers
+        or value.endswith("_PASSED")
+        for value in status_values
+    )
+
+
+def _job_events(uow: Any, job_id: str) -> tuple[Any, ...]:
+    repository = getattr(uow, "v2_events", None)
+    if repository is None or not hasattr(repository, "list_by_job"):
+        return ()
+    return tuple(repository.list_by_job(job_id))
+
+
+def _completed_stages_from_events(events: tuple[Any, ...]) -> set[int]:
+    completed: set[int] = set()
+    for event in events:
+        event_type = str(getattr(event, "type", "") or "")
+        payload = _event_payload(event)
+        if event_type == "stage_completed":
+            _add_stage(completed, getattr(event, "stage", None))
+        elif event_type in {"migration_completed", "job_completed"}:
+            _add_stage(completed, getattr(event, "stage", None))
+            _add_stage(completed, payload.get("from_stage"))
+            _add_stage(completed, payload.get("to_stage"))
+        elif event_type == "next_stage_queued":
+            _add_stage(completed, payload.get("from_stage"))
+    return completed
+
+
+def _add_stage(stages: set[int], value: Any) -> None:
+    try:
+        stage_index = int(value)
+    except (TypeError, ValueError):
+        return
+    if stage_index > 0:
+        stages.add(stage_index)
+
+
+def _event_payload(event: Any) -> dict[str, Any]:
+    payload = getattr(event, "payload", None)
+    if isinstance(payload, dict):
+        return payload
+    payload_json = getattr(event, "payload_json", None)
+    if isinstance(payload_json, dict):
+        return payload_json
+    if isinstance(payload_json, str) and payload_json.strip():
+        try:
+            parsed = json.loads(payload_json)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
 
 
 def _compute_input_checksum(state: dict[str, Any]) -> str:
     raw = json.dumps(state, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _compute_report_input_checksum(uow: Any, job: Any) -> str:
+    commands = []
+    if hasattr(uow, "v2_commands") and hasattr(uow.v2_commands, "list_by_job"):
+        for command in uow.v2_commands.list_by_job(job.job_id):
+            commands.append({
+                "command_id": command.command_id,
+                "stage_index": command.stage_index,
+                "status": command.status,
+                "updated_at": command.updated_at,
+                "result_json": command.result_json,
+            })
+    events = []
+    if hasattr(uow, "v2_events") and hasattr(uow.v2_events, "list_by_job"):
+        for event in uow.v2_events.list_by_job(job.job_id):
+            events.append({
+                "event_id": event.event_id,
+                "stage": event.stage,
+                "type": event.type,
+                "status": event.status,
+                "created_at": event.created_at,
+            })
+    return _compute_input_checksum({
+        "job_id": job.job_id,
+        "setup_checksum": job.setup_checksum,
+        "stage_chain_json": job.stage_chain_json,
+        "commands": commands,
+        "events": events,
+    })
