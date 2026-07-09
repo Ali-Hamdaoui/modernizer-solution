@@ -7,6 +7,7 @@ from migration_factory.control_tower.application.v2_final_report_service import 
     V2FinalReportService,
     V2FinalReportEligibility,
     V2FinalReportResult,
+    _looks_like_success,
 )
 
 
@@ -56,6 +57,11 @@ def test_evaluate_eligibility_fails_without_stage4() -> None:
 
     assert eligibility.eligible is False
     assert any("Stage 4" in b for b in eligibility.blockers)
+
+
+def test_looks_like_success_handles_mixed_case_status_values() -> None:
+    assert _looks_like_success({"orchestration_status": "pass"}) is True
+    assert _looks_like_success({"build_status": "Build_Failed"}) is False
 
 
 def test_report_result_contains_no_path_fields() -> None:
