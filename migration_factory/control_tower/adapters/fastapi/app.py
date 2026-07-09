@@ -13317,7 +13317,7 @@ def _stage_status_from_event(event_type: str, event_status: str) -> str:
         return "cancelled"
     if event_type == "stage_failed" or event_status == "failed":
         return "failed"
-    if event_type == "stage_completed":
+    if event_type in {"stage_completed", "migration_completed", "job_completed"}:
         return "completed"
     if event_type in {
         "stage_started", "command_started",
