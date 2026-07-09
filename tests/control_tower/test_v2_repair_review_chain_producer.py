@@ -19,6 +19,7 @@ from migration_factory.control_tower.application.v2_assistant_model_client impor
     V2AssistantModelResult,
 )
 from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
+from migration_factory.control_tower.domain.checksums import sha256_hex
 from migration_factory.orchestrator.repair_review_chain import (
     RepairReviewChainProductionError,
     _check_forbidden_keys,
@@ -607,6 +608,21 @@ def test_produce_success_with_accept_decision(tmp_path: Path) -> None:
     assert result["review_chain"]["model_roles"]["reviewer"]["available"] is True
     assert "deployment" not in json.dumps(result["review_chain"]["model_roles"]).lower()
     assert "endpoint" not in json.dumps(result["review_chain"]["model_roles"]).lower()
+    chain = result["review_chain"]
+    primary_path = tmp_path / "output" / "primary_repair_llm_output.json"
+    final_path = tmp_path / "output" / "final_reviewed_repair_artifact.json"
+    primary_artifact = json.loads(primary_path.read_text(encoding="utf-8"))
+    final_artifact = json.loads(final_path.read_text(encoding="utf-8"))
+    assert chain["primary_output_checksum"] == _compute_primary_repair_checksum(primary_artifact)
+    assert chain["primary_validated_output_checksum"] == _compute_primary_repair_checksum(primary_artifact)
+    assert chain["final_artifact_checksum"] == _compute_final_repair_artifact_checksum(final_artifact)
+    assert chain["primary_output_artifact_checksum"] == sha256_hex(primary_path.read_bytes())
+    assert chain["final_artifact_persisted_checksum"] == sha256_hex(final_path.read_bytes())
+    assert chain["checksum_algorithms"]["primary_output_checksum"] == "sha256_canonical_json_v1"
+    assert chain["checksum_algorithms"]["primary_validated_output_checksum"] == "sha256_canonical_json_v1"
+    assert chain["checksum_algorithms"]["final_artifact_checksum"] == "sha256_canonical_json_v1"
+    assert chain["checksum_algorithms"]["primary_output_artifact_checksum"] == "sha256_exact_bytes_v1"
+    assert chain["checksum_algorithms"]["final_artifact_persisted_checksum"] == "sha256_exact_bytes_v1"
 
 
 def test_invocation_correlation_and_provider_fallback_statuses(tmp_path: Path) -> None:

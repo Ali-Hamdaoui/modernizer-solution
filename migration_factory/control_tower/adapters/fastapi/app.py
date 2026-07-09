@@ -1243,6 +1243,9 @@ def create_app(
                         context_pack=context_pack,
                         chain_result=captured_chain,
                         output_dir=context.review_chain_output_dir,
+                        sandbox_path=context.sandbox_path,
+                        run_dir=context.run_dir,
+                        legacy_path=context.legacy_path,
                         source_proposal_id=None,
                         source_gate_id=None,
                     )

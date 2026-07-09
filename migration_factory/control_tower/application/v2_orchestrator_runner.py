@@ -247,6 +247,9 @@ class _ResumeValidationResult:
 class CanonicalRepairRuntimeContext:
     failure_evidence: FailureEvidence
     context_pack: RepairContextPack
+    run_dir: Path
+    sandbox_path: Path | None
+    legacy_path: Path | None
     review_chain_output_dir: Path
     source_profile: str
     target_profile: str
@@ -1689,9 +1692,17 @@ class V2OrchestratorRunner:
             if not diagnostic_payloads:
                 return
             diagnostic_event_type, _, _, diagnostic_payload = diagnostic_payloads[0]
+            sandbox_text = _result_sandbox_path(result)
+            legacy_text = _first_text(
+                result.get("legacy_path"),
+                artifact_refs.get("legacy_path") if isinstance(artifact_refs, dict) else "",
+            )
             runtime_context = CanonicalRepairRuntimeContext(
                 failure_evidence=evidence,
                 context_pack=context_pack,
+                run_dir=run_dir,
+                sandbox_path=Path(sandbox_text) if sandbox_text else None,
+                legacy_path=Path(legacy_text) if legacy_text else self._legacy_path_for_job(job_id),
                 review_chain_output_dir=repair_dir / "llm_review_chain",
                 source_profile=context_pack.source_profile,
                 target_profile=context_pack.target_profile,
@@ -1706,6 +1717,19 @@ class V2OrchestratorRunner:
                         result["_repair_runtime_route"] = route
             except Exception:
                 pass
+
+    def _legacy_path_for_job(self, job_id: str) -> Path | None:
+        try:
+            with self._unit_of_work_factory() as uow:
+                job = uow.v2_jobs.get(job_id)
+                if job is None:
+                    return None
+                setup = uow.v2_setups.get(job.setup_id)
+                if setup is None or not str(setup.legacy_app_path or ""):
+                    return None
+                return Path(str(setup.legacy_app_path))
+        except Exception:
+            return None
 
     def _resolve_repair_context_profiles(
         self,

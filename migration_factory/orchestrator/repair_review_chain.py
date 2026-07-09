@@ -32,6 +32,7 @@ from migration_factory.control_tower.domain.checksums import (
     SHA256_UTF8_BYTES_V1,
     canonical_json_text,
     sha256_canonical_json,
+    sha256_hex,
     sha256_raw_model_response,
     sha256_unified_diff_text,
     utc_now_text,
@@ -667,6 +668,7 @@ def produce_repair_review_chain(
         primary_normalized_path.write_text(primary_normalized_text, encoding="utf-8", newline="")
         primary_validated_path.write_text(primary_validated_text, encoding="utf-8", newline="")
         _write_json(primary_path, primary_artifact_envelope)
+        primary_output_artifact_checksum = sha256_hex(primary_path.read_bytes())
 
         context_checksum = context_pack.context_pack_checksum
         proposed_diff = str(validated_primary_output.get("proposed_diff", ""))
@@ -834,6 +836,7 @@ def produce_repair_review_chain(
         final_artifact["artifact_checksum"] = final_artifact_checksum
         final_artifact_path = output_dir / "final_reviewed_repair_artifact.json"
         _write_json(final_artifact_path, final_artifact)
+        final_artifact_persisted_checksum = sha256_hex(final_artifact_path.read_bytes())
 
         diff_path = output_dir / "final_reviewed_repair.diff"
         diff_path.write_bytes(proposed_diff.encode("utf-8"))
@@ -842,6 +845,7 @@ def produce_repair_review_chain(
             "deterministic_artifact_checksum": deterministic_checksum,
             "context_pack_checksum": context_checksum,
             "primary_output_checksum": primary_checksum,
+            "primary_output_artifact_checksum": primary_output_artifact_checksum,
             "primary_raw_response_checksum": primary_raw_checksum,
             "primary_normalized_output_checksum": primary_normalized_checksum,
             "primary_validated_output_checksum": primary_checksum,
@@ -854,6 +858,7 @@ def produce_repair_review_chain(
             "final_reviewed_diff_checksum": diff_bytes_checksum,
             "proposed_diff_checksum_algorithm": SHA256_UTF8_BYTES_V1,
             "final_artifact_checksum": final_artifact_checksum,
+            "final_artifact_persisted_checksum": final_artifact_persisted_checksum,
             "reviewer_decision": validated_reviewer_output["decision"],
             "schema_version": "1.0",
             "proposal_kind": "llm_repair_review",
@@ -879,6 +884,11 @@ def produce_repair_review_chain(
                 "normalized_output_checksum": SHA256_UTF8_BYTES_V1,
                 "validated_structured_output_checksum": SHA256_CANONICAL_JSON_V1,
                 "unified_diff_checksum": SHA256_UTF8_BYTES_V1,
+                "primary_output_checksum": SHA256_CANONICAL_JSON_V1,
+                "primary_validated_output_checksum": SHA256_CANONICAL_JSON_V1,
+                "primary_output_artifact_checksum": "sha256_exact_bytes_v1",
+                "final_artifact_checksum": SHA256_CANONICAL_JSON_V1,
+                "final_artifact_persisted_checksum": "sha256_exact_bytes_v1",
             },
             "artifact_refs": {
                 "primary_raw_response": str(primary_raw_path),

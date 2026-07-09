@@ -41,7 +41,7 @@ from migration_factory.repair_loop.patch_apply import (
     apply_patch_to_sandbox,
     validate_patch_artifact,
 )
-from migration_factory.control_tower.domain.checksums import sha256_canonical_json
+from migration_factory.control_tower.domain.checksums import sha256_canonical_json, sha256_unified_diff_text
 
 
 def test_create_proposal() -> None:
@@ -679,7 +679,7 @@ def test_apply_reviewed_repair_diff_loads_exact_artifact(
     run_dir = tmp_path / "run"
     sandbox = _sandbox(tmp_path)
     diff_path = tmp_path / "final_reviewed_repair.diff"
-    diff_path.write_text(_h2_patch(), encoding="utf-8")
+    diff_path.write_bytes(_h2_patch().encode("utf-8"))
     calls: list[dict] = []
 
     monkeypatch.setattr(
@@ -691,7 +691,7 @@ def test_apply_reviewed_repair_diff_loads_exact_artifact(
     action = service.apply_reviewed_repair_diff(
         proposal_id=proposal.proposal_id,
         final_diff_ref=diff_path,
-        final_diff_checksum=sha256_canonical_json({"unified_diff": _h2_patch()}),
+        final_diff_checksum=sha256_unified_diff_text(_h2_patch()),
         reviewer_output_checksum="reviewer-ok",
         expected_reviewer_output_checksum="reviewer-ok",
         policy_validation_checksum="policy-ok",

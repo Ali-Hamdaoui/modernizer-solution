@@ -14,18 +14,39 @@ Tests cover:
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from migration_factory.repair_loop.patch_gate import (
     BLOCKED_FILE_NAMES,
     BLOCKED_PARTS,
     BLOCKED_PREFIXES,
+    PATCH_SOURCE_LLM_REVIEWED,
+    POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1,
+    REASON_DELETE_BLOCKED,
+    REASON_EXPECTED_EXCEPTION_MASKING,
+    REASON_RENAME_BLOCKED,
+    REASON_REVIEWED_DIFF_CHECKSUM_MISMATCH,
+    REASON_ROUTE_SCOPE_VIOLATION,
+    REASON_SECURITY_SENSITIVE_MODIFICATION,
+    REASON_SHARED_PATH_VALIDATION_FAILED,
+    REASON_TEST_DISABLED_OR_SKIPPED,
+    REASON_TRIVIALLY_PASSING_ASSERTION,
+    REASON_UNSUPPORTED_FILE_EXTENSION,
+    REVIEWED_LLM_DECISION_ALLOWED,
+    REVIEWED_LLM_DECISION_BLOCKED,
     PatchGateResult,
     evaluate_patch_proposal,
+    evaluate_reviewed_llm_patch,
     extract_touched_paths,
     is_unified_diff,
+    reviewed_llm_allowed_route_scope,
+    reviewed_llm_policy_payload,
+    reviewed_llm_policy_checksum_input,
     validate_patch_paths,
 )
+from migration_factory.control_tower.domain.checksums import sha256_canonical_json, sha256_hex
 from migration_factory.repair_loop.rule_registry import (
     ALLOWED_RULE_IDS,
     RuleDecision,
@@ -71,6 +92,20 @@ GIT binary patch
 some binary
 """
 
+APPLYABLE_APP_DIFF = """\
+diff --git a/src/main/java/com/example/App.java b/src/main/java/com/example/App.java
+--- a/src/main/java/com/example/App.java
++++ b/src/main/java/com/example/App.java
+@@ -1,6 +1,6 @@
+ package com.example;
+ public class App {
+     public static void main(String[] args) {
+-        System.out.println("Hello");
++        System.out.println("Hello Jakarta");
+     }
+ }
+"""
+
 
 def _make_proposal(**overrides):
     base = {
@@ -94,6 +129,55 @@ def _setup_sandbox(tmp_path):
     legacy = tmp_path / "legacy"
     legacy.mkdir()
     return sandbox, run_dir, legacy
+
+
+def _reviewed_policy_kwargs(
+    tmp_path,
+    diff: str,
+    *,
+    changed_files: tuple[str, ...] = ("src/main/java/com/example/App.java",),
+    allowed_route_scope: tuple[str, ...] | None = None,
+    sandbox_files: dict[str, str] | None = None,
+):
+    sandbox, run_dir, legacy = _setup_sandbox(tmp_path)
+    files = sandbox_files or {
+        "src/main/java/com/example/App.java": (
+            "package com.example;\n"
+            "public class App {\n"
+            "    public static void main(String[] args) {\n"
+            "        System.out.println(\"Hello\");\n"
+            "    }\n"
+            "}\n"
+        )
+    }
+    for relative_path, text in files.items():
+        path = sandbox / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    patch_path = run_dir / "reviewed.diff"
+    patch_path.write_text(diff, encoding="utf-8")
+    checksum = "sha256:" + sha256_hex(patch_path.read_bytes())
+    return {
+        "reviewed_diff_bytes": patch_path.read_bytes(),
+        "reviewed_diff_path": patch_path,
+        "reviewed_diff_checksum": checksum,
+        "sandbox_path": sandbox,
+        "run_dir": run_dir,
+        "legacy_path": legacy,
+        "declared_changed_files": changed_files,
+        "allowed_route_scope": allowed_route_scope
+        if allowed_route_scope is not None
+        else reviewed_llm_allowed_route_scope(route="llm_reviewed_unknown", stage_index=1),
+        "job_id": "job-policy",
+        "stage_index": 1,
+        "command_id": "cmd-policy",
+        "route": "llm_reviewed_unknown",
+        "failure_evidence_checksum": "sha256:" + "1" * 64,
+        "context_checksum": "sha256:" + "2" * 64,
+        "base_repo_state_checksum": "sha256:" + "3" * 64,
+        "reviewer_output_checksum": "sha256:" + "4" * 64,
+        "review_chain_identity_checksum": "sha256:" + "5" * 64,
+    }
 
 
 # ── 1. is_unified_diff — valid diff ─────────────────────────────────
@@ -467,7 +551,330 @@ def test_evaluate_rule_h2_missing_pom(tmp_path):
 
 
 def test_evaluate_rule_unknown_returns_decision():
-    assert "DEPENDENCY_ADD_H2_RUNTIME" in ALLOWED_RULE_IDS
+    assert ALLOWED_RULE_IDS == {
+        "DEPENDENCY_ADD_H2_RUNTIME",
+        "DEPENDENCY_ADD_VALIDATION_STARTER",
+        "DEPENDENCY_REMOVE_TOMCAT9_OVERRIDE_BOOT3",
+        "DEPENDENCY_REPLACE_JAVAX_SERVLET_API_WITH_JAKARTA",
+        "DEPENDENCY_REPLACE_JAVAX_VALIDATION_WITH_JAKARTA",
+        "DEPENDENCY_UPGRADE_ZALANDO_PROBLEM_SPRING_WEB_0291",
+        "H2_SMOKE_CONFIG_ONLY",
+        "JAKARTA_IMPORT_MECHANICAL_SOURCE",
+    }
+
+
+def test_reviewed_llm_policy_identity_uses_existing_patch_gate(tmp_path):
+    result = evaluate_reviewed_llm_patch(**_reviewed_policy_kwargs(tmp_path, APPLYABLE_APP_DIFF))
+    policy_checksum = "sha256:" + sha256_canonical_json(reviewed_llm_policy_checksum_input(result))
+    payload = reviewed_llm_policy_payload(
+        result,
+        policy_checksum=policy_checksum,
+        evaluated_at="2026-07-09T00:00:00Z",
+    )
+
+    assert POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1 not in ALLOWED_RULE_IDS
+    assert result.decision == REVIEWED_LLM_DECISION_ALLOWED
+    assert not hasattr(result, "rule_id")
+    assert payload["patch_source"] == PATCH_SOURCE_LLM_REVIEWED
+    assert payload["policy_id"] == POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1
+    assert payload["touched_paths"] == ["src/main/java/com/example/App.java"]
+    assert "deterministic_rule_id" not in payload
+
+
+def test_reviewed_llm_policy_checksum_is_deterministic_without_timestamp(tmp_path):
+    kwargs = _reviewed_policy_kwargs(tmp_path, APPLYABLE_APP_DIFF)
+    first = evaluate_reviewed_llm_patch(**kwargs)
+    second = evaluate_reviewed_llm_patch(**kwargs)
+
+    first_checksum = "sha256:" + sha256_canonical_json(reviewed_llm_policy_checksum_input(first))
+    second_checksum = "sha256:" + sha256_canonical_json(reviewed_llm_policy_checksum_input(second))
+
+    assert first.decision == REVIEWED_LLM_DECISION_ALLOWED
+    assert first_checksum == second_checksum
+    assert "evaluated_at" not in reviewed_llm_policy_checksum_input(first)
+
+
+def test_reviewed_llm_policy_blocks_exact_byte_checksum_mismatch(tmp_path):
+    kwargs = _reviewed_policy_kwargs(tmp_path, APPLYABLE_APP_DIFF)
+    kwargs["reviewed_diff_checksum"] = "sha256:" + "0" * 64
+
+    result = evaluate_reviewed_llm_patch(**kwargs)
+
+    assert result.decision == REVIEWED_LLM_DECISION_BLOCKED
+    assert result.reason_codes == (REASON_REVIEWED_DIFF_CHECKSUM_MISMATCH,)
+
+
+def test_reviewed_llm_policy_blocks_safe_diff_checksum_mismatch(tmp_path, monkeypatch):
+    import migration_factory.repair_loop.patch_gate as patch_gate
+
+    original = patch_gate.build_safe_diff_preview
+
+    def mismatch_preview(**kwargs):
+        return replace(original(**kwargs), checksum_mismatch=True)
+
+    monkeypatch.setattr(patch_gate, "build_safe_diff_preview", mismatch_preview)
+
+    result = evaluate_reviewed_llm_patch(**_reviewed_policy_kwargs(tmp_path, APPLYABLE_APP_DIFF))
+
+    assert result.decision == REVIEWED_LLM_DECISION_BLOCKED
+    assert REASON_REVIEWED_DIFF_CHECKSUM_MISMATCH in result.reason_codes
+
+
+def test_reviewed_llm_policy_reuses_shared_path_validation(tmp_path):
+    diff = """\
+diff --git a/../secrets/keys b/../secrets/keys
+--- a/../secrets/keys
++++ b/../secrets/keys
+@@ -1,1 +1,1 @@
+-old
++new
+"""
+
+    result = evaluate_reviewed_llm_patch(**_reviewed_policy_kwargs(tmp_path, diff, changed_files=("../secrets/keys",)))
+
+    assert result.decision == REVIEWED_LLM_DECISION_BLOCKED
+    assert REASON_SHARED_PATH_VALIDATION_FAILED in result.reason_codes
+
+
+def test_reviewed_llm_policy_reuses_shared_security_validation(tmp_path):
+    diff = """\
+diff --git a/src/main/java/com/example/SecurityConfig.java b/src/main/java/com/example/SecurityConfig.java
+--- a/src/main/java/com/example/SecurityConfig.java
++++ b/src/main/java/com/example/SecurityConfig.java
+@@ -1,1 +1,1 @@
+-http.authorizeRequests().anyRequest().authenticated();
++http.authorizeRequests().anyRequest().permitAll();
+"""
+
+    result = evaluate_reviewed_llm_patch(
+        **_reviewed_policy_kwargs(
+            tmp_path,
+            diff,
+            changed_files=("src/main/java/com/example/SecurityConfig.java",),
+        )
+    )
+
+    assert result.decision == REVIEWED_LLM_DECISION_BLOCKED
+    assert REASON_SECURITY_SENSITIVE_MODIFICATION in result.reason_codes
+
+
+def test_reviewed_llm_route_scope_allows_safe_root_level_pom(tmp_path):
+    diff = """\
+diff --git a/pom.xml b/pom.xml
+--- a/pom.xml
++++ b/pom.xml
+@@ -1,3 +1,3 @@
+ <project>
+-  <name>old</name>
++  <name>new</name>
+ </project>
+"""
+
+    result = evaluate_reviewed_llm_patch(
+        **_reviewed_policy_kwargs(
+            tmp_path,
+            diff,
+            changed_files=("pom.xml",),
+            sandbox_files={"pom.xml": "<project>\n  <name>old</name>\n</project>\n"},
+        )
+    )
+
+    assert reviewed_llm_allowed_route_scope(route="llm_reviewed_unknown", stage_index=1) == ("sandbox_relative:**",)
+    assert result.decision == REVIEWED_LLM_DECISION_ALLOWED
+    assert result.allowed_route_scope == ("sandbox_relative:**",)
+
+
+def test_reviewed_llm_route_scope_allows_safe_nested_java(tmp_path):
+    result = evaluate_reviewed_llm_patch(**_reviewed_policy_kwargs(tmp_path, APPLYABLE_APP_DIFF))
+
+    assert result.decision == REVIEWED_LLM_DECISION_ALLOWED
+    assert result.allowed_route_scope == ("sandbox_relative:**",)
+
+
+def test_reviewed_llm_unsupported_root_extension_is_extension_policy_not_route_scope(tmp_path):
+    diff = """\
+diff --git a/local.lock b/local.lock
+--- a/local.lock
++++ b/local.lock
+@@ -1,1 +1,1 @@
+-old
++new
+"""
+
+    result = evaluate_reviewed_llm_patch(
+        **_reviewed_policy_kwargs(
+            tmp_path,
+            diff,
+            changed_files=("local.lock",),
+            sandbox_files={"local.lock": "old\n"},
+        )
+    )
+
+    assert result.decision == REVIEWED_LLM_DECISION_BLOCKED
+    assert REASON_UNSUPPORTED_FILE_EXTENSION in result.reason_codes
+    assert REASON_ROUTE_SCOPE_VIOLATION not in result.reason_codes
+
+
+def test_reviewed_llm_traversal_path_remains_shared_path_validation(tmp_path):
+    diff = """\
+diff --git a/../secrets/keys.txt b/../secrets/keys.txt
+--- a/../secrets/keys.txt
++++ b/../secrets/keys.txt
+@@ -1,1 +1,1 @@
+-old
++new
+"""
+
+    result = evaluate_reviewed_llm_patch(
+        **_reviewed_policy_kwargs(
+            tmp_path,
+            diff,
+            changed_files=("../secrets/keys.txt",),
+        )
+    )
+
+    assert result.decision == REVIEWED_LLM_DECISION_BLOCKED
+    assert REASON_SHARED_PATH_VALIDATION_FAILED in result.reason_codes
+
+
+def test_reviewed_llm_route_scope_is_backend_owned_not_evidence_or_model_output(tmp_path):
+    kwargs = _reviewed_policy_kwargs(
+        tmp_path,
+        APPLYABLE_APP_DIFF,
+        changed_files=("src/main/java/com/example/App.java",),
+    )
+    kwargs["evidence_changed_files"] = ("diagnostics/evidence-only.txt",)
+
+    result = evaluate_reviewed_llm_patch(**kwargs)
+
+    assert result.decision == REVIEWED_LLM_DECISION_ALLOWED
+    assert result.evidence_changed_files == ("diagnostics/evidence-only.txt",)
+    assert result.declared_changed_files == ("src/main/java/com/example/App.java",)
+    assert result.allowed_route_scope == ("sandbox_relative:**",)
+    assert result.allowed_route_scope != result.evidence_changed_files
+    assert result.allowed_route_scope != result.declared_changed_files
+
+
+def test_reviewed_llm_unsupported_route_fails_closed_with_route_scope_reason(tmp_path):
+    kwargs = _reviewed_policy_kwargs(tmp_path, APPLYABLE_APP_DIFF)
+    kwargs["route"] = "unsupported_route"
+    kwargs["allowed_route_scope"] = reviewed_llm_allowed_route_scope(route="unsupported_route", stage_index=1)
+
+    result = evaluate_reviewed_llm_patch(**kwargs)
+
+    assert result.decision == REVIEWED_LLM_DECISION_BLOCKED
+    assert result.reason_codes == (REASON_ROUTE_SCOPE_VIOLATION,)
+
+
+def test_reviewed_llm_invalid_stage_fails_closed_with_route_scope_reason(tmp_path):
+    kwargs = _reviewed_policy_kwargs(tmp_path, APPLYABLE_APP_DIFF)
+    kwargs["stage_index"] = 0
+    kwargs["allowed_route_scope"] = reviewed_llm_allowed_route_scope(route="llm_reviewed_unknown", stage_index=0)
+
+    result = evaluate_reviewed_llm_patch(**kwargs)
+
+    assert result.decision == REVIEWED_LLM_DECISION_BLOCKED
+    assert result.reason_codes == (REASON_ROUTE_SCOPE_VIOLATION,)
+
+
+def test_reviewed_llm_policy_blocks_route_scope_violation(tmp_path):
+    result = evaluate_reviewed_llm_patch(
+        **_reviewed_policy_kwargs(
+            tmp_path,
+            APPLYABLE_APP_DIFF,
+            allowed_route_scope=("sandbox_relative:src/main/resources/*.properties",),
+        )
+    )
+
+    assert result.decision == REVIEWED_LLM_DECISION_BLOCKED
+    assert REASON_ROUTE_SCOPE_VIOLATION in result.reason_codes
+
+
+@pytest.mark.parametrize(
+    ("diff", "changed_files", "reason_code"),
+    [
+        (
+            """\
+diff --git a/scripts/run.sh b/scripts/run.sh
+--- a/scripts/run.sh
++++ b/scripts/run.sh
+@@ -1,1 +1,1 @@
+-echo old
++echo new
+""",
+            ("scripts/run.sh",),
+            REASON_UNSUPPORTED_FILE_EXTENSION,
+        ),
+        (
+            """\
+diff --git a/src/main/java/com/example/App.java b/src/main/java/com/example/Application.java
+similarity index 92%
+rename from src/main/java/com/example/App.java
+rename to src/main/java/com/example/Application.java
+--- a/src/main/java/com/example/App.java
++++ b/src/main/java/com/example/Application.java
+@@ -1,1 +1,1 @@
+-old
++new
+""",
+            ("src/main/java/com/example/App.java", "src/main/java/com/example/Application.java"),
+            REASON_RENAME_BLOCKED,
+        ),
+        (
+            """\
+diff --git a/src/main/java/com/example/App.java b/src/main/java/com/example/App.java
+deleted file mode 100644
+--- a/src/main/java/com/example/App.java
++++ /dev/null
+@@ -1,1 +0,0 @@
+-old
+""",
+            ("src/main/java/com/example/App.java",),
+            REASON_DELETE_BLOCKED,
+        ),
+        (
+            """\
+diff --git a/src/test/java/com/example/AppTest.java b/src/test/java/com/example/AppTest.java
+--- a/src/test/java/com/example/AppTest.java
++++ b/src/test/java/com/example/AppTest.java
+@@ -1,1 +1,2 @@
+ assertThrows(RuntimeException.class, () -> run());
++assertTrue(true);
+""",
+            ("src/test/java/com/example/AppTest.java",),
+            REASON_TRIVIALLY_PASSING_ASSERTION,
+        ),
+        (
+            """\
+diff --git a/src/test/java/com/example/AppTest.java b/src/test/java/com/example/AppTest.java
+--- a/src/test/java/com/example/AppTest.java
++++ b/src/test/java/com/example/AppTest.java
+@@ -1,1 +1,2 @@
+ assertThrows(RuntimeException.class, () -> run());
++@Disabled
+""",
+            ("src/test/java/com/example/AppTest.java",),
+            REASON_TEST_DISABLED_OR_SKIPPED,
+        ),
+        (
+            """\
+diff --git a/src/test/java/com/example/AppTest.java b/src/test/java/com/example/AppTest.java
+--- a/src/test/java/com/example/AppTest.java
++++ b/src/test/java/com/example/AppTest.java
+@@ -1,3 +1,3 @@
+-assertThrows(RuntimeException.class, () -> run());
++assertDoesNotThrow(() -> run());
+""",
+            ("src/test/java/com/example/AppTest.java",),
+            REASON_EXPECTED_EXCEPTION_MASKING,
+        ),
+    ],
+)
+def test_reviewed_llm_policy_blocks_generic_review_controls(tmp_path, diff, changed_files, reason_code):
+    result = evaluate_reviewed_llm_patch(**_reviewed_policy_kwargs(tmp_path, diff, changed_files=changed_files))
+
+    assert result.decision == REVIEWED_LLM_DECISION_BLOCKED
+    assert reason_code in result.reason_codes
 
 
 # ── 18. Gate result statuses ────────────────────────────────────────

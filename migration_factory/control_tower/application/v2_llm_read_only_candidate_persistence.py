@@ -16,11 +16,25 @@ from migration_factory.control_tower.application.v2_repair_route_decision import
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json, sha256_hex, utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import V2RepairProposalRecord
 from migration_factory.repair_loop.failure_evidence import FailureEvidence
+from migration_factory.repair_loop.patch_gate import (
+    PATCH_SOURCE_LLM_REVIEWED,
+    POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1,
+    REASON_REVIEW_CHAIN_INVALID,
+    REASON_REVIEWED_DIFF_CHECKSUM_MISMATCH,
+    REASON_REVIEWER_DECISION_NOT_ACCEPTED,
+    REVIEWED_LLM_DECISION_ALLOWED,
+    blocked_reviewed_llm_policy_result,
+    evaluate_reviewed_llm_patch,
+    reviewed_llm_allowed_route_scope,
+    reviewed_llm_policy_payload,
+    reviewed_llm_policy_checksum_input,
+)
 from migration_factory.repair_loop.repair_context import RepairContextPack
 
 
 EVENT_LLM_READ_ONLY_CANDIDATE_PERSISTED = "llm_read_only_candidate_persisted"
 EVENT_LLM_READ_ONLY_CANDIDATE_BLOCKED = "llm_read_only_candidate_blocked"
+EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED = "llm_reviewed_patch_policy_evaluated"
 
 STATUS_PERSISTED = "persisted"
 STATUS_IDEMPOTENT = "idempotent"
@@ -36,7 +50,11 @@ REASON_NOT_ELIGIBLE = "llm_candidate_not_eligible"
 REASON_INVALID_CHAIN = "llm_candidate_invalid_review_chain"
 REASON_DIFF_REF_INVALID = "reviewed_diff_ref_invalid"
 REASON_DIFF_OUTSIDE_OUTPUT_DIR = "reviewed_diff_ref_outside_output_dir"
+REASON_DIFF_FILE_MISSING = "reviewed_diff_file_missing"
 REASON_DIFF_CHECKSUM_MISMATCH = "reviewed_diff_checksum_mismatch"
+REASON_PRIMARY_OUTPUT_ARTIFACT_INVALID = "primary_output_artifact_invalid"
+REASON_FINAL_ARTIFACT_INVALID = "final_artifact_invalid"
+REASON_POLICY_REJECTED = "reviewed_llm_patch_policy_rejected"
 REASON_ID_COLLISION = "llm_candidate_checksum_collision"
 REASON_REPOSITORY_WRITE_FAILED = "llm_candidate_repository_write_failed"
 
@@ -53,6 +71,9 @@ _SAFE_EVENT_KEYS = (
     "raw_reviewed_diff_checksum",
     "status",
     "reason",
+    "policy_checksum",
+    "decision",
+    "reason_codes",
 )
 
 
@@ -90,6 +111,9 @@ class LlmReadOnlyCandidatePersistenceService:
         context_pack: RepairContextPack,
         chain_result: dict[str, Any],
         output_dir: str | Path,
+        sandbox_path: str | Path | None,
+        run_dir: str | Path | None,
+        legacy_path: str | Path | None,
         source_proposal_id: str | None = None,
         source_gate_id: str | None = None,
     ) -> LlmReadOnlyCandidatePersistenceResult:
@@ -113,6 +137,9 @@ class LlmReadOnlyCandidatePersistenceService:
             context_pack=context_pack,
             chain_result=chain_result,
             output_dir=Path(output_dir),
+            sandbox_path=sandbox_path,
+            run_dir=run_dir,
+            legacy_path=legacy_path,
             source_proposal_id=source_proposal_id,
             source_gate_id=source_gate_id,
         )
@@ -122,9 +149,22 @@ class LlmReadOnlyCandidatePersistenceService:
         transaction = _SqliteAtomicBoundary(connection)
         try:
             with transaction:
-                existing = self._existing_result(prepared)
-                if existing is not None:
-                    return existing
+                if prepared["policy_result"].decision == REVIEWED_LLM_DECISION_ALLOWED:
+                    existing = self._existing_result(prepared)
+                    if existing is not None:
+                        return existing
+                self._write_policy_event(prepared)
+                if prepared["policy_result"].decision != REVIEWED_LLM_DECISION_ALLOWED:
+                    return LlmReadOnlyCandidatePersistenceResult(
+                        status=STATUS_BLOCKED,
+                        reason=REASON_POLICY_REJECTED,
+                        llm_candidate_proposal_id=prepared.get("llm_candidate_proposal_id", ""),
+                        llm_repair_candidate_id=prepared.get("llm_repair_candidate_id", ""),
+                        candidate_checksum=prepared.get("candidate_checksum", ""),
+                        review_chain_identity_checksum=prepared.get("review_chain_identity_checksum", ""),
+                        raw_reviewed_diff_checksum=prepared.get("raw_reviewed_diff_checksum", ""),
+                        **base,
+                    )
                 self._repair_repo.save_proposal(prepared["proposal_record"])
                 self._candidate_repo.save_candidate(prepared["candidate"])
                 self._write_persisted_event(prepared)
@@ -153,35 +193,156 @@ class LlmReadOnlyCandidatePersistenceService:
         context_pack: RepairContextPack,
         chain_result: dict[str, Any],
         output_dir: Path,
+        sandbox_path: str | Path | None,
+        run_dir: str | Path | None,
+        legacy_path: str | Path | None,
         source_proposal_id: str | None,
         source_gate_id: str | None,
     ) -> dict[str, Any] | str:
         if decision.route != ROUTE_LLM_REVIEWED_UNKNOWN or decision.deterministic_rule_id is not None:
             return REASON_NOT_ELIGIBLE
+        allowed_route_scope = reviewed_llm_allowed_route_scope(route=decision.route, stage_index=failure_evidence.stage_index)
         chain = chain_result.get("review_chain") if isinstance(chain_result, dict) else None
-        if not isinstance(chain, dict) or not _chain_accepts(decision, failure_evidence, context_pack, chain):
-            return REASON_INVALID_CHAIN
+        review_chain_identity_checksum = _review_chain_identity_checksum(chain) if isinstance(chain, dict) else ""
+        policy_identity = {
+            "failure_evidence_checksum": failure_evidence.content_checksum,
+            "context_checksum": context_pack.context_pack_checksum,
+            "base_repo_state_checksum": context_pack.base_repo_state_checksum,
+            "reviewer_output_checksum": str(chain.get("reviewer_output_checksum") or "") if isinstance(chain, dict) else "",
+            "review_chain_identity_checksum": review_chain_identity_checksum,
+            "job_id": failure_evidence.job_id,
+            "stage_index": failure_evidence.stage_index,
+            "command_id": failure_evidence.command_id,
+            "route": decision.route,
+            "evidence_changed_files": tuple(context_pack.changed_files),
+            "allowed_route_scope": allowed_route_scope,
+        }
+        if not isinstance(chain, dict):
+            policy_result = blocked_reviewed_llm_policy_result(
+                reason_code=REASON_REVIEW_CHAIN_INVALID,
+                detail=REASON_INVALID_CHAIN,
+                **policy_identity,
+            )
+            return _policy_block_prepared(
+                policy_result=policy_result,
+                raw_reviewed_diff_checksum="",
+                review_chain_identity_checksum=review_chain_identity_checksum,
+            )
+        chain_block = _chain_block_reason(decision, failure_evidence, context_pack, chain)
+        if chain_block:
+            policy_result = blocked_reviewed_llm_policy_result(
+                reason_code=chain_block,
+                detail=chain_block,
+                **policy_identity,
+            )
+            return _policy_block_prepared(
+                policy_result=policy_result,
+                raw_reviewed_diff_checksum="",
+                review_chain_identity_checksum=review_chain_identity_checksum,
+            )
 
         diff_ref = _producer_final_diff_ref(chain_result)
-        diff_path = _contained_file(Path(output_dir), diff_ref)
+        diff_path, diff_error = _contained_file(Path(output_dir), diff_ref)
         if diff_path is None:
-            return REASON_DIFF_REF_INVALID if not diff_ref else REASON_DIFF_OUTSIDE_OUTPUT_DIR
+            policy_result = blocked_reviewed_llm_policy_result(
+                reason_code=diff_error,
+                detail=diff_error,
+                **policy_identity,
+            )
+            return _policy_block_prepared(
+                policy_result=policy_result,
+                raw_reviewed_diff_checksum="",
+                review_chain_identity_checksum=review_chain_identity_checksum,
+            )
         diff_bytes = diff_path.read_bytes()
         raw_diff_checksum = _sha256_prefixed(diff_bytes)
-        if raw_diff_checksum != _sha256_prefixed_text(chain.get("raw_diff_bytes_checksum")):
-            return REASON_DIFF_CHECKSUM_MISMATCH
-        if raw_diff_checksum != _sha256_prefixed_text(chain.get("final_reviewed_diff_checksum")):
-            return REASON_DIFF_CHECKSUM_MISMATCH
+        if (
+            raw_diff_checksum != _sha256_prefixed_text(chain.get("raw_diff_bytes_checksum"))
+            or raw_diff_checksum != _sha256_prefixed_text(chain.get("final_reviewed_diff_checksum"))
+            or raw_diff_checksum != _sha256_prefixed_text(chain.get("proposed_diff_checksum"))
+        ):
+            policy_result = blocked_reviewed_llm_policy_result(
+                reason_code=REASON_REVIEWED_DIFF_CHECKSUM_MISMATCH,
+                detail=REASON_DIFF_CHECKSUM_MISMATCH,
+                reviewed_diff_checksum=raw_diff_checksum,
+                **policy_identity,
+            )
+            return _policy_block_prepared(
+                policy_result=policy_result,
+                raw_reviewed_diff_checksum=raw_diff_checksum,
+                review_chain_identity_checksum=review_chain_identity_checksum,
+            )
 
-        review_chain_identity_checksum = _review_chain_identity_checksum(chain)
+        primary_output, primary_error = _load_json_ref(
+            output_dir=Path(output_dir),
+            value=chain.get("primary_output_ref"),
+            expected_checksum=chain.get("primary_output_artifact_checksum"),
+        )
+        if primary_error:
+            policy_result = blocked_reviewed_llm_policy_result(
+                reason_code=REASON_PRIMARY_OUTPUT_ARTIFACT_INVALID,
+                detail=primary_error,
+                reviewed_diff_checksum=raw_diff_checksum,
+                **policy_identity,
+            )
+            return _policy_block_prepared(
+                policy_result=policy_result,
+                raw_reviewed_diff_checksum=raw_diff_checksum,
+                review_chain_identity_checksum=review_chain_identity_checksum,
+            )
+        final_artifact, final_error = _load_json_ref(
+            output_dir=Path(output_dir),
+            value=chain.get("final_artifact_ref"),
+            expected_checksum=chain.get("final_artifact_persisted_checksum"),
+        )
+        if final_error:
+            policy_result = blocked_reviewed_llm_policy_result(
+                reason_code=REASON_FINAL_ARTIFACT_INVALID,
+                detail=final_error,
+                reviewed_diff_checksum=raw_diff_checksum,
+                **policy_identity,
+            )
+            return _policy_block_prepared(
+                policy_result=policy_result,
+                raw_reviewed_diff_checksum=raw_diff_checksum,
+                review_chain_identity_checksum=review_chain_identity_checksum,
+            )
+        declared_changed_files = _declared_changed_files(primary_output, final_artifact)
+        policy_result = evaluate_reviewed_llm_patch(
+            reviewed_diff_bytes=diff_bytes,
+            reviewed_diff_path=diff_path,
+            reviewed_diff_checksum=raw_diff_checksum,
+            sandbox_path=sandbox_path,
+            run_dir=run_dir,
+            legacy_path=legacy_path,
+            declared_changed_files=declared_changed_files,
+            **policy_identity,
+        )
+        policy_checksum = "sha256:" + sha256_canonical_json(reviewed_llm_policy_checksum_input(policy_result))
+        policy_payload = reviewed_llm_policy_payload(
+            policy_result,
+            policy_checksum=policy_checksum,
+            evaluated_at=utc_now_text(),
+        )
+        policy_validation_checksum = policy_checksum
+        if policy_result.decision != REVIEWED_LLM_DECISION_ALLOWED:
+            return _policy_block_prepared(
+                policy_result=policy_result,
+                policy_payload=policy_payload,
+                raw_reviewed_diff_checksum=raw_diff_checksum,
+                review_chain_identity_checksum=review_chain_identity_checksum,
+            )
+
         bindings = {
             "failure_evidence_checksum": failure_evidence.content_checksum,
             "context_checksum": context_pack.context_pack_checksum,
             "base_repo_state_checksum": context_pack.base_repo_state_checksum,
             "primary_output_checksum": str(chain.get("primary_output_checksum") or ""),
+            "primary_output_artifact_checksum": str(chain.get("primary_output_artifact_checksum") or ""),
             "reviewer_output_checksum": str(chain.get("reviewer_output_checksum") or ""),
             "raw_reviewed_diff_checksum": raw_diff_checksum,
             "final_artifact_checksum": str(chain.get("final_artifact_checksum") or ""),
+            "final_artifact_persisted_checksum": str(chain.get("final_artifact_persisted_checksum") or ""),
             "attempt_number": context_pack.cycle_number,
             "review_chain_identity_checksum": review_chain_identity_checksum,
         }
@@ -198,7 +359,9 @@ class LlmReadOnlyCandidatePersistenceService:
         candidate_checksum = "sha256:" + sha256_canonical_json(
             {
                 "candidate_kind": "llm_unknown_family",
-                "patch_source": "llm_reviewed",
+                "patch_source": PATCH_SOURCE_LLM_REVIEWED,
+                "policy_id": POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1,
+                "policy_validation_checksum": policy_validation_checksum,
                 "llm_candidate_proposal_id": llm_candidate_proposal_id,
                 **identity_payload,
             }
@@ -212,7 +375,10 @@ class LlmReadOnlyCandidatePersistenceService:
         now = utc_now_text()
         metadata = {
             "candidate_kind": "llm_unknown_family",
-            "patch_source": "llm_reviewed",
+            "patch_source": PATCH_SOURCE_LLM_REVIEWED,
+            "policy_id": POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1,
+            "policy_validation": policy_payload,
+            "policy_validation_checksum": policy_validation_checksum,
             "llm_candidate_proposal_id": llm_candidate_proposal_id,
             "llm_repair_candidate_id": llm_repair_candidate_id,
             "candidate_checksum": candidate_checksum,
@@ -230,7 +396,9 @@ class LlmReadOnlyCandidatePersistenceService:
             "candidate_kind": "llm_unknown_family",
             "status": "read_only",
             "family": "llm_unknown_family",
-            "patch_source": "llm_reviewed",
+            "patch_source": PATCH_SOURCE_LLM_REVIEWED,
+            "policy_id": POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1,
+            "policy_validation_checksum": policy_validation_checksum,
             "target_file": ",".join(touched),
             "pre_apply_checksum": "",
             "target_file_checksum": context_pack.base_repo_state_checksum,
@@ -261,6 +429,9 @@ class LlmReadOnlyCandidatePersistenceService:
             "candidate_checksum": candidate_checksum,
             "review_chain_identity_checksum": review_chain_identity_checksum,
             "raw_reviewed_diff_checksum": raw_diff_checksum,
+            "policy_result": policy_result,
+            "policy_payload": policy_payload,
+            "policy_validation_checksum": policy_validation_checksum,
             "candidate": candidate,
             "proposal_record": V2RepairProposalRecord(
                 proposal_id=llm_candidate_proposal_id,
@@ -283,7 +454,7 @@ class LlmReadOnlyCandidatePersistenceService:
                 diff_ref=str(diff_path),
                 diff_checksum=raw_diff_checksum.removeprefix("sha256:"),
                 reviewer_output_checksum=str(chain.get("reviewer_output_checksum") or ""),
-                policy_validation_checksum="",
+                policy_validation_checksum=policy_validation_checksum,
                 gate_id=None,
                 status_reason="llm_unknown_family_read_only",
                 apply_status="disabled",
@@ -397,6 +568,17 @@ class LlmReadOnlyCandidatePersistenceService:
             payload=payload,
         )
 
+    def _write_policy_event(self, prepared: dict[str, Any]) -> None:
+        policy_payload = prepared["policy_payload"]
+        self._event_repo.save(
+            job_id=str(policy_payload["job_id"]),
+            stage=int(policy_payload["stage_index"]),
+            event_type=EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED,
+            status="completed" if policy_payload["decision"] == REVIEWED_LLM_DECISION_ALLOWED else "blocked",
+            message="Reviewed LLM patch policy decision recorded.",
+            payload=policy_payload,
+        )
+
 
 def emit_llm_read_only_candidate_event(
     *,
@@ -435,14 +617,16 @@ def _safe_event_payload(result: LlmReadOnlyCandidatePersistenceResult) -> dict[s
     return {key: value for key, value in payload.items() if key in _SAFE_EVENT_KEYS and value not in ("", None)}
 
 
-def _chain_accepts(
+def _chain_block_reason(
     decision: RepairRouteDecision,
     failure_evidence: FailureEvidence,
     context_pack: RepairContextPack,
     chain: dict[str, Any],
-) -> bool:
+) -> str:
     if decision.route != ROUTE_LLM_REVIEWED_UNKNOWN:
-        return False
+        return REASON_REVIEW_CHAIN_INVALID
+    if chain.get("reviewer_decision") != "accept":
+        return REASON_REVIEWER_DECISION_NOT_ACCEPTED
     required = (
         "primary_output_checksum",
         "reviewer_output_checksum",
@@ -452,18 +636,16 @@ def _chain_accepts(
         "final_artifact_checksum",
     )
     if any(not str(chain.get(key) or "") for key in required):
-        return False
-    return (
-        chain.get("reviewer_decision") == "accept"
-        and chain.get("proposal_kind") == "llm_repair_review"
+        return REASON_REVIEW_CHAIN_INVALID
+    valid = (
+        chain.get("proposal_kind") == "llm_repair_review"
         and chain.get("context_pack_checksum") == context_pack.context_pack_checksum
         and chain.get("job_id") == context_pack.job_id == failure_evidence.job_id
         and chain.get("stage_index") == context_pack.stage_index == failure_evidence.stage_index
-        and _sha256_prefixed_text(chain.get("proposed_diff_checksum")) == _sha256_prefixed_text(chain.get("raw_diff_bytes_checksum"))
-        and _sha256_prefixed_text(chain.get("proposed_diff_checksum")) == _sha256_prefixed_text(chain.get("final_reviewed_diff_checksum"))
         and chain.get("primary_deterministic_fallback_used") is False
         and chain.get("reviewer_deterministic_fallback_used") is False
     )
+    return "" if valid else REASON_REVIEW_CHAIN_INVALID
 
 
 def _producer_final_diff_ref(chain_result: dict[str, Any]) -> str:
@@ -480,21 +662,86 @@ def _producer_final_diff_ref(chain_result: dict[str, Any]) -> str:
     return final_diff_ref
 
 
-def _contained_file(output_dir: Path, diff_ref: str) -> Path | None:
+def _contained_file(output_dir: Path, diff_ref: str) -> tuple[Path | None, str]:
     if not diff_ref:
-        return None
+        return None, REASON_DIFF_REF_INVALID
     try:
         root = output_dir.resolve(strict=True)
-        path = Path(diff_ref).resolve(strict=True)
+        raw_path = Path(diff_ref)
+        path = raw_path.resolve(strict=False)
     except OSError:
-        return None
-    if not path.is_file():
-        return None
+        return None, REASON_DIFF_REF_INVALID
     try:
         path.relative_to(root)
     except ValueError:
-        return None
-    return path
+        return None, REASON_DIFF_OUTSIDE_OUTPUT_DIR
+    if not path.exists():
+        return None, REASON_DIFF_FILE_MISSING
+    if not path.is_file():
+        return None, REASON_DIFF_REF_INVALID
+    return path.resolve(strict=True), ""
+
+
+def _load_json_ref(*, output_dir: Path, value: Any, expected_checksum: Any) -> tuple[dict[str, Any], str]:
+    ref = str(value or "")
+    if not ref:
+        return {}, "missing_json_ref"
+    if not str(expected_checksum or "").strip():
+        return {}, "json_artifact_checksum_missing"
+    try:
+        path, error = _contained_json_file(output_dir, ref)
+        if error:
+            return {}, error
+        raw = path.read_bytes()
+        actual_checksum = _sha256_prefixed(raw)
+        if actual_checksum != _sha256_prefixed_text(expected_checksum):
+            return {}, "json_artifact_checksum_mismatch"
+        text = raw.decode("utf-8")
+        loaded = json.loads(text)
+    except UnicodeDecodeError:
+        return {}, "invalid_json_encoding"
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {}, "invalid_json_artifact"
+    return (loaded, "") if isinstance(loaded, dict) else ({}, "invalid_json_artifact")
+
+
+def _contained_json_file(output_dir: Path, ref: str) -> tuple[Path, str]:
+    path, error = _contained_file(output_dir, ref)
+    if error:
+        return Path(), error
+    if path.suffix.lower() != ".json":
+        return Path(), "json_artifact_ref_invalid"
+    return path, ""
+
+
+def _declared_changed_files(primary_output: dict[str, Any], final_artifact: dict[str, Any]) -> tuple[str, ...]:
+    for source in (final_artifact, primary_output):
+        changed = source.get("changed_files") if isinstance(source, dict) else None
+        if isinstance(changed, list):
+            return tuple(str(path).replace("\\", "/") for path in changed if str(path).strip())
+    return ()
+
+
+def _policy_block_prepared(
+    *,
+    policy_result: Any,
+    raw_reviewed_diff_checksum: str,
+    review_chain_identity_checksum: str,
+    policy_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    policy_checksum = "sha256:" + sha256_canonical_json(reviewed_llm_policy_checksum_input(policy_result))
+    payload = policy_payload or reviewed_llm_policy_payload(
+        policy_result,
+        policy_checksum=policy_checksum,
+        evaluated_at=utc_now_text(),
+    )
+    return {
+        "policy_result": policy_result,
+        "policy_payload": payload,
+        "policy_validation_checksum": policy_checksum,
+        "raw_reviewed_diff_checksum": raw_reviewed_diff_checksum,
+        "review_chain_identity_checksum": review_chain_identity_checksum,
+    }
 
 
 def _review_chain_identity_checksum(chain: dict[str, Any]) -> str:
@@ -507,10 +754,12 @@ def _review_chain_identity_checksum(chain: dict[str, Any]) -> str:
             "reviewer_decision",
             "context_pack_checksum",
             "primary_output_checksum",
+            "primary_output_artifact_checksum",
             "reviewer_output_checksum",
             "raw_diff_bytes_checksum",
             "final_reviewed_diff_checksum",
             "final_artifact_checksum",
+            "final_artifact_persisted_checksum",
             "primary_deterministic_fallback_used",
             "reviewer_deterministic_fallback_used",
         )

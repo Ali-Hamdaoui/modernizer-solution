@@ -10,6 +10,7 @@ import pytest
 
 from migration_factory.control_tower.adapters.fastapi import create_app
 from migration_factory.control_tower.application.v2_llm_read_only_candidate_persistence import (
+    EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED,
     EVENT_LLM_READ_ONLY_CANDIDATE_BLOCKED,
     EVENT_LLM_READ_ONLY_CANDIDATE_PERSISTED,
     LlmReadOnlyCandidatePersistenceService,
@@ -26,7 +27,7 @@ from migration_factory.control_tower.application.v2_repair_projection import (
     reviewed_diff_proposal_to_safe_dict,
 )
 from migration_factory.control_tower.application.v2_repair_route_decision import RepairRouteDecision
-from migration_factory.control_tower.domain.checksums import sha256_hex
+from migration_factory.control_tower.domain.checksums import sha256_canonical_json, sha256_hex
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteControlTowerUnitOfWork
 from migration_factory.control_tower.infrastructure.sqlite.v2_event_repository import SqliteV2JobEventRepository
@@ -34,6 +35,13 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_repair_candidate_r
     SqliteV2RepairCandidateRepository,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import SqliteV2RepairRepository
+from migration_factory.repair_loop.patch_gate import (
+    PATCH_SOURCE_LLM_REVIEWED,
+    POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1,
+    REASON_ASSERTION_WEAKENING,
+    REASON_DIRECT_TEST_FAILURE_MASKING,
+    REASON_EXPECTED_EXCEPTION_MASKING,
+)
 from migration_factory.repair_loop.failure_evidence import FailureSource, build_failure_evidence
 from migration_factory.repair_loop.repair_context import build_repair_context_pack
 
@@ -88,11 +96,18 @@ def _decision(evidence: Any, context: Any) -> RepairRouteDecision:
     )
 
 
-def _chain(output_dir: Path, context: Any, diff_text: str | None = None, **overrides: Any) -> dict[str, Any]:
+def _chain(
+    output_dir: Path,
+    context: Any,
+    diff_text: str | None = None,
+    diff_bytes: bytes | None = None,
+    changed_files: list[str] | None = None,
+    **overrides: Any,
+) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     diff_path = output_dir / "final_reviewed_repair.diff"
     diff_path.write_bytes(
-        (diff_text or (
+        diff_bytes if diff_bytes is not None else (diff_text or (
             "diff --git a/src/main/java/App.java b/src/main/java/App.java\n"
             "--- a/src/main/java/App.java\n"
             "+++ b/src/main/java/App.java\n"
@@ -102,24 +117,58 @@ def _chain(output_dir: Path, context: Any, diff_text: str | None = None, **overr
         )).encode("utf-8")
     )
     checksum = "sha256:" + sha256_hex(diff_path.read_bytes())
+    declared = changed_files if changed_files is not None else ["src/main/java/App.java"]
+    primary_output = {"changed_files": declared}
+    primary_path = output_dir / "primary_output.json"
+    primary_path.write_text(json.dumps(primary_output, sort_keys=True), encoding="utf-8")
+    primary_checksum = "sha256:" + sha256_canonical_json(primary_output)
+    primary_output_artifact_checksum = "sha256:" + sha256_hex(primary_path.read_bytes())
+    final_artifact_path = output_dir / "final_reviewed_repair_artifact.json"
+    final_artifact = {"changed_files": declared}
+    final_artifact_path.write_text(json.dumps(final_artifact, sort_keys=True), encoding="utf-8")
+    final_artifact_checksum = "sha256:" + sha256_canonical_json(final_artifact)
+    final_artifact_persisted_checksum = "sha256:" + sha256_hex(final_artifact_path.read_bytes())
     chain = {
         "reviewer_decision": "accept",
         "proposal_kind": "llm_repair_review",
         "context_pack_checksum": context.context_pack_checksum,
         "job_id": context.job_id,
         "stage_index": context.stage_index,
-        "primary_output_checksum": "sha256:" + "1" * 64,
+        "primary_output_checksum": primary_checksum,
+        "primary_output_artifact_checksum": primary_output_artifact_checksum,
         "reviewer_output_checksum": "sha256:" + "2" * 64,
         "proposed_diff_checksum": checksum,
         "raw_diff_bytes_checksum": checksum,
         "final_reviewed_diff_checksum": checksum,
-        "final_artifact_checksum": "sha256:" + "4" * 64,
+        "final_artifact_checksum": final_artifact_checksum,
+        "final_artifact_persisted_checksum": final_artifact_persisted_checksum,
         "primary_deterministic_fallback_used": False,
         "reviewer_deterministic_fallback_used": False,
         "final_diff_ref": str(diff_path),
+        "primary_output_ref": str(primary_path),
+        "final_artifact_ref": str(final_artifact_path),
     }
     chain.update(overrides)
     return {"artifact_refs": {"final_reviewed_diff": str(diff_path)}, "review_chain": chain}
+
+
+def _policy_paths(tmp_path: Path) -> tuple[Path, Path, Path]:
+    run_dir = tmp_path / "run"
+    sandbox = run_dir / "workspaces" / "sandbox"
+    legacy = tmp_path / "legacy"
+    app = sandbox / "src" / "main" / "java" / "App.java"
+    app.parent.mkdir(parents=True, exist_ok=True)
+    app.write_text("old\n", encoding="utf-8")
+    legacy.mkdir(parents=True, exist_ok=True)
+    return sandbox, run_dir, legacy
+
+
+def _policy_payloads(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    return [
+        json.loads(event.payload_json)
+        for event in SqliteV2JobEventRepository(conn).list_by_job("job-wf04a")
+        if event.type == EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED
+    ]
 
 
 def _valid_primary_json() -> str:
@@ -134,7 +183,7 @@ def _valid_primary_json() -> str:
                 "diff --git a/src/main/java/App.java b/src/main/java/App.java\n"
                 "--- a/src/main/java/App.java\n"
                 "+++ b/src/main/java/App.java\n"
-                "@@ -1,3 +1,3 @@\n"
+                "@@ -1,2 +1,2 @@\n"
                 "-old line\n"
                 "+new line\n"
                 " unchanged\n"
@@ -198,12 +247,23 @@ class _TxAssertingRepairClient:
 
 
 def _unknown_failure_result(run_dir: Path) -> dict[str, Any]:
+    sandbox = run_dir / "workspaces" / "sandbox"
+    legacy = run_dir.parent / "legacy"
+    app = sandbox / "src" / "main" / "java" / "App.java"
+    app.parent.mkdir(parents=True, exist_ok=True)
+    app.write_text("old line\nunchanged\n", encoding="utf-8")
+    legacy.mkdir(parents=True, exist_ok=True)
     return {
         "build_status": "BUILD_FAILED",
         "test_status": "",
         "run_dir": str(run_dir),
+        "sandbox_path": str(sandbox),
+        "legacy_path": str(legacy),
         "failure_summary": "Build failed with opaque status",
+        "changed_files": ["src/main/java/App.java"],
         "artifact_refs": {
+            "sandbox_path": str(sandbox),
+            "legacy_path": str(legacy),
             "build_error_contract": "artifacts/build_error_contract.json",
             "test_agent_log": "artifacts/test_agent.log",
             "test_report": "artifacts/test_report.xml",
@@ -216,7 +276,8 @@ def _persist(conn: sqlite3.Connection, tmp_path: Path, **overrides: Any) -> tupl
     event_repo = SqliteV2JobEventRepository(conn)
     evidence = _evidence()
     context = _context(evidence)
-    output_dir = tmp_path / "review-chain"
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
     service = LlmReadOnlyCandidatePersistenceService(
         repair_repo=repair_repo,
         candidate_repo=candidate_repo,
@@ -228,6 +289,9 @@ def _persist(conn: sqlite3.Connection, tmp_path: Path, **overrides: Any) -> tupl
         context_pack=context,
         chain_result=_chain(output_dir, context, **overrides),
         output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
         source_proposal_id="source-proposal-1",
         source_gate_id="source-gate-1",
     )
@@ -238,11 +302,26 @@ def test_accept_persists_one_proposal_one_candidate_and_replay_is_idempotent(tmp
     conn = _conn()
     first, repair_repo, candidate_repo, _ = _persist(conn, tmp_path)
     second, _, _, _ = _persist(conn, tmp_path)
+    record = repair_repo.get_proposal(first.llm_candidate_proposal_id)
+    latest = candidate_repo.latest_public_for_job("job-wf04a")
 
     assert first.status == "persisted"
     assert second.status == "idempotent"
     assert len(repair_repo.list_proposals_by_job("job-wf04a")) == 1
-    assert candidate_repo.latest_public_for_job("job-wf04a")["repair_candidate_id"] == first.llm_repair_candidate_id
+    assert record is not None
+    assert record.policy_validation_checksum
+    assert latest["repair_candidate_id"] == first.llm_repair_candidate_id
+    assert latest["patch_source"] == PATCH_SOURCE_LLM_REVIEWED
+    assert latest["policy_id"] == POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1
+    assert latest["policy_validation_checksum"] == record.policy_validation_checksum
+    policy_events = [
+        json.loads(event.payload_json)
+        for event in SqliteV2JobEventRepository(conn).list_by_job("job-wf04a")
+        if event.type == EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED
+    ]
+    assert len(policy_events) == 1
+    assert policy_events[0]["decision"] == "ALLOWED"
+    assert policy_events[0]["policy_checksum"] == record.policy_validation_checksum
     replay_events: list[str] = []
     emit_llm_read_only_candidate_event(
         event_sink=lambda **kwargs: replay_events.append(kwargs["event_type"]),
@@ -289,7 +368,8 @@ def test_candidate_insert_failure_rolls_back_proposal(tmp_path: Path) -> None:
     candidate_repo = FailingCandidateRepo(conn)
     evidence = _evidence()
     context = _context(evidence)
-    output_dir = tmp_path / "review-chain"
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
     result = LlmReadOnlyCandidatePersistenceService(
         repair_repo=repair_repo,
         candidate_repo=candidate_repo,
@@ -300,6 +380,9 @@ def test_candidate_insert_failure_rolls_back_proposal(tmp_path: Path) -> None:
         context_pack=context,
         chain_result=_chain(output_dir, context),
         output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
     )
 
     assert result.status == "blocked"
@@ -316,7 +399,8 @@ def test_event_failure_rolls_back_proposal_and_candidate(tmp_path: Path) -> None
     repair_repo, candidate_repo = _repos(conn)
     evidence = _evidence()
     context = _context(evidence)
-    output_dir = tmp_path / "review-chain"
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
 
     result = LlmReadOnlyCandidatePersistenceService(
         repair_repo=repair_repo,
@@ -328,6 +412,9 @@ def test_event_failure_rolls_back_proposal_and_candidate(tmp_path: Path) -> None
         context_pack=context,
         chain_result=_chain(output_dir, context),
         output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
     )
 
     assert result.status == "blocked"
@@ -353,7 +440,8 @@ def test_missing_repository_blocks_configuration(tmp_path: Path) -> None:
     repair_repo, _ = _repos(conn)
     evidence = _evidence()
     context = _context(evidence)
-    output_dir = tmp_path / "review-chain"
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
 
     result = LlmReadOnlyCandidatePersistenceService(
         repair_repo=repair_repo,
@@ -365,6 +453,9 @@ def test_missing_repository_blocks_configuration(tmp_path: Path) -> None:
         context_pack=context,
         chain_result=_chain(output_dir, context),
         output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
     )
 
     assert result.status == "blocked"
@@ -376,7 +467,8 @@ def test_missing_event_repository_blocks_without_rows_or_events(tmp_path: Path) 
     repair_repo, candidate_repo = _repos(conn)
     evidence = _evidence()
     context = _context(evidence)
-    output_dir = tmp_path / "review-chain"
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
 
     result = LlmReadOnlyCandidatePersistenceService(
         repair_repo=repair_repo,
@@ -388,6 +480,9 @@ def test_missing_event_repository_blocks_without_rows_or_events(tmp_path: Path) 
         context_pack=context,
         chain_result=_chain(output_dir, context),
         output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
     )
 
     assert result.status == "blocked"
@@ -402,7 +497,8 @@ def test_events_order_completed_then_candidate_and_failure_is_candidate_specific
     repair_repo, candidate_repo = _repos(conn)
     evidence = _evidence()
     context = _context(evidence)
-    output_dir = tmp_path / "review-chain"
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
     conn.execute(
         "INSERT INTO v2_job_events (event_id, job_id, stage, type, status, message, payload_json, created_at, sequence) "
         "VALUES ('e-start', 'job-wf04a', 1, 'llm_review_chain_started', 'started', '', '{}', '2026-01-01T00:00:00Z', 1)"
@@ -421,6 +517,9 @@ def test_events_order_completed_then_candidate_and_failure_is_candidate_specific
         context_pack=context,
         chain_result=_chain(output_dir, context),
         output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
     )
     blocked = type(result)(
         status="blocked",
@@ -435,9 +534,10 @@ def test_events_order_completed_then_candidate_and_failure_is_candidate_specific
         result=blocked,
     )
 
-    assert events[:3] == [
+    assert events[:4] == [
         "llm_review_chain_started",
         "llm_review_chain_completed",
+        EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED,
         EVENT_LLM_READ_ONLY_CANDIDATE_PERSISTED,
     ]
     assert events[-1] == EVENT_LLM_READ_ONLY_CANDIDATE_BLOCKED
@@ -449,7 +549,8 @@ def test_diff_outside_output_dir_and_checksum_mismatch_rejected(tmp_path: Path) 
     repair_repo, candidate_repo = _repos(conn)
     evidence = _evidence()
     context = _context(evidence)
-    output_dir = tmp_path / "review-chain"
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
     outside = tmp_path / "outside.diff"
     outside.write_text("diff --git a/x b/x\n", encoding="utf-8")
     chain = _chain(output_dir, context)
@@ -467,6 +568,9 @@ def test_diff_outside_output_dir_and_checksum_mismatch_rejected(tmp_path: Path) 
         context_pack=context,
         chain_result=chain,
         output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
     )
     mismatch = service.persist(
         decision=_decision(evidence, context),
@@ -474,11 +578,562 @@ def test_diff_outside_output_dir_and_checksum_mismatch_rejected(tmp_path: Path) 
         context_pack=context,
         chain_result=_chain(output_dir, context, raw_diff_bytes_checksum="sha256:" + "8" * 64),
         output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
     )
 
-    assert outside_result.reason == "reviewed_diff_ref_outside_output_dir"
-    assert mismatch.reason in {"llm_candidate_invalid_review_chain", "reviewed_diff_checksum_mismatch"}
+    assert outside_result.reason == "reviewed_llm_patch_policy_rejected"
+    policy_events = [event for event in SqliteV2JobEventRepository(conn).list_by_job("job-wf04a") if event.type == EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED]
+    outside_payload = json.loads(policy_events[0].payload_json)
+    mismatch_payload = json.loads(policy_events[-1].payload_json)
+
+    assert outside_payload["decision"] == "BLOCKED"
+    assert outside_payload["reason_codes"] == ["reviewed_diff_ref_outside_output_dir"]
+    assert mismatch.reason == "reviewed_llm_patch_policy_rejected"
+    assert mismatch_payload["decision"] == "BLOCKED"
+    assert mismatch_payload["reason_codes"] == ["reviewed_diff_checksum_mismatch"]
     assert repair_repo.list_proposals_by_job("job-wf04a") == ()
+
+
+def test_missing_diff_reference_is_audited_and_blocks_candidate(tmp_path: Path) -> None:
+    conn = _conn()
+    repair_repo, candidate_repo = _repos(conn)
+    evidence = _evidence()
+    context = _context(evidence)
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
+    chain = _chain(output_dir, context)
+    chain["review_chain"]["final_diff_ref"] = ""
+    chain["artifact_refs"]["final_reviewed_diff"] = ""
+
+    result = LlmReadOnlyCandidatePersistenceService(
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        event_repo=SqliteV2JobEventRepository(conn),
+    ).persist(
+        decision=_decision(evidence, context),
+        failure_evidence=evidence,
+        context_pack=context,
+        chain_result=chain,
+        output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
+    )
+    payload = _policy_payloads(conn)[-1]
+
+    assert result.status == "blocked"
+    assert payload["decision"] == "BLOCKED"
+    assert payload["reason_codes"] == ["reviewed_diff_ref_invalid"]
+    assert repair_repo.list_proposals_by_job("job-wf04a") == ()
+    assert candidate_repo.latest_public_for_job("job-wf04a") is None
+
+
+def test_missing_referenced_diff_file_is_audited_and_blocks_candidate(tmp_path: Path) -> None:
+    conn = _conn()
+    repair_repo, candidate_repo = _repos(conn)
+    evidence = _evidence()
+    context = _context(evidence)
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
+    missing = output_dir / "missing.diff"
+    chain = _chain(output_dir, context)
+    chain["review_chain"]["final_diff_ref"] = str(missing)
+    chain["artifact_refs"]["final_reviewed_diff"] = str(missing)
+
+    result = LlmReadOnlyCandidatePersistenceService(
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        event_repo=SqliteV2JobEventRepository(conn),
+    ).persist(
+        decision=_decision(evidence, context),
+        failure_evidence=evidence,
+        context_pack=context,
+        chain_result=chain,
+        output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
+    )
+    payload = _policy_payloads(conn)[-1]
+
+    assert result.status == "blocked"
+    assert payload["decision"] == "BLOCKED"
+    assert payload["reason_codes"] == ["reviewed_diff_file_missing"]
+    assert repair_repo.list_proposals_by_job("job-wf04a") == ()
+    assert candidate_repo.latest_public_for_job("job-wf04a") is None
+
+
+@pytest.mark.parametrize(
+    ("ref_key", "checksum_key", "expected_reason"),
+    [
+        ("primary_output_ref", "primary_output_artifact_checksum", "primary_output_artifact_invalid"),
+        ("final_artifact_ref", "final_artifact_persisted_checksum", "final_artifact_invalid"),
+    ],
+)
+def test_tampered_referenced_json_artifact_is_blocked(
+    tmp_path: Path,
+    ref_key: str,
+    checksum_key: str,
+    expected_reason: str,
+) -> None:
+    conn = _conn()
+    repair_repo, candidate_repo = _repos(conn)
+    evidence = _evidence()
+    context = _context(evidence)
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
+    chain = _chain(output_dir, context)
+    Path(chain["review_chain"][ref_key]).write_text(json.dumps({"changed_files": ["src/main/java/Tampered.java"]}), encoding="utf-8")
+
+    result = LlmReadOnlyCandidatePersistenceService(
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        event_repo=SqliteV2JobEventRepository(conn),
+    ).persist(
+        decision=_decision(evidence, context),
+        failure_evidence=evidence,
+        context_pack=context,
+        chain_result=chain,
+        output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
+    )
+    payload = _policy_payloads(conn)[-1]
+
+    assert result.status == "blocked"
+    assert payload["reason_codes"] == [expected_reason]
+    assert payload["details"][0]["detail"] == "json_artifact_checksum_mismatch"
+    assert repair_repo.list_proposals_by_job("job-wf04a") == ()
+    assert candidate_repo.latest_public_for_job("job-wf04a") is None
+
+
+@pytest.mark.parametrize(
+    ("checksum_key", "expected_reason"),
+    [
+        ("primary_output_artifact_checksum", "primary_output_artifact_invalid"),
+        ("final_artifact_persisted_checksum", "final_artifact_invalid"),
+    ],
+)
+def test_missing_persisted_json_artifact_checksum_field_is_blocked(
+    tmp_path: Path,
+    checksum_key: str,
+    expected_reason: str,
+) -> None:
+    conn = _conn()
+    repair_repo, candidate_repo = _repos(conn)
+    evidence = _evidence()
+    context = _context(evidence)
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
+    chain = _chain(output_dir, context)
+    chain["review_chain"].pop(checksum_key)
+
+    result = LlmReadOnlyCandidatePersistenceService(
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        event_repo=SqliteV2JobEventRepository(conn),
+    ).persist(
+        decision=_decision(evidence, context),
+        failure_evidence=evidence,
+        context_pack=context,
+        chain_result=chain,
+        output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
+    )
+    payload = _policy_payloads(conn)[-1]
+
+    assert result.status == "blocked"
+    assert payload["reason_codes"] == [expected_reason]
+    assert payload["details"][0]["detail"] == "json_artifact_checksum_missing"
+    assert repair_repo.list_proposals_by_job("job-wf04a") == ()
+    assert candidate_repo.latest_public_for_job("job-wf04a") is None
+
+
+@pytest.mark.parametrize(
+    ("ref_key", "checksum_key", "expected_reason"),
+    [
+        ("primary_output_ref", "primary_output_artifact_checksum", "primary_output_artifact_invalid"),
+        ("final_artifact_ref", "final_artifact_persisted_checksum", "final_artifact_invalid"),
+    ],
+)
+def test_json_artifact_reference_outside_output_dir_is_blocked(
+    tmp_path: Path,
+    ref_key: str,
+    checksum_key: str,
+    expected_reason: str,
+) -> None:
+    conn = _conn()
+    repair_repo, candidate_repo = _repos(conn)
+    evidence = _evidence()
+    context = _context(evidence)
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
+    chain = _chain(output_dir, context)
+    outside = tmp_path / f"{ref_key}.json"
+    outside.write_text(json.dumps({"changed_files": ["src/main/java/App.java"]}), encoding="utf-8")
+    chain["review_chain"][ref_key] = str(outside)
+    chain["review_chain"][checksum_key] = "sha256:" + sha256_hex(outside.read_bytes())
+
+    result = LlmReadOnlyCandidatePersistenceService(
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        event_repo=SqliteV2JobEventRepository(conn),
+    ).persist(
+        decision=_decision(evidence, context),
+        failure_evidence=evidence,
+        context_pack=context,
+        chain_result=chain,
+        output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
+    )
+    payload = _policy_payloads(conn)[-1]
+
+    assert result.status == "blocked"
+    assert payload["reason_codes"] == [expected_reason]
+    assert payload["details"][0]["detail"] == "reviewed_diff_ref_outside_output_dir"
+    assert repair_repo.list_proposals_by_job("job-wf04a") == ()
+    assert candidate_repo.latest_public_for_job("job-wf04a") is None
+
+
+def test_invalid_utf8_json_artifact_is_blocked(tmp_path: Path) -> None:
+    conn = _conn()
+    repair_repo, candidate_repo = _repos(conn)
+    evidence = _evidence()
+    context = _context(evidence)
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
+    chain = _chain(output_dir, context)
+    primary = Path(chain["review_chain"]["primary_output_ref"])
+    primary.write_bytes(b'{"changed_files":["src/main/java/App.java"],"bad":"\xff"}')
+    chain["review_chain"]["primary_output_artifact_checksum"] = "sha256:" + sha256_hex(primary.read_bytes())
+
+    result = LlmReadOnlyCandidatePersistenceService(
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        event_repo=SqliteV2JobEventRepository(conn),
+    ).persist(
+        decision=_decision(evidence, context),
+        failure_evidence=evidence,
+        context_pack=context,
+        chain_result=chain,
+        output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
+    )
+    payload = _policy_payloads(conn)[-1]
+
+    assert result.status == "blocked"
+    assert payload["reason_codes"] == ["primary_output_artifact_invalid"]
+    assert payload["details"][0]["detail"] == "invalid_json_encoding"
+    assert repair_repo.list_proposals_by_job("job-wf04a") == ()
+    assert candidate_repo.latest_public_for_job("job-wf04a") is None
+
+
+def test_route_scope_is_not_derived_from_evidence_changed_files(tmp_path: Path) -> None:
+    conn = _conn()
+    repair_repo, candidate_repo = _repos(conn)
+    evidence = build_failure_evidence(
+        failure_source=FailureSource.BUILD,
+        job_id="job-wf04a",
+        stage_index=1,
+        command_id="cmd-wf04a",
+        failure_summary="Unknown build failure",
+        changed_files=("evidence/diagnostic-only.txt",),
+    )
+    context = _context(evidence)
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
+
+    result = LlmReadOnlyCandidatePersistenceService(
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        event_repo=SqliteV2JobEventRepository(conn),
+    ).persist(
+        decision=_decision(evidence, context),
+        failure_evidence=evidence,
+        context_pack=context,
+        chain_result=_chain(output_dir, context, changed_files=["src/main/java/App.java"]),
+        output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
+    )
+    payload = _policy_payloads(conn)[-1]
+
+    assert result.status == "persisted"
+    assert payload["decision"] == "ALLOWED"
+    assert payload["evidence_changed_files"] == ["evidence/diagnostic-only.txt"]
+    assert payload["declared_changed_files"] == ["src/main/java/App.java"]
+    assert payload["allowed_route_scope"] != payload["evidence_changed_files"]
+    assert repair_repo.list_proposals_by_job("job-wf04a")
+    assert candidate_repo.latest_public_for_job("job-wf04a")["apply_enabled"] is False
+
+
+def test_replayed_blocked_policy_event_has_stable_checksum_and_bounded_duplicates(tmp_path: Path) -> None:
+    conn = _conn()
+    repair_repo, candidate_repo = _repos(conn)
+    evidence = _evidence()
+    context = _context(evidence)
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
+    unsafe_diff = (
+        "diff --git a/scripts/run.sh b/scripts/run.sh\n"
+        "--- a/scripts/run.sh\n"
+        "+++ b/scripts/run.sh\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    chain = _chain(output_dir, context, diff_text=unsafe_diff, changed_files=["scripts/run.sh"])
+    service = LlmReadOnlyCandidatePersistenceService(
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        event_repo=SqliteV2JobEventRepository(conn),
+    )
+
+    first = service.persist(
+        decision=_decision(evidence, context),
+        failure_evidence=evidence,
+        context_pack=context,
+        chain_result=chain,
+        output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
+    )
+    second = service.persist(
+        decision=_decision(evidence, context),
+        failure_evidence=evidence,
+        context_pack=context,
+        chain_result=chain,
+        output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
+    )
+    payloads = _policy_payloads(conn)
+
+    assert first.status == second.status == "blocked"
+    assert len(payloads) == 2
+    assert payloads[0]["policy_checksum"] == payloads[1]["policy_checksum"]
+    assert payloads[0]["policy_id"] == payloads[1]["policy_id"] == POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1
+    assert repair_repo.list_proposals_by_job("job-wf04a") == ()
+    assert candidate_repo.latest_public_for_job("job-wf04a") is None
+
+
+def test_reviewed_llm_diff_policy_rejection_blocks_candidate_persistence(tmp_path: Path) -> None:
+    conn = _conn()
+    repair_repo, candidate_repo = _repos(conn)
+    evidence = _evidence()
+    context = _context(evidence)
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
+    unsafe_diff = (
+        "diff --git a/.env b/.env\n"
+        "--- a/.env\n"
+        "+++ b/.env\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-OLD=1\n"
+        "+NEW=2\n"
+    )
+
+    result = LlmReadOnlyCandidatePersistenceService(
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        event_repo=SqliteV2JobEventRepository(conn),
+    ).persist(
+        decision=_decision(evidence, context),
+        failure_evidence=evidence,
+        context_pack=context,
+        chain_result=_chain(output_dir, context, diff_text=unsafe_diff),
+        output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
+    )
+    events = SqliteV2JobEventRepository(conn).list_by_job("job-wf04a")
+    policy_event = [event for event in events if event.type == EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED][-1]
+    policy_payload = json.loads(policy_event.payload_json)
+
+    assert result.status == "blocked"
+    assert result.reason == "reviewed_llm_patch_policy_rejected"
+    assert policy_payload["decision"] == "BLOCKED"
+    assert "shared_path_validation_failed" in policy_payload["reason_codes"]
+    assert repair_repo.list_proposals_by_job("job-wf04a") == ()
+    assert candidate_repo.latest_public_for_job("job-wf04a") is None
+
+
+def test_m1_unknown_runtime_sentinel_test_masking_is_policy_blocked(tmp_path: Path) -> None:
+    conn = _conn()
+    repair_repo, candidate_repo = _repos(conn)
+    evidence = build_failure_evidence(
+        failure_source=FailureSource.TEST,
+        job_id="job-wf04a",
+        stage_index=1,
+        command_id="cmd-wf04a",
+        failure_summary="M1_UNKNOWN_RUNTIME_SENTINEL: migrated runtime behavior requires governed review",
+        changed_files=("src/test/java/com/example/UnknownRuntimeTest.java",),
+    )
+    context = _context(evidence)
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    test_file = sandbox / "src" / "test" / "java" / "com" / "example" / "UnknownRuntimeTest.java"
+    test_file.parent.mkdir(parents=True, exist_ok=True)
+    test_file.write_text(
+        "package com.example;\n"
+        "class UnknownRuntimeTest {\n"
+        "  void migratedRuntimeBehavior() {\n"
+        "    org.junit.jupiter.api.Assertions.assertThrows(RuntimeException.class, () -> {\n"
+        "      throw new RuntimeException(\"M1_UNKNOWN_RUNTIME_SENTINEL\");\n"
+        "    });\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    output_dir = run_dir / "review-chain"
+    masking_diff = (Path(__file__).parent / "fixtures" / "m1_unknown_runtime_sentinel_reviewed_repair.diff").read_text(encoding="utf-8")
+    assert "M1_UNKNOWN_RUNTIME_SENTINEL" in masking_diff
+
+    result = LlmReadOnlyCandidatePersistenceService(
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        event_repo=SqliteV2JobEventRepository(conn),
+    ).persist(
+        decision=_decision(evidence, context),
+        failure_evidence=evidence,
+        context_pack=context,
+        chain_result=_chain(
+            output_dir,
+            context,
+            diff_text=masking_diff,
+            changed_files=["src/test/java/com/example/UnknownRuntimeTest.java"],
+        ),
+        output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
+    )
+    events = SqliteV2JobEventRepository(conn).list_by_job("job-wf04a")
+    policy_payload = json.loads([event for event in events if event.type == EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED][-1].payload_json)
+
+    assert result.status == "blocked"
+    assert result.reason == "reviewed_llm_patch_policy_rejected"
+    assert policy_payload["decision"] == "BLOCKED"
+    assert REASON_ASSERTION_WEAKENING in policy_payload["reason_codes"]
+    assert REASON_DIRECT_TEST_FAILURE_MASKING in policy_payload["reason_codes"]
+    assert REASON_EXPECTED_EXCEPTION_MASKING in policy_payload["reason_codes"]
+    assert repair_repo.list_proposals_by_job("job-wf04a") == ()
+    assert candidate_repo.latest_public_for_job("job-wf04a") is None
+    assert conn.execute("SELECT COUNT(*) FROM v2_repair_apply_candidates").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM v2_phase_gates").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM v2_stage_commands WHERE job_id = ? AND stage_index > 1", ("job-wf04a",)).fetchone()[0] == 0
+    assert not any("approval" in event.type or "apply" in event.type or "downstream" in event.type for event in events)
+
+
+def test_reviewer_decision_other_than_accept_is_audited_and_blocks_candidate(tmp_path: Path) -> None:
+    conn = _conn()
+    repair_repo, candidate_repo = _repos(conn)
+    evidence = _evidence()
+    context = _context(evidence)
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
+
+    result = LlmReadOnlyCandidatePersistenceService(
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        event_repo=SqliteV2JobEventRepository(conn),
+    ).persist(
+        decision=_decision(evidence, context),
+        failure_evidence=evidence,
+        context_pack=context,
+        chain_result=_chain(output_dir, context, reviewer_decision="reject"),
+        output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
+    )
+    payload = json.loads([event for event in SqliteV2JobEventRepository(conn).list_by_job("job-wf04a") if event.type == EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED][-1].payload_json)
+
+    assert result.status == "blocked"
+    assert payload["decision"] == "BLOCKED"
+    assert payload["reason_codes"] == ["reviewer_decision_not_accepted"]
+    assert repair_repo.list_proposals_by_job("job-wf04a") == ()
+    assert candidate_repo.latest_public_for_job("job-wf04a") is None
+
+
+def test_invalid_diff_encoding_is_audited_and_blocks_candidate(tmp_path: Path) -> None:
+    conn = _conn()
+    repair_repo, candidate_repo = _repos(conn)
+    evidence = _evidence()
+    context = _context(evidence)
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
+    invalid_bytes = (
+        b"diff --git a/src/main/java/App.java b/src/main/java/App.java\n"
+        b"--- a/src/main/java/App.java\n"
+        b"+++ b/src/main/java/App.java\n"
+        b"@@ -1,1 +1,1 @@\n"
+        b"-old\n+\xff\n"
+    )
+
+    result = LlmReadOnlyCandidatePersistenceService(
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        event_repo=SqliteV2JobEventRepository(conn),
+    ).persist(
+        decision=_decision(evidence, context),
+        failure_evidence=evidence,
+        context_pack=context,
+        chain_result=_chain(output_dir, context, diff_bytes=invalid_bytes),
+        output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
+    )
+    payload = json.loads([event for event in SqliteV2JobEventRepository(conn).list_by_job("job-wf04a") if event.type == EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED][-1].payload_json)
+
+    assert result.status == "blocked"
+    assert payload["decision"] == "BLOCKED"
+    assert payload["reason_codes"] == ["invalid_encoding"]
+    assert repair_repo.list_proposals_by_job("job-wf04a") == ()
+    assert candidate_repo.latest_public_for_job("job-wf04a") is None
+
+
+def test_declared_changed_files_mismatch_is_audited_and_blocks_candidate(tmp_path: Path) -> None:
+    conn = _conn()
+    repair_repo, candidate_repo = _repos(conn)
+    evidence = _evidence()
+    context = _context(evidence)
+    sandbox, run_dir, legacy = _policy_paths(tmp_path)
+    output_dir = run_dir / "review-chain"
+
+    result = LlmReadOnlyCandidatePersistenceService(
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        event_repo=SqliteV2JobEventRepository(conn),
+    ).persist(
+        decision=_decision(evidence, context),
+        failure_evidence=evidence,
+        context_pack=context,
+        chain_result=_chain(output_dir, context, changed_files=["src/main/java/Other.java"]),
+        output_dir=output_dir,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
+    )
+    payload = json.loads([event for event in SqliteV2JobEventRepository(conn).list_by_job("job-wf04a") if event.type == EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED][-1].payload_json)
+
+    assert result.status == "blocked"
+    assert "declared_changed_files_mismatch" in payload["reason_codes"]
+    assert repair_repo.list_proposals_by_job("job-wf04a") == ()
+    assert candidate_repo.latest_public_for_job("job-wf04a") is None
 
 
 def test_exact_diff_bytes_projection_and_bindings_preserved(tmp_path: Path) -> None:
@@ -512,6 +1167,13 @@ def test_exact_diff_bytes_projection_and_bindings_preserved(tmp_path: Path) -> N
 
     assert metadata["context_checksum"] == context.context_pack_checksum
     assert metadata["candidate_checksum"] == result.candidate_checksum
+    assert metadata["patch_source"] == PATCH_SOURCE_LLM_REVIEWED
+    assert metadata["policy_id"] == POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1
+    assert metadata["policy_validation"]["patch_source"] == PATCH_SOURCE_LLM_REVIEWED
+    assert metadata["policy_validation"]["policy_id"] == POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1
+    assert metadata["policy_validation"]["decision"] == "ALLOWED"
+    assert "deterministic_rule_id" not in metadata["policy_validation"]
+    assert metadata["policy_validation_checksum"] == record.policy_validation_checksum
     assert "deterministic_rule_id" not in json.dumps(metadata)
     assert projection["safe_diff_preview"]["checksum_mismatch"] is False
     assert projection["safe_diff_preview"]["files"][0]["path"] == "src/main/java/App.java"
@@ -632,6 +1294,8 @@ def test_app_runner_dispatch_uses_authoritative_diagnosis_and_persists_once(tmp_
     assert route_payload["classification_status"] == "unknown"
     assert metadata["failure_evidence_checksum"] == route_payload["evidence_checksum"]
     assert metadata["context_checksum"] == route_payload["context_checksum"]
+    assert metadata["policy_id"] == POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1
+    assert record.policy_validation_checksum
     assert Path(record.diff_ref).is_file()
     assert projection["safe_diff_preview"]["checksum_mismatch"] is False
     assert projection["safe_diff_preview"]["files"]
@@ -642,6 +1306,7 @@ def test_app_runner_dispatch_uses_authoritative_diagnosis_and_persists_once(tmp_
             "repair_route_selected",
             "llm_review_chain_started",
             "llm_review_chain_completed",
+            EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED,
             "llm_read_only_candidate_persisted",
             "llm_read_only_candidate_blocked",
         }
@@ -649,6 +1314,7 @@ def test_app_runner_dispatch_uses_authoritative_diagnosis_and_persists_once(tmp_
         "repair_route_selected",
         "llm_review_chain_started",
         "llm_review_chain_completed",
+        EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED,
         "llm_read_only_candidate_persisted",
     ]
     assert "repair_review_required" not in event_types
