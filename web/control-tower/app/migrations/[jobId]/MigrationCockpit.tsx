@@ -131,13 +131,13 @@ export function buildStageTimelineEntries(
   }
 
   const stageStatusByIndex = new Map(stages.map((stage) => [stage.stage_index, stage.chain_status]));
-  console.log("[route-steps-before]", routeSteps?.map((s) => ({ route_step_index: s.route_step_index, stage_index: s.stage_index, status: s.status })));
-  const result = routeSteps.map((routeStep) => ({
-    ...routeStep,
-    status: stageStatusByIndex.get(routeStep.stage_index) ?? routeStep.status,
-  }));
-  console.log("[route-steps-after]", result.map((s) => ({ route_step_index: s.route_step_index, stage_index: s.stage_index, status: s.status })));
-  return result;
+  return routeSteps.map((routeStep) => {
+    const executionStageIndex = routeStep.execution_stage_index ?? routeStep.stage_index;
+    return {
+      ...routeStep,
+      status: stageStatusByIndex.get(executionStageIndex) ?? routeStep.status,
+    };
+  });
 }
 
 export function mergeCockpitLiveRefreshResults(
