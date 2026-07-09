@@ -194,7 +194,12 @@ from migration_factory.control_tower.application.v2_gate_artifact_resolver impor
 )
 from migration_factory.repair_loop.patch_gate import evaluate_patch_proposal, extract_touched_paths
 from migration_factory.repair_loop.patch_apply import apply_patch_to_sandbox
-from migration_factory.repair_loop.validation_runner import ValidationResult, run_validation_after_patch
+from migration_factory.repair_loop.validation_runner import (
+    ValidationExecutionContext,
+    ValidationResult,
+    run_validation_after_patch,
+)
+from migration_factory.control_tower.domain.checksums import sha256_canonical_json
 from migration_factory.repair_loop.failure_evidence import (
     FailureSource,
     build_failure_evidence,
@@ -675,6 +680,13 @@ class RepairProposalRevisionRequest(BaseModel):
     previous_reviewer_verdict_id: str = Field(min_length=1)
     expected_gate_checksum: str | None = None
     idempotency_key: str | None = None
+
+
+class RepairProposalRejectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    proposal_id: str = Field(min_length=1)
+    reason: str = Field(default="", max_length=4000)
+    idempotency_key: str = Field(min_length=1)
 
 
 # ── PR-E: Approve reviewed repair sandbox apply ──────────────────────
@@ -1592,7 +1604,7 @@ def create_app(
     @app.post("/v1/v2/migration-jobs/{job_id}/cancel")
     def cancel_v2_migration_job(job_id: str) -> dict[str, Any]:
         """Idempotently cancel a V2 migration job and stop owned execution."""
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
             terminal_status = _v2_cancel_terminal_status(events)
@@ -2001,6 +2013,69 @@ def create_app(
                 result.reason or result.status,
             )
 
+        # Completion-gate CONTINUE is the explicit repair-to-migration bridge.
+        # Queue from the server-owned gate/proposal state, commit that short
+        # transaction, then launch the established runner outside the UoW.
+        continuation = None
+        if (
+            action_value == GateDecision.CONTINUE.value
+            and gate.gate_phase == GatePhase.STAGE_COMPLETION_REVIEW.value
+            and result.status == "executed"
+        ):
+            proposal = next(
+                (item for item in uow.v2_repairs.list_proposals_by_job(job_id)
+                 if getattr(item, "next_gate_id", None) == gate_id),
+                None,
+            )
+            try:
+                refs = json.loads(gate.source_artifact_refs_json or "[]")
+            except (TypeError, json.JSONDecodeError):
+                refs = []
+            sandbox_ref = next((str(ref)[len("sandbox:"):] for ref in refs
+                                if str(ref).startswith("sandbox:")), "")
+            if proposal is None or not sandbox_ref:
+                raise _error(status.HTTP_409_CONFLICT, "CONTINUATION_CONTEXT_MISSING",
+                             "Successful repair continuation lacks server-owned proposal or sandbox context.")
+            with unit_of_work_factory() as continuation_uow:
+                job = continuation_uow.v2_jobs.get(job_id)
+                if job is None:
+                    raise _error(status.HTTP_404_NOT_FOUND, "JOB_NOT_FOUND", "Migration job not found.")
+                service = V2StageProgressionService(
+                    setup_repo=continuation_uow.v2_setups,
+                    command_repo=continuation_uow.v2_commands,
+                    artifact_revision_repo=continuation_uow.artifact_revisions,
+                    run_config_repo=continuation_uow.run_configurations,
+                )
+                queued = service.queue_next_stage(
+                    job_id=job_id,
+                    setup_id=job.setup_id,
+                    current_stage=int(gate.stage_index),
+                    sandbox_path=sandbox_ref,
+                    stage_continuation_policy=StageContinuationPolicy.AUTO_ON_GREEN,
+                    current_stage_result={
+                        "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+                        "build_status": "BUILD_PASSED_IN_SANDBOX",
+                        "test_status": "TEST_PASSED"
+                        if getattr(proposal, "validation_proof_status", "") == "BUILD_AND_TEST_VERIFIED"
+                        else "TESTS_NOT_FOUND",
+                        "sandbox_path": sandbox_ref,
+                    },
+                    current_route_step_index=getattr(proposal, "route_step_index", None),
+                )
+                continuation = {
+                    "status": queued.status,
+                    "command_id": getattr(queued, "command_id", None),
+                    "sandbox_path": sandbox_ref,
+                }
+                continuation_uow.v2_repairs.update_proposal_prf_fields(
+                    proposal.proposal_id,
+                    continuation_command_id=continuation.get("command_id"),
+                    next_gate_status=queued.status,
+                )
+            next_command_id = continuation.get("command_id") if continuation else None
+            if next_command_id:
+                app.state.v2_orchestrator_runner.start(job_id=job_id, command_id=next_command_id)
+
         return {
             "result": {
                 "decision_id": result.decision_id,
@@ -2012,6 +2087,7 @@ def create_app(
                 "result_command_id": result.result_command_id,
                 "result_revision_id": result.result_revision_id,
                 "reason": result.reason,
+                "continuation": continuation,
             }
         }
 
@@ -3447,12 +3523,16 @@ def create_app(
                 return base_actions
             if preview.checksum_mismatch or getattr(preview, "parse_status", "ok") != "ok" or not preview.files:
                 return base_actions
-            return base_actions + ("approve_sandbox_apply",)
+            mutation_actions = ("reject", "approve_sandbox_apply")
+            if getattr(record, "gate_id", None):
+                mutation_actions = ("request_revision",) + mutation_actions
+            return base_actions + mutation_actions
 
         return base_actions
 
     _REPAIR_STATE_EVENT_TYPES: frozenset[str] = frozenset({
         "repair_proposal_ready",
+        "repair_outcome_persisted",
         "reviewed_repair_unavailable",
         "repair_attempts_exhausted",
         "repair_callback_error",
@@ -3518,6 +3598,20 @@ def create_app(
                 created_at=latest_event.created_at,
                 allowed_actions=("view_failure_summary", "view_attempt_history"),
             ))
+        if event_type == "repair_outcome_persisted":
+            if reviewer_decision == "reject":
+                reason_code = "REVIEWER_REJECTED"
+                state_status = "unavailable"
+                actions = ("view_failure_summary", "view_attempt_history")
+            else:
+                reason_code = "REVIEWER_NEEDS_REVISION"
+                state_status = "running"
+                actions = ("view_failure_summary", "view_attempt_history", "view_diff", "view_reviewer_opinion")
+            return repair_unavailable_state_to_dict(RepairUnavailableState(
+                attempted=True, status=state_status, reason_code=reason_code,
+                detail=latest_event.message, event_type=event_type,
+                created_at=latest_event.created_at, allowed_actions=actions,
+            ))
         if event_type == "repair_attempts_exhausted":
             return repair_unavailable_state_to_dict(RepairUnavailableState(
                 attempted=True,
@@ -3564,7 +3658,7 @@ def create_app(
                 created_at=created_at,
                 allowed_actions=allowed + ("view_failure_summary",),
             ))
-        if status == "user_review_required" and reviewer_decision == "reject":
+        if status in {"reviewer_rejected", "user_review_required"} and reviewer_decision == "reject":
             return repair_unavailable_state_to_dict(RepairUnavailableState(
                 attempted=True,
                 status="unavailable",
@@ -3574,7 +3668,7 @@ def create_app(
                 created_at=created_at,
                 allowed_actions=("view_failure_summary", "view_attempt_history"),
             ))
-        if status == "user_review_required" and reviewer_decision == "revise":
+        if status in {"reviewer_revision_required", "user_review_required"} and reviewer_decision == "revise":
             return repair_unavailable_state_to_dict(RepairUnavailableState(
                 attempted=True,
                 status="running",
@@ -3623,6 +3717,9 @@ def create_app(
                         reviewer_verdict_id=getattr(record, "reviewer_verdict_id", None),
                         reviewer_output_checksum=getattr(record, "reviewer_output_checksum", None),
                         policy_validation_checksum=getattr(record, "policy_validation_checksum", None),
+                        reviewer_decision=getattr(record, "reviewer_decision", None),
+                        risk=getattr(record, "risk", None),
+                        reviewer_reasoning=getattr(record, "status_reason", None),
                         allowed_actions=allowed_actions,
                         apply_status=getattr(record, "apply_status", None),
                         rerun_status=getattr(record, "rerun_status", None),
@@ -3676,9 +3773,13 @@ def create_app(
                         reviewer_verdict_id=getattr(record, "reviewer_verdict_id", None),
                         reviewer_output_checksum=getattr(record, "reviewer_output_checksum", None),
                         policy_validation_checksum=getattr(record, "policy_validation_checksum", None),
+                        reviewer_decision=getattr(record, "reviewer_decision", None),
+                        risk=getattr(record, "risk", None),
+                        reviewer_reasoning=getattr(record, "status_reason", None),
                         allowed_actions=allowed_actions,
                         apply_status=getattr(record, "apply_status", None),
                         rerun_status=getattr(record, "rerun_status", None),
+                        validation_proof_status=getattr(record, "validation_proof_status", None),
                     )
                     return {
                         "proposal": reviewed_diff_proposal_to_safe_dict(projection),
@@ -3785,8 +3886,11 @@ def create_app(
                     "STALE_DIFF_CHECKSUM",
                     "previous_diff_checksum does not match the current proposal diff checksum.",
                 )
+            user_instruction = (payload.user_instruction or "").strip()
+            if not user_instruction:
+                raise _error(status.HTTP_422_UNPROCESSABLE_ENTITY, "EMPTY_USER_INSTRUCTION", "User instruction must be non-empty.")
             stored_verdict_id = getattr(record, "reviewer_verdict_id", None)
-            if not stored_verdict_id or payload.previous_reviewer_verdict_id != stored_verdict_id:
+            if stored_verdict_id and payload.previous_reviewer_verdict_id != stored_verdict_id:
                 raise _error(
                     status.HTTP_409_CONFLICT,
                     "STALE_REVIEWER_VERDICT",
@@ -3794,11 +3898,23 @@ def create_app(
                 )
             gate_id = getattr(record, "gate_id", None)
             if not gate_id:
-                raise _error(
-                    status.HTTP_400_BAD_REQUEST,
-                    "PROPOSAL_NO_GATE",
-                    "Proposal has no gate_id.",
+                if getattr(record, "reviewer_decision", None) != "accept":
+                    raise _error(status.HTTP_409_CONFLICT, "PROPOSAL_NOT_REVISABLE",
+                                 "Only an accepted reviewed proposal may request human revision.")
+                uow.v2_repairs.update_proposal_prf_fields(
+                    proposal_id,
+                    status="revision_requested",
+                    status_reason=redact_public_value(user_instruction),
                 )
+                _append_v2_event(
+                    uow, job_id=job_id, stage=getattr(record, "route_step_index", None),
+                    event_type="repair_revision_requested", status="requested",
+                    message="Human requested regeneration of the reviewed repair proposal.",
+                    payload={"proposal_id": proposal_id, "idempotency_key": payload.idempotency_key or ""},
+                )
+                return {"job_id": job_id, "previous_proposal_id": proposal_id,
+                        "proposal": None, "status": "revision_requested", "event_ids": [],
+                        "artifact_refs": {}}
             gate = uow.phase_gates.get(gate_id)
             if gate is None or gate.job_id != job_id:
                 raise _error(
@@ -3946,8 +4062,12 @@ def create_app(
                             reviewer_verdict_id=getattr(new_record, "reviewer_verdict_id", None),
                             reviewer_output_checksum=getattr(new_record, "reviewer_output_checksum", None),
                             policy_validation_checksum=getattr(new_record, "policy_validation_checksum", None),
+                            reviewer_decision=getattr(new_record, "reviewer_decision", None),
+                            risk=getattr(new_record, "risk", None),
+                            reviewer_reasoning=getattr(new_record, "status_reason", None),
                             apply_status=getattr(new_record, "apply_status", None),
                             rerun_status=getattr(new_record, "rerun_status", None),
+                            validation_proof_status=getattr(new_record, "validation_proof_status", None),
                         )
                     )
                 except (ValueError, OSError):
@@ -3963,6 +4083,34 @@ def create_app(
                     "result_revision_id": result.result_revision_id or "",
                 },
             }
+
+    @app.post("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/reject")
+    def reject_repair_proposal(job_id: str, proposal_id: str, payload: RepairProposalRejectRequest) -> dict[str, Any]:
+        """Persist a human rejection; rejected proposals are never applyable."""
+        if payload.proposal_id != proposal_id:
+            raise _error(status.HTTP_400_BAD_REQUEST, "PROPOSAL_ID_MISMATCH", "Request body proposal_id does not match path proposal_id.")
+        # This endpoint performs filesystem/build work.  Use a read-mode UoW
+        # for reloads and let each post-work write commit at the boundary;
+        # the idempotency claim above is the only pre-work writer transaction.
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            record = uow.v2_repairs.get_proposal_for_job(job_id, proposal_id)
+            if record is None:
+                raise _error(status.HTTP_404_NOT_FOUND, "PROPOSAL_NOT_FOUND", f"Proposal {proposal_id!r} not found for job {job_id!r}.")
+            if getattr(record, "status", "") in {"rejected", "reviewer_rejected"}:
+                return {"job_id": job_id, "proposal_id": proposal_id, "status": "idempotent"}
+            if getattr(record, "status", "") not in {"user_review_required", "reviewer_accepted", "approvable"}:
+                raise _error(status.HTTP_409_CONFLICT, "PROPOSAL_NOT_REJECTABLE", f"Proposal status is {getattr(record, 'status', '')!r}.")
+            uow.v2_repairs.update_proposal_prf_fields(
+                proposal_id, status="rejected", reviewer_decision="reject",
+                status_reason=redact_public_value(payload.reason or "Rejected by human reviewer."),
+                completed_at=utc_now_text(), apply_claim_status="failed",
+            )
+            _append_v2_event(uow, job_id=job_id, stage=getattr(record, "route_step_index", None),
+                             event_type="repair_outcome_persisted", status="rejected",
+                             message="Repair proposal rejected by human reviewer.",
+                             payload={"proposal_id": proposal_id, "reviewer_decision": "reject"})
+        return {"job_id": job_id, "proposal_id": proposal_id, "status": "rejected"}
 
     # ── PR-E: Approve reviewed repair sandbox apply ─────────────────
 
@@ -3998,7 +4146,42 @@ def create_app(
                 "Request body proposal_id does not match path proposal_id.",
             )
 
-        with unit_of_work_factory() as uow:
+        # Claim Apply in its own short write transaction.  The claim is
+        # committed before patch/build/test work so a retry cannot execute the
+        # same proposal twice.
+        with unit_of_work_factory() as claim_uow:
+            claim_record = claim_uow.v2_repairs.get_proposal_for_job(job_id, proposal_id)
+            if claim_record is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "PROPOSAL_NOT_FOUND",
+                    f"Proposal {proposal_id!r} not found for job {job_id!r}.",
+                )
+            claim_status = claim_uow.v2_repairs.claim_apply(
+                job_id, proposal_id,
+                payload.idempotency_key,
+                expected_checksum=str(getattr(claim_record, "diff_checksum", "") or ""),
+            )
+            if claim_status != "claimed":
+                if claim_status in {"completed", "failed"}:
+                    return RepairProposalApproveResponse(
+                        job_id=job_id,
+                        proposal_id=proposal_id,
+                        status=str(getattr(claim_record, "status", claim_status)),
+                        apply_status=str(getattr(claim_record, "apply_status", "") or ""),
+                        rerun_status=str(getattr(claim_record, "rerun_status", "") or ""),
+                        next_gate_id=str(getattr(claim_record, "next_gate_id", "") or ""),
+                        next_gate_status=str(getattr(claim_record, "next_gate_status", "") or ""),
+                        rollback_status=str(getattr(claim_record, "rollback_status", "") or ""),
+                        remaining_attempts=int(getattr(claim_record, "remaining_attempts", 0) or 0),
+                    ).model_dump()
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "APPLY_ALREADY_CLAIMED" if claim_status != "idempotency_conflict" else "IDEMPOTENCY_CONFLICT",
+                    "This repair Apply is already claimed or the idempotency key was reused for another proposal.",
+                )
+
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
 
             # 1. Load proposal and validate it belongs to job
@@ -4180,6 +4363,7 @@ def create_app(
                     apply_status=apply_status,
                     rerun_status="",
                     rollback_status="",
+                    apply_claim_status="failed",
                     remaining_attempts=0,
                     completed_at=completed_at,
                 )
@@ -4208,6 +4392,9 @@ def create_app(
                 attempt=getattr(record, "attempt_number", None) or 1,
                 h2_required=apply_context.get("h2_required", False),
                 h2_enabled=apply_context.get("h2_required", False),
+                validation_context=ValidationExecutionContext.from_mapping(
+                    apply_context.get("validation_execution_context")
+                ),
             )
 
             rerun_status = "passed" if validation.passed else "failed"
@@ -4245,6 +4432,13 @@ def create_app(
                     completed_at=completed_at,
                     next_gate_id=next_gate_id,
                     next_gate_status=next_gate_status,
+                    apply_claim_status="completed",
+                    validation_proof_status=(
+                        "BUILD_AND_TEST_VERIFIED" if validation.test_status == "TEST_PASSED"
+                        else "BUILD_VERIFIED_TEST_EVIDENCE_NOT_FOUND"
+                        if validation.test_status == "TESTS_NOT_FOUND"
+                        else "BUILD_AND_TEST_VERIFIED_WITH_WARNINGS"
+                    ),
                 )
                 _append_v2_event(
                     uow,
@@ -4310,6 +4504,13 @@ def create_app(
                     completed_at=completed_at,
                     next_gate_id=next_gate_id,
                     next_gate_status=next_gate_status,
+                    apply_claim_status="completed",
+                    validation_proof_status=(
+                        "BUILD_AND_TEST_VERIFIED" if validation.test_status == "TEST_PASSED"
+                        else "BUILD_VERIFIED_TEST_EVIDENCE_NOT_FOUND"
+                        if validation.test_status == "TESTS_NOT_FOUND"
+                        else "BUILD_AND_TEST_VERIFIED_WITH_WARNINGS"
+                    ),
                 )
                 _append_v2_event(
                     uow,
@@ -12403,7 +12604,7 @@ def _resolve_reviewed_repair_runtime_context(
         deterministic_rule_id = str(
             deterministic_payload.get("deterministic_rule_id") or ""
         )
-    if not deterministic_rule_id:
+    if not deterministic_rule_id or deterministic_rule_id not in ALLOWED_RULE_IDS:
         return None
 
     primary_output_ref = _first_artifact_ref(
@@ -12426,8 +12627,8 @@ def _resolve_reviewed_repair_runtime_context(
         risk = str(payload.get("risk") or "").upper()
         if risk:
             break
-    if not risk:
-        risk = "LOW"
+    if risk not in {"LOW", "MEDIUM", "HIGH"}:
+        return None
 
     expected_validation = tuple(
         str(value)
@@ -12516,6 +12717,43 @@ def _resolve_repair_proposal_runtime_context(
         except (OSError, json.JSONDecodeError):
             evidence_data = {}
 
+    validation_context_data: dict[str, Any] = {}
+    validation_context_ref = getattr(record, "validation_context_ref", None)
+    if validation_context_ref:
+        try:
+            validation_context_path = Path(validation_context_ref)
+            if validation_context_path.is_file():
+                loaded_validation_context = json.loads(validation_context_path.read_text(encoding="utf-8"))
+                validation_context_data = loaded_validation_context if isinstance(loaded_validation_context, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            validation_context_data = {}
+    if validation_context_data:
+        expected_context_checksum = str(getattr(record, "validation_context_checksum", "") or "")
+        if expected_context_checksum and sha256_canonical_json(validation_context_data) != expected_context_checksum:
+            raise _error(
+                status.HTTP_409_CONFLICT,
+                "VALIDATION_CONTEXT_CHECKSUM_MISMATCH",
+                "Persisted validation execution context changed; Apply is fail-closed.",
+            )
+        context_data = {**context_data, **validation_context_data}
+
+    lineage_ref = getattr(record, "lineage_manifest_ref", None)
+    if lineage_ref:
+        try:
+            lineage_payload = json.loads(Path(lineage_ref).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            raise _error(status.HTTP_409_CONFLICT, "LINEAGE_MANIFEST_UNAVAILABLE",
+                         "Repair lineage manifest is unavailable; Apply is fail-closed.")
+        if not isinstance(lineage_payload, dict) or (
+            getattr(record, "lineage_manifest_checksum", None)
+            and sha256_canonical_json(lineage_payload) != getattr(record, "lineage_manifest_checksum")
+        ):
+            raise _error(status.HTTP_409_CONFLICT, "LINEAGE_MANIFEST_CHECKSUM_MISMATCH",
+                         "Repair lineage manifest changed; Apply is fail-closed.")
+        if str(lineage_payload.get("proposal_id") or "") != str(record.proposal_id) or str(lineage_payload.get("diff_checksum") or "") != str(getattr(record, "diff_checksum", "") or ""):
+            raise _error(status.HTTP_409_CONFLICT, "LINEAGE_BINDING_MISMATCH",
+                         "Repair lineage no longer matches the proposal; Apply is fail-closed.")
+
     job = uow.v2_jobs.get(job_id)
     if job is None or not getattr(job, "setup_id", ""):
         return None
@@ -12562,9 +12800,17 @@ def _resolve_repair_proposal_runtime_context(
     if not deterministic_rule_id:
         deterministic_rule_id = str(context_data.get("deterministic_rule_id", "") or "")
     if not deterministic_rule_id:
-        deterministic_rule_id = str(context_data.get("base_repo_state_checksum", "") or "")
-    if not deterministic_rule_id:
-        deterministic_rule_id = getattr(record, "diff_checksum", "") or "repair_apply"
+        raise _error(
+            status.HTTP_400_BAD_REQUEST,
+            "DETERMINISTIC_RULE_ID_MISSING",
+            "No persisted deterministic repair rule ID is available; Apply is fail-closed.",
+        )
+    if deterministic_rule_id not in ALLOWED_RULE_IDS:
+        raise _error(
+            status.HTTP_400_BAD_REQUEST,
+            "DETERMINISTIC_RULE_ID_INVALID",
+            "Persisted deterministic repair rule ID is not allowlisted; Apply is fail-closed.",
+        )
 
     raw_risk = getattr(record, "risk", None)
     if raw_risk is None:
@@ -12600,6 +12846,28 @@ def _resolve_repair_proposal_runtime_context(
         "risk": risk,
         "expected_validation": (),
         "h2_required": h2_required,
+        "validation_execution_context": {
+            "job_id": job_id,
+            "command_id": str(getattr(record, "command_id", "") or context_data.get("command_id") or ""),
+            "stage_index": int(stage_index),
+            "route_step_index": getattr(record, "route_step_index", None),
+            "sandbox_path": str(sandbox_path),
+            "validation_command": context_data.get("validation_command") or (),
+            "validation_unit_id": context_data.get("validation_unit_id") or "",
+            "source_changing_unit": bool(context_data.get("source_changing_unit", True)),
+            "module": context_data.get("module"),
+            "main_class": context_data.get("main_class"),
+            "source_jdk_home_env": context_data.get("source_jdk_home_env"),
+            "target_jdk_home_env": context_data.get("target_jdk_home_env"),
+            "build_timeout_seconds": context_data.get("build_timeout_seconds"),
+            "stop_after_start": bool(context_data.get("stop_after_start", False)),
+            "require_test_reports": bool(context_data.get("require_test_reports", False)),
+            "h2_required": bool(context_data.get("h2_required", False)),
+            "h2_enabled": bool(context_data.get("h2_enabled", False)),
+            "source_profile": context_data.get("source_profile") or "",
+            "target_profile": context_data.get("target_profile") or "",
+            "runtime_profile": context_data.get("runtime_profile") or "",
+        },
         "target_path": diff_ref,
     }
 

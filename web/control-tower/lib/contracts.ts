@@ -1221,6 +1221,7 @@ export type ReviewedDiffProposal = {
   redactions: string[];
   apply_status?: string | null;
   rerun_status?: string | null;
+  validation_proof_status?: string | null;
 };
 
 export type RepairState = {
@@ -1271,6 +1272,7 @@ export type RepairAttemptSummary = {
   status_reason: string | null;
   created_at: string;
   completed_at: string | null;
+  validation_proof_status?: string | null;
 };
 
 export type RepairAttemptsResponse = {
@@ -1302,6 +1304,12 @@ export type RepairProposalRevisionResponse = {
 export type RepairProposalApproveRequest = {
   proposal_id: string;
   diff_checksum: string;
+  idempotency_key: string;
+};
+
+export type RepairProposalRejectRequest = {
+  proposal_id: string;
+  reason?: string;
   idempotency_key: string;
 };
 

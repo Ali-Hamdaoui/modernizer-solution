@@ -271,6 +271,7 @@ class ReviewedDiffProposal:
     redactions: tuple[str, ...] = ()
     apply_status: str | None = None
     rerun_status: str | None = None
+    validation_proof_status: str | None = None
 
 
 def build_reviewed_diff_proposal_projection(
@@ -359,7 +360,9 @@ def reviewed_diff_proposal_to_safe_dict(proposal: ReviewedDiffProposal) -> dict[
         "failure_summary": proposal.failure_summary,
         "diagnosis_ref": proposal.diagnosis_ref,
         "repair_plan_ref": proposal.repair_plan_ref,
-        "diff_ref": proposal.diff_ref,
+        # Raw authoritative artifact paths remain server-side. The dedicated
+        # diff endpoint exposes only the safe preview.
+        "diff_ref": None,
         "diff_checksum": proposal.diff_checksum,
         "safe_diff_preview": safe_diff_preview_to_dict(proposal.safe_diff_preview) if proposal.safe_diff_preview is not None else None,
         "reviewer_verdict": reviewer_verdict_projection_to_safe_dict(proposal.reviewer_verdict) if proposal.reviewer_verdict is not None else None,
@@ -370,6 +373,7 @@ def reviewed_diff_proposal_to_safe_dict(proposal: ReviewedDiffProposal) -> dict[
         "redactions": list(proposal.redactions),
         "apply_status": proposal.apply_status,
         "rerun_status": proposal.rerun_status,
+        "validation_proof_status": proposal.validation_proof_status,
     }
 
 
@@ -516,6 +520,7 @@ def build_reviewed_diff_proposal_from_record(
     reviewer_reasoning: str | None = None,
     apply_status: str | None = None,
     rerun_status: str | None = None,
+    validation_proof_status: str | None = None,
 ) -> ReviewedDiffProposal:
     """Build a ReviewedDiffProposal from persisted V2RepairProposalRecord fields.
 
@@ -572,6 +577,7 @@ def build_reviewed_diff_proposal_from_record(
         redactions=tuple(dict.fromkeys(redactions)),
         apply_status=_maybe_str(apply_status),
         rerun_status=_maybe_str(rerun_status),
+        validation_proof_status=_maybe_str(validation_proof_status),
     )
 
 

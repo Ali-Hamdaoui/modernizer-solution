@@ -860,6 +860,20 @@ export async function approveRepairProposal(
   );
 }
 
+export async function rejectRepairProposal(
+  jobId: string,
+  proposalId: string,
+  request: { proposal_id: string; reason?: string; idempotency_key: string },
+): Promise<{ job_id: string; proposal_id: string; status: string }> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) throw new Error("Proposal id is required.");
+  return postJson(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}/reject`,
+    request,
+  );
+}
+
 export async function postJson<TResponse>(
   path: string,
   body: unknown,

@@ -438,13 +438,15 @@ class V2RepairGateService:
                 unavailable_event_type = (
                     "repair_attempts_exhausted"
                     if result.status == "attempts_exhausted"
+                    else "repair_outcome_persisted"
+                    if result.status == "outcome_persisted"
                     else "reviewed_repair_unavailable"
                 )
                 uow.v2_events.save(
                     job_id=job_id,
                     stage=stage_index,
                     event_type=unavailable_event_type,
-                    status="failed" if result.status == "attempts_exhausted" else "skipped",
+                    status="failed" if result.status == "attempts_exhausted" else "persisted" if result.status == "outcome_persisted" else "skipped",
                     message=result.reason or "Reviewed repair proposal unavailable.",
                     payload={
                         "job_id": job_id,
@@ -455,17 +457,18 @@ class V2RepairGateService:
                         "remaining_attempts": result.remaining_attempts,
                     },
                 )
-                uow.v2_events.save(
-                    job_id=job_id,
-                    stage=stage_index,
-                    event_type="repair_completed",
-                    status="blocked",
-                    message=f"Repair {unavailable_event_type}: {result.reason or 'No proposal could be created.'}",
-                    payload={
-                        "command_id": command_id,
-                        "unavailable_reason": unavailable_event_type,
-                    },
-                )
+                if result.status != "outcome_persisted":
+                    uow.v2_events.save(
+                        job_id=job_id,
+                        stage=stage_index,
+                        event_type="repair_completed",
+                        status="blocked",
+                        message=f"Repair {unavailable_event_type}: {result.reason or 'No proposal could be created.'}",
+                        payload={
+                            "command_id": command_id,
+                            "unavailable_reason": unavailable_event_type,
+                        },
+                    )
         return result
 
     def _create_reviewed_repair_proposal_from_refs(
@@ -578,10 +581,44 @@ class V2RepairGateService:
         review_chain = chain_result.get("review_chain") or {}
         reviewer_decision = str(review_chain.get("reviewer_decision") or "")
 
-        # 5. Only accept creates a proposal
+        # 5. Persist every reviewer outcome. Only ``accept`` is actionable;
+        # revise/reject remain durable, truthful, non-actionable records.
         if reviewer_decision != "accept":
+            outcome_status = (
+                "reviewer_revision_required"
+                if reviewer_decision == "revise"
+                else "reviewer_rejected"
+            )
+            outcome_id = uuid4().hex
+            outcome_record = V2RepairProposalRecord(
+                proposal_id=outcome_id,
+                command_id=command_id,
+                job_id=job_id,
+                route_step_index=stage_index,
+                failure_summary=str(evidence.failure_summary),
+                hypothesis=str(review_chain.get("root_cause", "")),
+                patch_summary=str(review_chain.get("fix_strategy", "")),
+                affected_paths_json=json.dumps(review_chain.get("changed_files", [])),
+                status=outcome_status,
+                approval_checksum=None,
+                created_at=utc_now_text(),
+                attempt_number=attempt_number,
+                remaining_attempts=remaining_attempts,
+                failure_evidence_ref=failure_evidence_ref,
+                repair_context_ref=repair_context_ref,
+                diff_ref=str(review_chain.get("final_diff_ref") or "") or None,
+                reviewer_output_checksum=str(review_chain.get("reviewer_output_checksum", "")),
+                policy_validation_checksum=str(review_chain.get("policy_validation_checksum", "")),
+                reviewer_decision=reviewer_decision,
+                deterministic_rule_id=str(review_chain.get("deterministic_rule_id", "")) or None,
+                risk=str(review_chain.get("risk", "")) or None,
+                status_reason=str(review_chain.get("reviewer_reasoning") or review_chain.get("reviewer_reason") or ""),
+            )
+            if uow is not None:
+                uow.v2_repairs.save_proposal(outcome_record)
             return ReviewedRepairProposalCreationResult(
-                status="skipped",
+                status="outcome_persisted",
+                proposal_id=outcome_id,
                 reason=f"reviewer decision was '{reviewer_decision}'",
                 reviewer_decision=reviewer_decision,
                 attempt_number=attempt_number,
@@ -682,6 +719,28 @@ class V2RepairGateService:
 
         proposal_id = uuid4().hex
         created_at = utc_now_text()
+        validation_context_ref = str(failure_payload.get("_repair_validation_context_ref") or "")
+        validation_context_checksum = str(failure_payload.get("_repair_validation_context_checksum") or "")
+        lineage_payload = {
+            "schema_version": 1,
+            "proposal_id": proposal_id,
+            "job_id": job_id,
+            "command_id": command_id,
+            "attempt_number": attempt_number,
+            "failure_evidence_ref": failure_evidence_ref,
+            "repair_context_ref": repair_context_ref,
+            "final_diff_ref": final_diff_ref,
+            "diff_checksum": diff_checksum,
+            "reviewer_output_checksum": str(review_chain.get("reviewer_output_checksum", "")),
+            "policy_validation_checksum": str(review_chain.get("policy_validation_checksum", "")),
+            "reviewer_decision": reviewer_decision,
+            "deterministic_rule_id": str(review_chain.get("deterministic_rule_id", "")),
+            "risk": str(review_chain.get("risk", "")),
+        }
+        lineage_path = Path(run_dir) / "repairs" / f"lineage_{proposal_id}.json"
+        lineage_path.parent.mkdir(parents=True, exist_ok=True)
+        lineage_path.write_text(json.dumps(lineage_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        lineage_checksum = sha256_canonical_json(lineage_payload)
 
         record = V2RepairProposalRecord(
             proposal_id=proposal_id,
@@ -708,6 +767,11 @@ class V2RepairGateService:
             reviewer_decision=reviewer_decision,
             deterministic_rule_id=str(review_chain.get("deterministic_rule_id", "")),
             risk=str(review_chain.get("risk", "")),
+            lineage_manifest_ref=str(lineage_path),
+            lineage_manifest_checksum=lineage_checksum,
+            validation_context_ref=validation_context_ref or None,
+            validation_context_checksum=validation_context_checksum or None,
+            apply_claim_status=None,
         )
 
         if uow is not None:

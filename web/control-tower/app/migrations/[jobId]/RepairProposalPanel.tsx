@@ -7,6 +7,7 @@ import {
   getRepairAttempts,
   requestRepairProposalRevision,
   approveRepairProposal,
+  rejectRepairProposal,
 } from "../../../lib/controlTowerApi";
 import type {
   ReviewedDiffProposal,
@@ -44,6 +45,7 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
   const [showAttempts, setShowAttempts] = useState(false);
   const [revisionPending, setRevisionPending] = useState(false);
   const [approvePending, setApprovePending] = useState(false);
+  const [mutationError, setMutationError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!jobId) return;
@@ -135,7 +137,8 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
       } else {
         setProposalState({ status: "no-proposal" });
       }
-    } catch {
+    } catch (error) {
+      setMutationError(error instanceof Error ? error.message : "Repair mutation failed.");
       setProposalState({
         status: "error",
         message: "Failed to refresh proposal data",
@@ -156,7 +159,8 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
           state.proposal.reviewer_verdict?.reviewer_verdict_id ?? "",
       });
       await refreshProposalData();
-    } catch {
+    } catch (error) {
+      setMutationError(error instanceof Error ? error.message : "Repair mutation failed.");
       // Safe error display — no raw paths/stacks
     } finally {
       setRevisionPending(false);
@@ -175,10 +179,25 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
           idempotency_key: crypto.randomUUID(),
         });
         await refreshProposalData();
-    } catch {
+    } catch (error) {
+      setMutationError(error instanceof Error ? error.message : "Repair Apply failed.");
       // Safe error display — no raw paths/stacks
     } finally {
       setApprovePending(false);
+    }
+  }
+
+  async function handleReject() {
+    if (proposalState.status !== "available") return;
+    setMutationError(null);
+    try {
+      await rejectRepairProposal(jobId, proposalState.proposal.proposal_id, {
+        proposal_id: proposalState.proposal.proposal_id,
+        idempotency_key: crypto.randomUUID(),
+      });
+      await refreshProposalData();
+    } catch (error) {
+      setMutationError(error instanceof Error ? error.message : "Repair rejection failed.");
     }
   }
 
@@ -290,6 +309,8 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
 
       <ReviewedDiffTabs proposal={proposal} diff={diff} />
 
+      {mutationError && <p className="error" role="alert">{mutationError}</p>}
+
       {showAttempts && (
         <RepairAttemptTimeline attempts={attempts} />
       )}
@@ -310,18 +331,19 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
         onViewAttemptHistory={() => setShowAttempts((v) => !v)}
         onRequestRevision={handleRequestRevision}
         onApproveSandboxApply={handleApproveSandboxApply}
+        onReject={handleReject}
+        requestRevisionEnabled={proposal.allowed_actions?.includes("request_revision") === true}
         revisionPending={revisionPending}
         approvePending={approvePending}
         approveEnabled={
           (proposal.status === "user_review_required" || proposal.status === "reviewer_accepted") &&
-          (proposal.allowed_actions?.includes("approve_sandbox_apply") ||
-            proposalState.repairState?.allowed_actions?.includes("approve_sandbox_apply")) &&
+          proposal.allowed_actions?.includes("approve_sandbox_apply") &&
           diff?.checksum_mismatch !== true &&
           diff?.parse_status !== "unparseable" &&
           diff?.parse_status !== "hunk_count_mismatch"
         }
         checksumMismatch={diff?.checksum_mismatch ?? false}
-        rejectDisabled={true}
+        rejectDisabled={!proposal.allowed_actions?.includes("reject")}
       />
     </section>
   );

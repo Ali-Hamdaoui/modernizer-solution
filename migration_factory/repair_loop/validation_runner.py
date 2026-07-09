@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,51 @@ class ValidationResult:
     errors: list[str]
 
 
+@dataclass(frozen=True)
+class ValidationExecutionContext:
+    """Server-owned description of the validation contract that originally failed.
+
+    The repair path may replace only ``sandbox_path``.  All other execution
+    inputs are carried forward so repair validation cannot silently switch to
+    a different Maven/Gradle/profile command.
+    """
+
+    job_id: str = ""
+    command_id: str = ""
+    stage_index: int | None = None
+    route_step_index: int | None = None
+    sandbox_path: str = ""
+    validation_command: tuple[str, ...] = ()
+    validation_unit_id: str = ""
+    source_changing_unit: bool = True
+    module: str | None = None
+    main_class: str | None = None
+    source_jdk_home_env: str | None = None
+    target_jdk_home_env: str | None = None
+    build_timeout_seconds: int | None = None
+    stop_after_start: bool = False
+    require_test_reports: bool = False
+    h2_required: bool = False
+    h2_enabled: bool = False
+    source_profile: str = ""
+    target_profile: str = ""
+    runtime_profile: str = ""
+
+    @classmethod
+    def from_mapping(cls, value: Any | None) -> "ValidationExecutionContext":
+        if isinstance(value, cls):
+            return value
+        raw = value if isinstance(value, dict) else {}
+        names = {field.name for field in fields(cls)}
+        data = {key: raw[key] for key in names if key in raw}
+        if "validation_command" in data:
+            command = data["validation_command"]
+            if isinstance(command, str):
+                command = (command,)
+            data["validation_command"] = tuple(str(item) for item in command or ())
+        return cls(**data)
+
+
 def run_validation_after_patch(
     *,
     run_id: str,
@@ -38,22 +83,39 @@ def run_validation_after_patch(
     h2_required: bool = False,
     h2_enabled: bool = False,
     build_timeout_seconds: int | None = None,
+    validation_context: ValidationExecutionContext | None = None,
 ) -> ValidationResult:
+    context = ValidationExecutionContext.from_mapping(validation_context)
     run_path = Path(run_dir)
     sandbox = Path(sandbox_path)
+    if not context.validation_command:
+        return ValidationResult(
+            passed=False,
+            build_status=BUILD_FAILED,
+            test_status=TESTS_NOT_FOUND,
+            h2_status=H2_SKIPPED,
+            validation_commands=[],
+            artifact_refs={},
+            warnings=[],
+            errors=["validation execution context did not contain the original validation command"],
+        )
     output_dir = run_path / "build" / f"repair_attempt_{attempt}"
     build_result = run_build_agent(
         sandbox,
         output_dir=output_dir,
         stream_output=False,
-        stop_after_start=False,
-        timeout_seconds=build_timeout_seconds,
-        validation_unit_id=f"repair-attempt-{attempt}",
-        source_changing_unit=True,
-        validation_command=["mvn", "test"],
+        stop_after_start=context.stop_after_start,
+        timeout_seconds=context.build_timeout_seconds if context.build_timeout_seconds is not None else build_timeout_seconds,
+        validation_unit_id=context.validation_unit_id or f"repair-attempt-{attempt}",
+        source_changing_unit=context.source_changing_unit,
+        validation_command=list(context.validation_command) or None,
+        module=context.module,
+        main_class=context.main_class,
+        source_jdk_home_env=context.source_jdk_home_env,
+        target_jdk_home_env=context.target_jdk_home_env,
     )
     build_status = BUILD_PASSED if build_result.succeeded else BUILD_FAILED
-    validation_commands = [list(build_result.command or ["mvn", "test"])]
+    validation_commands = [list(build_result.command or context.validation_command)] if (build_result.command or context.validation_command) else []
     artifact_refs: dict[str, str] = {}
     errors: list[str] = []
     warnings: list[str] = list(build_result.warnings or [])
@@ -69,7 +131,7 @@ def run_validation_after_patch(
         cwd=str(build_result.cwd) if build_result.cwd else str(sandbox),
         build_status=build_status,
         build_exit_code=build_result.exit_code,
-        require_test_reports=False,
+        require_test_reports=context.require_test_reports,
     )
     test_status = test_result.test_status
     artifact_refs.update(

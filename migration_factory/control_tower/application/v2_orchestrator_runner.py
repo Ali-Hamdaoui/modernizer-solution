@@ -1305,6 +1305,32 @@ class V2OrchestratorRunner:
         repair_dir.mkdir(parents=True, exist_ok=True)
         evidence_path = repair_dir / "repair_failure_evidence.json"
         context_path = repair_dir / "repair_context_pack.json"
+        validation_context = {
+            "job_id": job_id,
+            "command_id": command_id,
+            "stage_index": stage_index,
+            "route_step_index": result.get("route_step_index", stage_index),
+            "sandbox_path": str(result.get("sandbox_path") or result.get("sandbox_root") or sandbox_root),
+            "validation_command": result.get("validation_command") or result.get("command") or (),
+            "validation_unit_id": result.get("validation_unit_id") or "",
+            "source_changing_unit": bool(result.get("source_changing_unit", True)),
+            "module": result.get("module"),
+            "main_class": result.get("main_class"),
+            "source_jdk_home_env": result.get("source_jdk_home_env"),
+            "target_jdk_home_env": result.get("target_jdk_home_env"),
+            "build_timeout_seconds": result.get("build_timeout_seconds"),
+            "stop_after_start": bool(result.get("stop_after_start", False)),
+            "require_test_reports": bool(result.get("require_test_reports", False)),
+            "h2_required": bool(result.get("h2_required") or result.get("h2_startup_required")),
+            "h2_enabled": bool(result.get("h2_enabled")),
+            "source_profile": str(result.get("source_profile") or ""),
+            "target_profile": str(result.get("target_profile") or ""),
+            "runtime_profile": str(result.get("runtime_profile") or ""),
+        }
+        validation_context_path = repair_dir / "validation_execution_context.json"
+        validation_context_path.write_text(
+            json.dumps(validation_context, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         evidence_path.write_text(
             json.dumps(failure_evidence_to_dict(evidence), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -1320,6 +1346,8 @@ class V2OrchestratorRunner:
         result["_repair_run_dir"] = str(run_dir)
         result["_repair_failure_evidence_checksum"] = evidence.content_checksum
         result["_repair_context_pack_checksum"] = context_pack.context_pack_checksum
+        result["_repair_validation_context_ref"] = str(validation_context_path)
+        result["_repair_validation_context_checksum"] = sha256_canonical_json(validation_context)
         result["_repair_base_repo_state_checksum"] = context_pack.base_repo_state_checksum
         sandbox = result.get("sandbox_path") or result.get("sandbox_root") or ""
         if sandbox:
