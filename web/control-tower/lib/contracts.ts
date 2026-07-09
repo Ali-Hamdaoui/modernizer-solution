@@ -943,6 +943,38 @@ export type PomApplyRequest = {
   idempotency_key?: string;
 };
 
+export type Stage4TargetVersionChangeRequest = {
+  group_id: string;
+  artifact_id: string;
+  target_version: string;
+};
+
+export type Stage4TargetVersionApplyItem = {
+  coordinate: string;
+  group_id: string;
+  artifact_id: string;
+  target_version: string;
+  before_version: string | null;
+  after_version: string;
+  version_source: string;
+  status: "applied" | "skipped" | "blocked" | "noop";
+  reason: string;
+};
+
+export type Stage4TargetVersionApplyResponse = {
+  job_id: string;
+  stage: number;
+  idempotency_key: string | null;
+  message: string;
+  before_checksum: string;
+  after_checksum: string;
+  applied_count: number;
+  skipped_count: number;
+  blocked_count: number;
+  items: Stage4TargetVersionApplyItem[];
+  blockers: string[];
+};
+
 // ── F15 Gate types (jobs 101-117) ──────────────────────────────────────
 
 export type GatePhase =

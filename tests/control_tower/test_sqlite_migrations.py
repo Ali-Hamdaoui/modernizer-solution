@@ -12,6 +12,7 @@ from migration_factory.control_tower.infrastructure.sqlite.connection import (
 )
 from migration_factory.control_tower.infrastructure.sqlite.migrations import (
     AppliedMigrationChecksumMismatchError,
+    AppliedMigrationMissingError,
     MigrationDiscoveryError,
     MigrationExecutionError,
     apply_pending_migrations,
@@ -101,6 +102,75 @@ def test_changed_checksum_for_applied_migration_is_rejected(tmp_path: Path) -> N
     finally:
         connection.close()
 
+
+def test_applied_migration_missing_from_disk_is_rejected_outside_dev_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    _write_sql(
+        migrations_dir,
+        "0001_foundation.sql",
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        );
+        CREATE TABLE retained_table (id INTEGER PRIMARY KEY);
+        """,
+    )
+    connection = connect_control_tower(tmp_path / "control_tower.sqlite3")
+    monkeypatch.setenv("CONTROL_TOWER_DEV_MODE", "0")
+    try:
+        apply_pending_migrations(connection, migrations_dir=migrations_dir)
+        connection.execute(
+            "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (2, 'removed', 'stale', 'now')"
+        )
+
+        with pytest.raises(AppliedMigrationMissingError, match="Applied migration missing from disk: 0002"):
+            apply_pending_migrations(connection, migrations_dir=migrations_dir)
+    finally:
+        connection.close()
+
+
+def test_applied_migration_missing_from_disk_resets_dev_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    _write_sql(
+        migrations_dir,
+        "0001_foundation.sql",
+        """
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            checksum TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        );
+        CREATE TABLE retained_table (id INTEGER PRIMARY KEY);
+        """,
+    )
+    connection = connect_control_tower(tmp_path / "control_tower.sqlite3")
+    monkeypatch.setenv("CONTROL_TOWER_DEV_MODE", "1")
+    try:
+        apply_pending_migrations(connection, migrations_dir=migrations_dir)
+        connection.execute(
+            "INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (2, 'removed', 'stale', 'now')"
+        )
+        connection.execute("CREATE TABLE stale_branch_table (id INTEGER PRIMARY KEY)")
+
+        pending = apply_pending_migrations(connection, migrations_dir=migrations_dir)
+
+        assert [migration.version for migration in pending] == [1]
+        versions = connection.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
+        assert [row[0] for row in versions] == [1]
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retained_table'"
+        ).fetchone() is not None
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'stale_branch_table'"
+        ).fetchone() is None
+    finally:
+        connection.close()
 
 def test_migration_execution_does_not_use_executescript() -> None:
     import migration_factory.control_tower.infrastructure.sqlite.migrations as migrations_module
