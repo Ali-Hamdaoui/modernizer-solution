@@ -18,6 +18,7 @@ from migration_factory.control_tower.application.v2_model_role_router import (
     V2RoleModelRequest,
     V2RoleModelResult,
 )
+from migration_factory.control_tower.application.v2_model_schemas import SCHEMA_REGISTRY
 from migration_factory.control_tower.domain.checksums import utc_now_text
 
 
@@ -31,6 +32,10 @@ class V2AssistantModelResult:
     success: bool
     redacted_summary: str
     failure_reason: str
+    configured_max_input_tokens: int = 0
+    configured_max_output_tokens: int = 0
+    response_format_used: str = ""
+    finish_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -226,6 +231,8 @@ class V2AssistantModelClient:
                 prompt=prompt,
                 fallback=fallback,
                 conversation_history=conversation_history,
+                output_schema_name=output_schema_name,
+                require_schema=require_schema,
             ),
         )
         return self._to_assistant_result(routed)
@@ -238,6 +245,8 @@ class V2AssistantModelClient:
         prompt: str,
         fallback: str,
         conversation_history: list[dict[str, str]] | None = None,
+        output_schema_name: str | None = None,
+        require_schema: bool = False,
     ) -> V2AssistantModelResult:
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip().rstrip("/")
         api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
@@ -261,71 +270,118 @@ class V2AssistantModelClient:
                 "missing_deployment",
             )
 
-        try:
-            content = self._chat_completion(
-                endpoint=endpoint,
-                api_key=api_key,
-                deployment=deployment,
-                prompt=prompt,
-                max_completion_tokens=700,
-                timeout=30,
-                conversation_history=conversation_history,
-            )
-        except urllib.error.HTTPError as exc:
-            code = int(getattr(exc, "code", 0) or 0)
-            snippet = _redact_smoke_text(
-                _sanitize_body_snippet(exc),
-                endpoint=endpoint,
-                deployment=deployment,
-                api_key=api_key,
-            )
-            summary = _summary_with_snippet(
-                _http_error_summary(code),
-                snippet,
-            )
-            return _fallback_result(
-                fallback,
-                summary,
-                _http_failure_reason(code),
-            )
-        except urllib.error.URLError as exc:
-            reason = str(exc.reason) if hasattr(exc, "reason") else str(exc)
-            if _looks_like_timeout(reason):
+        budget = V2ModelRoleRouter().resolve_budget(
+            role=role,
+            responsibility="repair_proposal" if output_schema_name in {"RepairPrimaryOutput", "RepairReviewerOutput"} else "assistant_answer",
+            output_schema_name=output_schema_name,
+        )
+        response_format_candidates = _response_format_candidates(
+            role=role,
+            output_schema_name=output_schema_name,
+            require_schema=require_schema,
+        )
+        reasoning_effort = budget.reasoning_effort
+        last_error: tuple[str, str] | None = None
+        for response_format_used, response_format in response_format_candidates:
+            try:
+                content = self._chat_completion(
+                    endpoint=endpoint,
+                    api_key=api_key,
+                    deployment=deployment,
+                    prompt=prompt,
+                    max_completion_tokens=budget.max_output_tokens,
+                    timeout=30,
+                    conversation_history=conversation_history,
+                    response_format=response_format,
+                    reasoning_effort=reasoning_effort,
+                )
+                safe_content = str(redact_public_value(redact_model_summary(content))).strip()
+                if not safe_content:
+                    _log_empty_azure_result_summary(endpoint=endpoint, deployment=deployment)
+                    raise RuntimeError("empty_response")
+                return V2AssistantModelResult(
+                    content=safe_content,
+                    source="azure_openai",
+                    model_status="live_ok",
+                    provider=self.provider,
+                    role=role.value,
+                    success=True,
+                    redacted_summary="Azure OpenAI assistant invocation succeeded.",
+                    failure_reason="",
+                    configured_max_input_tokens=budget.max_input_tokens,
+                    configured_max_output_tokens=budget.max_output_tokens,
+                    response_format_used=response_format_used,
+                )
+            except urllib.error.HTTPError as exc:
+                code = int(getattr(exc, "code", 0) or 0)
+                snippet = _redact_smoke_text(
+                    _sanitize_body_snippet(exc),
+                    endpoint=endpoint,
+                    deployment=deployment,
+                    api_key=api_key,
+                )
+                summary = _summary_with_snippet(
+                    _http_error_summary(code),
+                    snippet,
+                )
+                last_error = (_http_failure_reason(code), summary)
+                if response_format_used == "json_schema" and any(label == "json_object" for label, _ in response_format_candidates):
+                    continue
                 return _fallback_result(
                     fallback,
-                    "Azure OpenAI request timed out.",
-                    "timeout",
+                    summary,
+                    _http_failure_reason(code),
+                    configured_max_input_tokens=budget.max_input_tokens,
+                    configured_max_output_tokens=budget.max_output_tokens,
+                    response_format_used=response_format_used,
                 )
-            return _fallback_result(
-                fallback,
-                f"Azure OpenAI request failed: {redact_model_summary(reason)}.",
-                "invalid_response",
-            )
-        except Exception as exc:
-            return _fallback_result(
-                fallback,
-                f"Azure OpenAI assistant unavailable ({type(exc).__name__}).",
-                "invalid_response",
-            )
+            except urllib.error.URLError as exc:
+                reason = str(exc.reason) if hasattr(exc, "reason") else str(exc)
+                if _looks_like_timeout(reason):
+                    return _fallback_result(
+                        fallback,
+                        "Azure OpenAI request timed out.",
+                        "timeout",
+                        configured_max_input_tokens=budget.max_input_tokens,
+                        configured_max_output_tokens=budget.max_output_tokens,
+                        response_format_used=response_format_used,
+                    )
+                return _fallback_result(
+                    fallback,
+                    f"Azure OpenAI request failed: {redact_model_summary(reason)}.",
+                    "invalid_response",
+                    configured_max_input_tokens=budget.max_input_tokens,
+                    configured_max_output_tokens=budget.max_output_tokens,
+                    response_format_used=response_format_used,
+                )
+            except Exception as exc:
+                if str(exc) == "empty_response":
+                    return _fallback_result(
+                        fallback,
+                        "Azure OpenAI returned an empty response.",
+                        "empty_response",
+                        configured_max_input_tokens=budget.max_input_tokens,
+                        configured_max_output_tokens=budget.max_output_tokens,
+                        response_format_used=response_format_used,
+                    )
+                return _fallback_result(
+                    fallback,
+                    f"Azure OpenAI assistant unavailable ({type(exc).__name__}).",
+                    "invalid_response",
+                    configured_max_input_tokens=budget.max_input_tokens,
+                    configured_max_output_tokens=budget.max_output_tokens,
+                    response_format_used=response_format_used,
+                )
 
-        safe_content = str(redact_public_value(redact_model_summary(content))).strip()
-        if not safe_content:
-            _log_empty_azure_result_summary(endpoint=endpoint, deployment=deployment)
-            return _fallback_result(
-                fallback,
-                "Azure OpenAI returned an empty response.",
-                "empty_response",
-            )
-
-        return V2AssistantModelResult(
-            content=safe_content,
-            source="azure_openai",
-            model_status="live_ok",
-            provider=self.provider,
-            role=role.value,
-            success=True,
-            redacted_summary="Azure OpenAI assistant invocation succeeded.",
-            failure_reason="",
+        summary = last_error[1] if last_error is not None else "Azure OpenAI assistant unavailable."
+        failure_reason = last_error[0] if last_error is not None else "invalid_response"
+        return _fallback_result(
+            fallback,
+            summary,
+            failure_reason,
+            configured_max_input_tokens=budget.max_input_tokens,
+            configured_max_output_tokens=budget.max_output_tokens,
+            response_format_used=response_format_candidates[0][0] if response_format_candidates else "",
         )
 
     def _to_assistant_result(self, routed: V2RoleModelResult) -> V2AssistantModelResult:
@@ -339,6 +395,9 @@ class V2AssistantModelClient:
             success=routed.success,
             redacted_summary=redacted_summary,
             failure_reason=routed.failure_reason,
+            configured_max_input_tokens=routed.configured_max_input_tokens,
+            configured_max_output_tokens=routed.configured_max_output_tokens,
+            response_format_used=routed.response_format_used,
         )
 
     @staticmethod
@@ -360,9 +419,11 @@ class V2AssistantModelClient:
         api_key: str,
         deployment: str,
         prompt: str,
-        max_completion_tokens: int = 700,
+        max_completion_tokens: int = 20000,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
+        response_format: dict | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         if self._is_v1_endpoint(endpoint):
             endpoint = self._normalize_v1_endpoint(endpoint)
@@ -375,6 +436,8 @@ class V2AssistantModelClient:
                     max_completion_tokens=max_completion_tokens,
                     timeout=timeout,
                     conversation_history=conversation_history,
+                    response_format=response_format,
+                    reasoning_effort=reasoning_effort,
                 )
             except urllib.error.HTTPError as exc:
                 if _should_retry_with_chat_completions(exc):
@@ -387,6 +450,8 @@ class V2AssistantModelClient:
                             max_completion_tokens=max_completion_tokens,
                             timeout=timeout,
                             conversation_history=conversation_history,
+                            response_format=response_format,
+                            reasoning_effort=reasoning_effort,
                         )
                     except urllib.error.HTTPError as chat_exc:
                         if _should_retry_with_legacy_endpoint(chat_exc):
@@ -428,9 +493,11 @@ class V2AssistantModelClient:
         api_key: str,
         deployment: str,
         prompt: str,
-        max_completion_tokens: int = 700,
+        max_completion_tokens: int = 20000,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
+        response_format: dict | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         return self._post_chat_completion_v1(
             endpoint=endpoint,
@@ -439,6 +506,8 @@ class V2AssistantModelClient:
             messages=self._build_messages(prompt=prompt, conversation_history=conversation_history),
             max_completion_tokens=max_completion_tokens,
             timeout=timeout,
+            response_format=response_format,
+            reasoning_effort=reasoning_effort,
         )
 
     def _responses_completion_v1(
@@ -448,9 +517,11 @@ class V2AssistantModelClient:
         api_key: str,
         deployment: str,
         prompt: str,
-        max_completion_tokens: int = 700,
+        max_completion_tokens: int = 20000,
         timeout: int = 30,
         conversation_history: list[dict[str, str]] | None = None,
+        response_format: dict | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         return self._post_responses_v1(
             endpoint=endpoint,
@@ -462,6 +533,8 @@ class V2AssistantModelClient:
             ),
             max_output_tokens=max_completion_tokens,
             timeout=timeout,
+            response_format=response_format,
+            reasoning_effort=reasoning_effort,
         )
 
     @staticmethod
@@ -569,31 +642,30 @@ class V2AssistantModelClient:
         messages: list[dict[str, str]],
         max_completion_tokens: int,
         timeout: int,
+        response_format: dict | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
-        # Allow max_completion_tokens override via environment variable
-        env_max_tokens = os.environ.get("AZURE_OPENAI_ASSISTANT_MAX_COMPLETION_TOKENS", "").strip()
-        if env_max_tokens and env_max_tokens.isdigit():
-            max_completion_tokens = int(env_max_tokens)
-
         url = f"{endpoint.rstrip('/')}/chat/completions"
         payload: dict[str, object] = {
             "model": deployment,
             "messages": messages,
             "max_completion_tokens": max_completion_tokens,
         }
-        # Only add one of temperature / reasoning_effort when explicitly configured.
-        # Sending an unsupported parameter to a model that does not recognise it
-        # causes a 400 "badly formed" rejection at the Azure infrastructure layer.
-        reasoning_effort = os.environ.get("AZURE_OPENAI_REASONING_EFFORT", "").strip()
-        if reasoning_effort:
+        if response_format is not None:
+            payload["response_format"] = response_format
+        if reasoning_effort is not None:
             payload["reasoning_effort"] = reasoning_effort
         else:
-            temperature = os.environ.get("AZURE_OPENAI_TEMPERATURE", "").strip()
-            if temperature:
-                try:
-                    payload["temperature"] = float(temperature)
-                except ValueError:
-                    payload["temperature"] = 0.2
+            env_reasoning = os.environ.get("AZURE_OPENAI_REASONING_EFFORT", "").strip()
+            if env_reasoning:
+                payload["reasoning_effort"] = env_reasoning
+            else:
+                temperature = os.environ.get("AZURE_OPENAI_TEMPERATURE", "").strip()
+                if temperature:
+                    try:
+                        payload["temperature"] = float(temperature)
+                    except ValueError:
+                        payload["temperature"] = 0.2
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -604,7 +676,6 @@ class V2AssistantModelClient:
             data = json.loads(response.read().decode("utf-8"))
         content = _extract_assistant_content(data)
         if not str(content).strip():
-            # Empty response — log redacted diagnostics
             _log_empty_azure_response(data, deployment)
         return content
 
@@ -617,6 +688,8 @@ class V2AssistantModelClient:
         input_items: list[dict[str, object]],
         max_output_tokens: int,
         timeout: int,
+        response_format: dict | None = None,
+        reasoning_effort: str | None = None,
     ) -> str:
         url = f"{endpoint.rstrip('/')}/responses"
         payload: dict[str, object] = {
@@ -626,9 +699,14 @@ class V2AssistantModelClient:
         }
         if max_output_tokens > 0:
             payload["max_output_tokens"] = max_output_tokens
-        reasoning_effort = os.environ.get("AZURE_OPENAI_REASONING_EFFORT", "").strip()
-        if reasoning_effort:
+        if response_format is not None:
+            payload["response_format"] = response_format
+        if reasoning_effort is not None:
             payload["reasoning"] = {"effort": reasoning_effort}
+        else:
+            env_reasoning = os.environ.get("AZURE_OPENAI_REASONING_EFFORT", "").strip()
+            if env_reasoning:
+                payload["reasoning"] = {"effort": env_reasoning}
         request = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
@@ -889,7 +967,15 @@ def _redact_smoke_text(text: str, *, endpoint: str, deployment: str, api_key: st
     return result[:500]
 
 
-def _fallback_result(fallback: str, summary: str, failure_reason: str = "") -> V2AssistantModelResult:
+def _fallback_result(
+    fallback: str,
+    summary: str,
+    failure_reason: str = "",
+    *,
+    configured_max_input_tokens: int = 0,
+    configured_max_output_tokens: int = 0,
+    response_format_used: str = "",
+) -> V2AssistantModelResult:
     safe_summary = str(redact_model_summary(summary))
     return V2AssistantModelResult(
         content=f"{fallback}\n\nModel: fallback\nSource: deterministic\nReason: {safe_summary}",
@@ -900,6 +986,9 @@ def _fallback_result(fallback: str, summary: str, failure_reason: str = "") -> V
         success=False,
         redacted_summary=safe_summary,
         failure_reason=failure_reason,
+        configured_max_input_tokens=configured_max_input_tokens,
+        configured_max_output_tokens=configured_max_output_tokens,
+        response_format_used=response_format_used,
     )
 
 
@@ -992,3 +1081,57 @@ def _log_empty_azure_result_summary(*, endpoint: str, deployment: str) -> None:
         "AZURE_EMPTY_RESULT: deployment=%s (empty response from Azure; using deterministic fallback)",
         safe_deployment or "unset",
     )
+
+
+def _role_max_output_tokens(role: V2ModelRole) -> int:
+    from migration_factory.control_tower.application.v2_model_role_router import V2ModelRoleRouter
+
+    return V2ModelRoleRouter().resolve_budget(role=role).max_output_tokens
+
+
+def _role_max_input_tokens(role: V2ModelRole) -> int:
+    from migration_factory.control_tower.application.v2_model_role_router import V2ModelRoleRouter
+
+    return V2ModelRoleRouter().resolve_budget(role=role).max_input_tokens
+
+
+def _role_reasoning_effort(role: V2ModelRole) -> str | None:
+    from migration_factory.control_tower.application.v2_model_role_router import V2ModelRoleRouter
+
+    return V2ModelRoleRouter().resolve_budget(role=role).reasoning_effort
+
+
+def _response_format_candidates(
+    *,
+    role: V2ModelRole,
+    output_schema_name: str | None,
+    require_schema: bool,
+) -> list[tuple[str, dict | None]]:
+    if not output_schema_name:
+        return [("none", None)]
+
+    schema = SCHEMA_REGISTRY.get(output_schema_name)
+    if schema is None:
+        return [("none", None)]
+
+    role_key = role.value.upper()
+    configured = os.environ.get(f"AZURE_OPENAI_{role_key}_RESPONSE_FORMAT", "").strip().lower()
+    if configured == "json_object":
+        return [("json_object", {"type": "json_object"})]
+
+    candidates: list[tuple[str, dict | None]] = []
+    if require_schema or configured == "json_schema" or not configured:
+        candidates.append((
+            "json_schema",
+            {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": output_schema_name,
+                    "strict": True,
+                    "schema": schema,
+                },
+            },
+        ))
+    if configured == "json_schema" and os.environ.get("AZURE_OPENAI_ALLOW_JSON_OBJECT_FALLBACK", "").strip().lower() in {"1", "true", "yes"}:
+        candidates.append(("json_object", {"type": "json_object"}))
+    return candidates or [("none", None)]

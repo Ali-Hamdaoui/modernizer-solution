@@ -62,21 +62,23 @@ export function RepairActionsBar({
         >
           Request revision
         </button>
-        <button
-          type="button"
-          onClick={onApproveSandboxApply}
-          disabled={!approveEnabled || approvePending || checksumMismatch}
-          title={
-            checksumMismatch
-              ? "Cannot approve: diff checksum mismatch detected"
-              : approvePending
-                ? "Approving and applying to sandbox..."
-                : "Approve and apply reviewed repair to sandbox"
-          }
-          data-testid="action-approve-sandbox-apply"
-        >
-          {approvePending ? "Applying..." : "Approve sandbox apply"}
-        </button>
+        {approveEnabled && onApproveSandboxApply ? (
+          <button
+            type="button"
+            onClick={onApproveSandboxApply}
+            disabled={approvePending || checksumMismatch}
+            title={
+              checksumMismatch
+                ? "Cannot approve: diff checksum mismatch detected"
+                : approvePending
+                  ? "Applying reviewed diff to sandbox..."
+                  : "Apply the reviewed diff to the sandbox"
+            }
+            data-testid="action-approve-sandbox-apply"
+          >
+            {approvePending ? "Applying..." : "Apply reviewed diff"}
+          </button>
+        ) : null}
         <button
           type="button"
           disabled={rejectDisabled !== false}

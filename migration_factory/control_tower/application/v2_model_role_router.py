@@ -46,6 +46,9 @@ class V2RoleModelResult:
     primary_failure_reason: str = ""
     fallback_used: bool = False
     schema_validated: bool = False
+    configured_max_input_tokens: int = 0
+    configured_max_output_tokens: int = 0
+    response_format_used: str = ""
 
 
 @dataclass(frozen=True)
@@ -56,6 +59,14 @@ class V2RoleModelRoute:
     fallback_env_ref: str
     fallback_deployment: str
     fallback_enabled: bool
+
+
+@dataclass(frozen=True)
+class V2RoleBudget:
+    max_input_tokens: int
+    max_output_tokens: int
+    reasoning_effort: str | None
+    response_format: str | None
 
 
 class V2ModelRoleRouter:
@@ -105,6 +116,9 @@ class V2ModelRoleRouter:
                     primary_failure_reason="",
                     fallback_used=False,
                     schema_validated=True,
+                    configured_max_input_tokens=result.configured_max_input_tokens,
+                    configured_max_output_tokens=result.configured_max_output_tokens,
+                    response_format_used=result.response_format_used,
                 )
             primary_failure = result.failure_reason or primary_failure or "primary_model_failed"
 
@@ -133,6 +147,9 @@ class V2ModelRoleRouter:
                         primary_failure_reason=primary_failure,
                         fallback_used=True,
                         schema_validated=True,
+                        configured_max_input_tokens=result.configured_max_input_tokens,
+                        configured_max_output_tokens=result.configured_max_output_tokens,
+                        response_format_used=result.response_format_used,
                     )
                 fallback_failure = result.failure_reason or fallback_failure or "fallback_model_failed"
             else:
@@ -145,6 +162,9 @@ class V2ModelRoleRouter:
             primary_failure_reason=primary_failure or "primary_model_unavailable",
             fallback_failure_reason=fallback_failure,
         )
+
+    def resolve_budget(self, *, role: V2ModelRole, responsibility: str = "", output_schema_name: str | None = None) -> V2RoleBudget:
+        return self._resolve_budget(role=role, responsibility=responsibility, output_schema_name=output_schema_name)
 
     def _try_invoke(
         self,
@@ -170,6 +190,9 @@ class V2ModelRoleRouter:
             model_status=str(getattr(result, "model_status", "") or "live_ok"),
             success=bool(getattr(result, "success", False)),
             failure_reason=str(getattr(result, "failure_reason", "") or ""),
+            configured_max_input_tokens=int(getattr(result, "configured_max_input_tokens", 0) or 0),
+            configured_max_output_tokens=int(getattr(result, "configured_max_output_tokens", 0) or 0),
+            response_format_used=str(getattr(result, "response_format_used", "") or ""),
         )
 
     def _coerce_fallback_result(
@@ -191,6 +214,9 @@ class V2ModelRoleRouter:
             primary_failure_reason=primary_failure_reason,
             fallback_used=True,
             schema_validated=coerced.schema_validated,
+            configured_max_input_tokens=coerced.configured_max_input_tokens,
+            configured_max_output_tokens=coerced.configured_max_output_tokens,
+            response_format_used=coerced.response_format_used,
         )
 
     def _schema_ok(self, request: V2RoleModelRequest, content: str) -> bool:
@@ -217,6 +243,7 @@ class V2ModelRoleRouter:
     ) -> V2RoleModelResult:
         content = self._deterministic_content(request, primary_failure_reason, fallback_failure_reason)
         schema_validated = self._schema_ok(request, content)
+        budget = self._resolve_budget(role=request.role, output_schema_name=request.output_schema_name)
         return V2RoleModelResult(
             content=content,
             role=request.role.value,
@@ -228,6 +255,9 @@ class V2ModelRoleRouter:
             primary_failure_reason=primary_failure_reason,
             fallback_used=bool(fallback_failure_reason),
             schema_validated=schema_validated,
+            configured_max_input_tokens=budget.max_input_tokens,
+            configured_max_output_tokens=budget.max_output_tokens,
+            response_format_used=budget.response_format or "",
         )
 
     def _deterministic_content(
@@ -279,3 +309,34 @@ class V2ModelRoleRouter:
         if role == V2ModelRole.FALLBACK:
             return settings.azure_foundry_fallback_deployment_env
         return settings.azure_foundry_assistant_deployment_env
+
+    def _resolve_budget(self, *, role: V2ModelRole, responsibility: str = "", output_schema_name: str | None = None) -> V2RoleBudget:
+        role_key = role.value.upper()
+        max_input_tokens = self._read_int_env(f"AZURE_OPENAI_{role_key}_MAX_INPUT_TOKENS", 40000)
+        max_output_tokens = self._read_int_env(f"AZURE_OPENAI_{role_key}_MAX_OUTPUT_TOKENS", 20000)
+        reasoning_effort = self._read_str_env(f"AZURE_OPENAI_{role_key}_REASONING_EFFORT")
+        if not reasoning_effort:
+            reasoning_effort = self._read_str_env("AZURE_OPENAI_REASONING_EFFORT") or "medium"
+        response_format = self._read_str_env(f"AZURE_OPENAI_{role_key}_RESPONSE_FORMAT")
+        if not response_format and output_schema_name and responsibility == "repair_proposal":
+            response_format = "json_schema"
+        return V2RoleBudget(
+            max_input_tokens=max(40000, max_input_tokens),
+            max_output_tokens=max(20000, max_output_tokens),
+            reasoning_effort=reasoning_effort,
+            response_format=response_format or None,
+        )
+
+    @staticmethod
+    def _read_int_env(name: str, default: int) -> int:
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            return default
+
+    @staticmethod
+    def _read_str_env(name: str) -> str:
+        return os.environ.get(name, "").strip()

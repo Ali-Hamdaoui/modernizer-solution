@@ -68,6 +68,7 @@ class SafeDiffPreview:
     total_deletions: int = 0
     truncated: bool = False
     checksum_mismatch: bool = False
+    parse_status: str = "ok"
     redactions: list[str] = field(default_factory=list)
 
 
@@ -109,6 +110,7 @@ def safe_diff_preview_to_dict(preview: SafeDiffPreview) -> dict[str, Any]:
         "total_deletions": preview.total_deletions,
         "truncated": preview.truncated,
         "checksum_mismatch": preview.checksum_mismatch,
+        "parse_status": preview.parse_status,
         "redactions": list(preview.redactions),
     }
 
@@ -228,6 +230,7 @@ class _SafeDiffParser:
             total_deletions=self._total_deletions,
             truncated=self._truncated or any(file.truncated for file in self._files),
             checksum_mismatch=self._checksum_mismatch,
+            parse_status="ok" if self._files else "unparseable",
             redactions=self._redactions,
         )
 

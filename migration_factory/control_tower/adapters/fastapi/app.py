@@ -160,7 +160,11 @@ from migration_factory.control_tower.application.v2_model_schemas import (
 from migration_factory.control_tower.application.v2_repair_flow import (
     V2RepairFlowService,
 )
+from migration_factory.control_tower.application.v2_llm_invocation_ledger import (
+    V2LLMInvocationLedger,
+)
 from migration_factory.control_tower.application.v2_repair_gate_service import (
+    DEFAULT_MAX_REPAIR_ATTEMPTS,
     V2RepairGateService,
     create_repair_gate_diagnosis_callback,
 )
@@ -168,8 +172,10 @@ from migration_factory.control_tower.application.v2_reviewer_service import (
     V2ReviewerService,
 )
 from migration_factory.control_tower.application.v2_repair_projection import (
+    RepairUnavailableState,
     build_reviewed_diff_proposal_from_record,
     record_to_attempt_summary,
+    repair_unavailable_state_to_dict,
     reviewed_diff_proposal_to_safe_dict,
 )
 from migration_factory.control_tower.application.safe_diff_preview import (
@@ -187,8 +193,17 @@ from migration_factory.control_tower.application.v2_gate_artifact_resolver impor
     V2GateArtifactResolver,
 )
 from migration_factory.repair_loop.patch_gate import evaluate_patch_proposal, extract_touched_paths
-from migration_factory.repair_loop.patch_apply import apply_patch_to_sandbox, rollback_patch
+from migration_factory.repair_loop.patch_apply import apply_patch_to_sandbox
 from migration_factory.repair_loop.validation_runner import ValidationResult, run_validation_after_patch
+from migration_factory.repair_loop.failure_evidence import (
+    FailureSource,
+    build_failure_evidence,
+    failure_evidence_to_dict,
+)
+from migration_factory.repair_loop.repair_context import (
+    build_repair_context_pack,
+    context_pack_to_dict,
+)
 from migration_factory.control_tower.application.v2_evidence_pack_builder import (
     EvidencePackBuilder,
     evidence_pack_to_dict,
@@ -670,6 +685,9 @@ class RepairProposalApproveRequest(BaseModel):
     No raw patch, path, env, argv, command, or sandbox fields accepted.
     Frontend sends IDs/checksums only. Backend reloads all state server-side.
 
+    For direct Option A proposals, gate_id and reviewer_verdict_id are not required.
+    For legacy gate-backed proposals, they are still validated when present.
+
     expected_gate_checksum is optional (None = skip check) so the
     frontend is not required to compute server-side gate checksums.
     When provided, it MUST match the persisted gate checksum.
@@ -677,10 +695,7 @@ class RepairProposalApproveRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     proposal_id: str = Field(min_length=1)
     diff_checksum: str = Field(min_length=1)
-    reviewer_verdict_id: str = Field(min_length=1)
-    gate_id: str = Field(min_length=1)
-    expected_gate_checksum: str | None = None
-    idempotency_key: str | None = None
+    idempotency_key: str = Field(min_length=1)
 
 
 class RepairProposalApproveResponse(BaseModel):
@@ -892,9 +907,13 @@ def create_app(
                 repair_flow=_repair_flow,
                 diagnosis_service=_diagnosis_service,
             )
+            ledger = V2LLMInvocationLedger(uow.v2_llm_invocations)
             create_repair_gate_diagnosis_callback(
                 repair_gate_service,
                 _diagnosis_service,
+                uow=uow,
+                model_client=getattr(app.state, "v2_assistant_model_client", None),
+                invocation_ledger=ledger,
             )(job_id, stage_index, command_id, event_type, payload)
 
     def _diagnosis_callback(
@@ -3400,6 +3419,169 @@ def create_app(
 
     # ── PR-B: Reviewed-diff proposal read APIs ─────────────────────────
 
+    def _compute_repair_proposal_allowed_actions(record: Any) -> tuple[str, ...]:
+        """Compute allowed actions for a repair proposal based on its state."""
+        base_actions = ("view_diff", "view_reviewer_opinion", "view_files_changed",
+                         "ask_explanation", "view_attempt_history")
+
+        status = getattr(record, "status", "")
+        reviewer_decision = getattr(record, "reviewer_decision", None)
+
+        if status == "user_review_required" and reviewer_decision == "accept":
+            try:
+                preview = build_safe_diff_preview(
+                    proposal_id=str(getattr(record, "proposal_id", "")),
+                    diff_ref=getattr(record, "diff_ref", None),
+                    stored_diff_checksum=getattr(record, "diff_checksum", None),
+                )
+            except (ValueError, OSError):
+                return base_actions
+            if preview.checksum_mismatch or getattr(preview, "parse_status", "ok") != "ok" or not preview.files:
+                return base_actions
+            return base_actions + ("approve_sandbox_apply",)
+
+        return base_actions
+
+    _REPAIR_STATE_EVENT_TYPES: frozenset[str] = frozenset({
+        "repair_proposal_ready",
+        "reviewed_repair_unavailable",
+        "repair_attempts_exhausted",
+        "repair_callback_error",
+        "repair_validation_failed",
+        "repair_validation_passed",
+        "repair_completed",
+    })
+
+    def _build_repair_state_from_events(uow: Any, job_id: str) -> dict[str, Any] | None:
+        """Build repair_state from the latest repair event in the event stream."""
+        try:
+            events = uow.v2_events.list_by_job(job_id)
+        except Exception:
+            return None
+        latest_event = None
+        for event in reversed(events):
+            if event.type in _REPAIR_STATE_EVENT_TYPES:
+                latest_event = event
+                break
+        if latest_event is None:
+            return repair_unavailable_state_to_dict(RepairUnavailableState(
+                attempted=False,
+                status="not_attempted",
+                reason_code="NO_REPAIR_ATTEMPT_YET",
+                detail="No repair has been attempted for this job.",
+                event_type="",
+                created_at="",
+                allowed_actions=("view_failure_summary",),
+            ))
+        try:
+            payload = json.loads(latest_event.payload_json or "{}")
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        event_type = latest_event.type
+        reviewer_decision = str(payload.get("reviewer_decision", "")).strip().lower()
+
+        if event_type == "repair_proposal_ready":
+            return repair_unavailable_state_to_dict(RepairUnavailableState(
+                attempted=True,
+                status="ready",
+                detail=latest_event.message,
+                event_type=event_type,
+                created_at=latest_event.created_at,
+                allowed_actions=("view_diff", "view_reviewer_opinion", "view_files_changed",
+                                 "ask_explanation", "view_attempt_history", "approve_sandbox_apply"),
+            ))
+        if event_type == "reviewed_repair_unavailable":
+            if reviewer_decision == "reject":
+                reason_code = "REVIEWER_REJECTED"
+                detail = f"Reviewer rejected the proposal: {latest_event.message}"
+            elif reviewer_decision == "revise":
+                reason_code = "REVIEWER_NEEDS_REVISION"
+                detail = f"Reviewer requested revision: {latest_event.message}"
+            else:
+                reason_code = "PRIMARY_INVALID_RESPONSE"
+                detail = f"Primary repair model failed closed: {latest_event.message}"
+            return repair_unavailable_state_to_dict(RepairUnavailableState(
+                attempted=True,
+                status="unavailable",
+                reason_code=reason_code,
+                detail=detail,
+                event_type=event_type,
+                created_at=latest_event.created_at,
+                allowed_actions=("view_failure_summary", "view_attempt_history"),
+            ))
+        if event_type == "repair_attempts_exhausted":
+            return repair_unavailable_state_to_dict(RepairUnavailableState(
+                attempted=True,
+                status="attempts_exhausted",
+                reason_code="ATTEMPTS_EXHAUSTED",
+                detail=f"All repair attempts exhausted: {latest_event.message}",
+                event_type=event_type,
+                created_at=latest_event.created_at,
+                allowed_actions=("view_failure_summary", "view_attempt_history"),
+            ))
+        if event_type in {"repair_callback_error", "repair_completed"}:
+            return repair_unavailable_state_to_dict(RepairUnavailableState(
+                attempted=True,
+                status="blocked",
+                reason_code="REPAIR_BLOCKED",
+                detail=latest_event.message or "Repair is blocked.",
+                event_type=event_type,
+                created_at=latest_event.created_at,
+                allowed_actions=("view_failure_summary", "view_attempt_history"),
+            ))
+        return repair_unavailable_state_to_dict(RepairUnavailableState(
+            attempted=True,
+            status="error",
+            reason_code="UNKNOWN_REPAIR_UNAVAILABLE",
+            detail=latest_event.message or "Unknown repair unavailable reason.",
+            event_type=event_type,
+            created_at=latest_event.created_at,
+            allowed_actions=("view_failure_summary", "view_attempt_history"),
+        ))
+
+    def _build_repair_state_from_record(record: Any) -> dict[str, Any] | None:
+        """Build repair_state from a persisted proposal record."""
+        status = getattr(record, "status", "")
+        reviewer_decision = getattr(record, "reviewer_decision", None)
+        created_at = getattr(record, "created_at", "")
+        allowed = _compute_repair_proposal_allowed_actions(record)
+
+        if status == "user_review_required" and reviewer_decision == "accept":
+            return repair_unavailable_state_to_dict(RepairUnavailableState(
+                attempted=True,
+                status="ready",
+                detail="Reviewed repair proposal ready for user review.",
+                event_type="repair_proposal_ready",
+                created_at=created_at,
+                allowed_actions=allowed + ("view_failure_summary",),
+            ))
+        if status == "user_review_required" and reviewer_decision == "reject":
+            return repair_unavailable_state_to_dict(RepairUnavailableState(
+                attempted=True,
+                status="unavailable",
+                reason_code="REVIEWER_REJECTED",
+                detail="Reviewer rejected the proposal.",
+                event_type="reviewed_repair_unavailable",
+                created_at=created_at,
+                allowed_actions=("view_failure_summary", "view_attempt_history"),
+            ))
+        if status == "user_review_required" and reviewer_decision == "revise":
+            return repair_unavailable_state_to_dict(RepairUnavailableState(
+                attempted=True,
+                status="running",
+                reason_code="REVIEWER_NEEDS_REVISION",
+                detail="Reviewer requested revision.",
+                created_at=created_at,
+                allowed_actions=("view_failure_summary", "view_attempt_history", "view_diff", "view_reviewer_opinion"),
+            ))
+        return repair_unavailable_state_to_dict(RepairUnavailableState(
+            attempted=True,
+            status="running",
+            detail=f"Proposal status: {status}",
+            created_at=created_at,
+            allowed_actions=tuple(allowed),
+        ))
+
     @app.get("/v1/v2/jobs/{job_id}/repair/proposals/current")
     def get_current_repair_proposal(job_id: str) -> dict[str, Any]:
         """Return the current (latest user-reviewable) repair proposal for a job.
@@ -3410,9 +3592,11 @@ def create_app(
             _require_v2_job(uow, job_id)
             record = uow.v2_repairs.get_current_proposal_for_job(job_id)
             if record is None:
-                return {"proposal": None, "job_id": job_id}
+                repair_state = _build_repair_state_from_events(uow, job_id)
+                return {"proposal": None, "job_id": job_id, "repair_state": repair_state}
             if getattr(record, "diff_ref", None) is not None:
                 try:
+                    allowed_actions = _compute_repair_proposal_allowed_actions(record)
                     projection = build_reviewed_diff_proposal_from_record(
                         proposal_id=record.proposal_id,
                         status=record.status,
@@ -3430,14 +3614,20 @@ def create_app(
                         reviewer_verdict_id=getattr(record, "reviewer_verdict_id", None),
                         reviewer_output_checksum=getattr(record, "reviewer_output_checksum", None),
                         policy_validation_checksum=getattr(record, "policy_validation_checksum", None),
+                        allowed_actions=allowed_actions,
+                        apply_status=getattr(record, "apply_status", None),
+                        rerun_status=getattr(record, "rerun_status", None),
                     )
+                    repair_state = _build_repair_state_from_record(record)
                     return {
                         "proposal": reviewed_diff_proposal_to_safe_dict(projection),
                         "job_id": job_id,
+                        "repair_state": repair_state,
                     }
                 except (ValueError, OSError):
                     pass
-            return {"proposal": None, "job_id": job_id}
+            repair_state = _build_repair_state_from_events(uow, job_id)
+            return {"proposal": None, "job_id": job_id, "repair_state": repair_state}
 
     @app.get("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}")
     def get_repair_proposal(
@@ -3459,6 +3649,7 @@ def create_app(
                 )
             if getattr(record, "diff_ref", None) is not None:
                 try:
+                    allowed_actions = _compute_repair_proposal_allowed_actions(record)
                     projection = build_reviewed_diff_proposal_from_record(
                         proposal_id=record.proposal_id,
                         status=record.status,
@@ -3476,6 +3667,9 @@ def create_app(
                         reviewer_verdict_id=getattr(record, "reviewer_verdict_id", None),
                         reviewer_output_checksum=getattr(record, "reviewer_output_checksum", None),
                         policy_validation_checksum=getattr(record, "policy_validation_checksum", None),
+                        allowed_actions=allowed_actions,
+                        apply_status=getattr(record, "apply_status", None),
+                        rerun_status=getattr(record, "rerun_status", None),
                     )
                     return {
                         "proposal": reviewed_diff_proposal_to_safe_dict(projection),
@@ -3743,6 +3937,8 @@ def create_app(
                             reviewer_verdict_id=getattr(new_record, "reviewer_verdict_id", None),
                             reviewer_output_checksum=getattr(new_record, "reviewer_output_checksum", None),
                             policy_validation_checksum=getattr(new_record, "policy_validation_checksum", None),
+                            apply_status=getattr(new_record, "apply_status", None),
+                            rerun_status=getattr(new_record, "rerun_status", None),
                         )
                     )
                 except (ValueError, OSError):
@@ -3771,16 +3967,12 @@ def create_app(
 
         Accepts only IDs and checksums. Rejects raw patch, path, env, argv.
         Backend reloads all state server-side.
-        Validates 21+ safety checks before applying.
 
-        Flow:
-        1. Validate job/proposal ownership and checksum bindings
-        2. Validate gate state and proposal status
-        3. Read diff from server-side diff_ref
-        4. Evaluate patch proposal (patch gate)
-        5. Apply diff to sandbox only
-        6. Rerun validation
-        7. Route based on validation result
+        For direct Option A proposals (gate_id is None), skips gate and
+        verdict validation. No rollback on validation failure.
+
+        For legacy gate-backed proposals, validates gate state, verdict,
+        checksums, and rolls back on validation failure.
         """
         _approvable_statuses = frozenset({
             "user_review_required", "reviewer_accepted", "approvable",
@@ -3789,7 +3981,7 @@ def create_app(
             "superseded", "approved", "rejected", "exhausted",
             "approved_applied", "approve_failed",
         })
-        # Validate payload path matches body
+
         if payload.proposal_id != proposal_id:
             raise _error(
                 status.HTTP_400_BAD_REQUEST,
@@ -3864,6 +4056,12 @@ def create_app(
                         "SAFE_DIFF_CHECKSUM_MISMATCH",
                         "SafeDiffPreview reports checksum mismatch.",
                     )
+                if getattr(preview, "parse_status", "ok") != "ok" or not preview.files:
+                    raise _error(
+                        status.HTTP_400_BAD_REQUEST,
+                        "SAFE_DIFF_MALFORMED",
+                        "SafeDiffPreview could not parse an applyable unified diff.",
+                    )
             except (ValueError, OSError):
                 raise _error(
                     status.HTTP_400_BAD_REQUEST,
@@ -3871,75 +4069,16 @@ def create_app(
                     "Failed to build safe diff preview for checksum validation.",
                 )
 
-            # 6. Validate reviewer_verdict_id
-            stored_verdict_id = getattr(record, "reviewer_verdict_id", None)
-            if not stored_verdict_id or payload.reviewer_verdict_id != stored_verdict_id:
-                raise _error(
-                    status.HTTP_409_CONFLICT,
-                    "STALE_REVIEWER_VERDICT",
-                    "reviewer_verdict_id does not match the current proposal.",
-                )
-
-            # 7. Validate reviewer verdict exists and is accepted
-            reviewer_service = V2ReviewerService(reviewer_repo=uow.v2_reviewer)
-            verdict = reviewer_service.get_critique(stored_verdict_id)
-            if verdict is None:
-                raise _error(
-                    status.HTTP_404_NOT_FOUND,
-                    "REVIEWER_VERDICT_NOT_FOUND",
-                    f"Reviewer verdict {stored_verdict_id!r} not found.",
-                )
-            verdict_decision = str(getattr(verdict, "decision", "") or "")
-            if verdict_decision != "accept":
+            # 6. Direct Option A approval only. No gate/verdict coupling.
+            reviewer_decision = getattr(record, "reviewer_decision", None)
+            if reviewer_decision != "accept":
                 raise _error(
                     status.HTTP_409_CONFLICT,
                     "REVIEWER_NOT_ACCEPTED",
-                    f"Reviewer decision is {verdict_decision!r}, not 'accept'.",
+                    f"Reviewer decision is '{reviewer_decision or 'unknown'}', not 'accept'.",
                 )
 
-            # 8. Validate gate_id matches persisted proposal gate_id
-            stored_gate_id = getattr(record, "gate_id", None)
-            if not stored_gate_id or payload.gate_id != stored_gate_id:
-                raise _error(
-                    status.HTTP_409_CONFLICT,
-                    "GATE_ID_MISMATCH",
-                    "Gate ID does not match the current proposal.",
-                )
-
-            # 9. Validate gate exists and belongs to job
-            gate = uow.phase_gates.get(stored_gate_id)
-            if gate is None or gate.job_id != job_id:
-                raise _error(
-                    status.HTTP_404_NOT_FOUND,
-                    "GATE_NOT_FOUND",
-                    f"Gate {stored_gate_id!r} not found for job {job_id!r}.",
-                )
-
-            # 10. Validate gate is open/current/user-review
-            if gate.gate_status not in ("open", "current", "user-review"):
-                raise _error(
-                    status.HTTP_409_CONFLICT,
-                    "GATE_NOT_OPEN",
-                    f"Gate status is {gate.gate_status!r}, not open.",
-                )
-
-            # 11. Validate expected_gate_checksum if provided
-            gate_checksum_value = gate_checksum(
-                gate_id=gate.gate_id,
-                job_id=gate.job_id,
-                gate_phase=gate.gate_phase,
-                stage_index=gate.stage_index,
-                source_artifact_checksum=gate.source_artifact_checksum,
-                source_artifact_refs=tuple(json.loads(gate.source_artifact_refs_json or "[]")),
-            )
-            if payload.expected_gate_checksum is not None and payload.expected_gate_checksum != gate_checksum_value:
-                raise _error(
-                    status.HTTP_409_CONFLICT,
-                    "STALE_GATE_CHECKSUM",
-                    "expected_gate_checksum does not match current gate checksum.",
-                )
-
-            # 12. Validate proposal status is approvable
+            # 7. Validate proposal status is approvable
             proposal_status = getattr(record, "status", "")
             if proposal_status in _finalized_statuses:
                 raise _error(
@@ -3954,12 +4093,9 @@ def create_app(
                     f"Proposal status is {proposal_status!r}; not approvable.",
                 )
 
-            # 13. Resolve runtime context (server-side only)
-            apply_context = _resolve_reviewed_repair_runtime_context(
-                uow=uow,
-                job_id=job_id,
-                gate=gate,
-                proposal_id=proposal_id,
+            # 8. Resolve runtime context (proposal-first for direct, gate fallback for legacy)
+            apply_context = _resolve_repair_proposal_runtime_context(
+                uow=uow, job_id=job_id, record=record,
             )
             if apply_context is None:
                 raise _error(
@@ -3973,10 +4109,8 @@ def create_app(
             legacy_path = apply_context["legacy_path"]
             deterministic_rule_id = apply_context["deterministic_rule_id"]
             risk = apply_context["risk"]
-            target_path = apply_context["target_path"]
-            command_id = apply_context["command_id"]
 
-            # 14. Evaluate patch proposal (patch gate)
+            # 9. Evaluate patch proposal (patch gate)
             diff_text = raw_diff.decode("utf-8", errors="replace")
             patch_proposal = {
                 "deterministic_rule_id": deterministic_rule_id,
@@ -4002,7 +4136,7 @@ def create_app(
 
             touched_paths = list(gate_result.touched_paths) if gate_result.touched_paths else []
 
-            # 15. Validate no legacy source modification
+            # 10. Validate no legacy source modification
             for tp in touched_paths:
                 resolved_path = (Path(sandbox_path) / tp).resolve()
                 legacy_resolved = Path(legacy_path).resolve()
@@ -4014,7 +4148,7 @@ def create_app(
                         f"Touched path {tp!r} resolves inside legacy source.",
                     )
                 except ValueError:
-                    pass  # Path is outside legacy source - good
+                    pass
 
             # ── Apply to sandbox ────────────────────────────────
             apply_result = apply_patch_to_sandbox(
@@ -4040,10 +4174,11 @@ def create_app(
                     remaining_attempts=0,
                     completed_at=completed_at,
                 )
+                stage_index = getattr(record, "route_step_index", None)
                 _append_v2_event(
                     uow,
                     job_id=job_id,
-                    stage=getattr(gate, "stage_index", None),
+                    stage=stage_index,
                     event_type="repair_approve_apply_failed",
                     status="failed",
                     message=f"Sandbox apply failed for proposal {proposal_id}: {apply_reason}",
@@ -4058,7 +4193,7 @@ def create_app(
 
             # ── Rerun validation ────────────────────────────────
             validation: ValidationResult = run_validation_after_patch(
-                run_id=command_id or proposal_id,
+                run_id=apply_context.get("command_id", proposal_id) or proposal_id,
                 run_dir=run_dir_path,
                 sandbox_path=sandbox_path,
                 attempt=getattr(record, "attempt_number", None) or 1,
@@ -4075,13 +4210,13 @@ def create_app(
             allowed_next_actions: tuple[str, ...] = ()
 
             if validation.passed:
-                # Handle route progression via repair gate service
+                stage_index_val = getattr(record, "route_step_index", 0) or 0
                 repair_gate_svc = V2RepairGateService(
                     gate_service=V2PhaseGateService(uow.phase_gates),
                 )
                 transition = repair_gate_svc.handle_repair_validation_result(
                     job_id=job_id,
-                    stage_index=int(getattr(gate, "stage_index", 0) or 0),
+                    stage_index=int(stage_index_val),
                     validation_passed=True,
                     validation_id=proposal_id,
                     sandbox_path=sandbox_path,
@@ -4105,7 +4240,7 @@ def create_app(
                 _append_v2_event(
                     uow,
                     job_id=job_id,
-                    stage=getattr(gate, "stage_index", None),
+                    stage=int(stage_index_val),
                     event_type="repair_validation_passed",
                     status="completed",
                     message=f"Repair validation passed for proposal {proposal_id}",
@@ -4114,28 +4249,46 @@ def create_app(
                 allowed_next_actions = ("view_result", "continue_migration")
 
             else:
-                # Validation failed - rollback, then create next repair cycle
-                rollback_ok, rollback_reason = rollback_patch(
-                    sandbox_path=sandbox_path,
-                    snapshot_dir=apply_result.snapshot_dir,
-                    touched_paths=apply_result.touched_paths,
-                    created_paths=apply_result.created_paths,
+                # Validation failed
+                proposal_post_status = "approve_failed"
+                stage_index_val = getattr(record, "route_step_index", 0) or 0
+                rollback_status = None
+                remaining_attempts_after = getattr(record, "remaining_attempts", 0) or 0
+                uow.v2_repairs.update_proposal_prf_fields(
+                    proposal_id,
+                    status="approve_failed",
+                    status_reason=f"Validation failed after sandbox apply: {'; '.join(validation.errors)}",
+                    apply_status=apply_status,
+                    rerun_status=rerun_status,
+                    rollback_status=None,
+                    remaining_attempts=remaining_attempts_after,
                 )
-                rollback_status = "rolled_back" if rollback_ok else "rollback_failed"
-                # Create next repair cycle
-                repair_gate_svc = V2RepairGateService(
-                    gate_service=V2PhaseGateService(uow.phase_gates),
-                )
-                transition = repair_gate_svc.handle_repair_validation_result(
-                    job_id=job_id,
-                    stage_index=int(getattr(gate, "stage_index", 0) or 0),
-                    validation_passed=False,
-                    validation_id=proposal_id,
-                    sandbox_path=sandbox_path,
-                )
-                next_gate_id = transition.gate_id or None
-                next_gate_status = transition.status or None
-                remaining_attempts = transition.remaining_attempts or 0
+                if remaining_attempts_after > 0:
+                    next_result = _create_next_direct_reviewed_repair_proposal_from_validation_failure(
+                        uow=uow,
+                        job_id=job_id,
+                        record=record,
+                        validation=validation,
+                        apply_context=apply_context,
+                        run_dir=run_dir_path,
+                        sandbox_path=sandbox_path,
+                        model_client=getattr(app.state, "v2_assistant_model_client", None),
+                    )
+                    next_gate_id = next_result.proposal_id or None
+                    next_gate_status = next_result.status or None
+                    remaining_attempts = next_result.remaining_attempts
+                else:
+                    next_gate_status = "attempts_exhausted"
+                    remaining_attempts = 0
+                    _append_v2_event(
+                        uow,
+                        job_id=job_id,
+                        stage=int(stage_index_val),
+                        event_type="repair_attempts_exhausted",
+                        status="failed",
+                        message=f"Repair attempts exhausted for proposal {proposal_id}",
+                        payload={"proposal_id": proposal_id},
+                    )
                 completed_at = utc_now_text()
                 uow.v2_repairs.update_proposal_prf_fields(
                     proposal_id,
@@ -4152,7 +4305,7 @@ def create_app(
                 _append_v2_event(
                     uow,
                     job_id=job_id,
-                    stage=getattr(gate, "stage_index", None),
+                    stage=int(stage_index_val),
                     event_type="repair_validation_failed",
                     status="failed",
                     message=f"Repair validation failed for proposal {proposal_id}",
@@ -4512,31 +4665,7 @@ def create_app(
     def list_v2_llm_activity(job_id: str) -> dict[str, Any]:
         with unit_of_work_factory() as uow:
             records = uow.v2_llm_invocations.list_by_job(job_id)
-            invocations = [
-                {
-                    "invocation_id": r.invocation_id,
-                    "job_id": r.job_id,
-                    "role": r.role,
-                    "responsibility": r.responsibility,
-                    "status": r.status,
-                    "proposal_id": r.proposal_id,
-                    "gate_id": r.gate_id,
-                    "provider_alias": r.provider_alias,
-                    "deployment_alias_hash": r.deployment_alias_hash,
-                    "context_checksum": r.context_checksum,
-                    "output_checksum": r.output_checksum,
-                    "schema_name": r.schema_name,
-                    "fallback_used": bool(r.fallback_used),
-                    "redacted_summary": r.redacted_summary,
-                    "prompt_tokens": r.prompt_tokens,
-                    "completion_tokens": r.completion_tokens,
-                    "total_tokens": r.total_tokens,
-                    "latency_ms": r.latency_ms,
-                    "created_at": r.created_at,
-                    "completed_at": r.completed_at,
-                }
-                for r in records
-            ]
+            invocations = [V2LLMInvocationLedger.record_to_dto(r) for r in records]
         return {"invocations": invocations}
 
     # ------------------------------------------------------------------
@@ -12334,6 +12463,262 @@ def _resolve_reviewed_repair_runtime_context(
     }
 
 
+def _resolve_repair_proposal_runtime_context(
+    *,
+    uow: Any,
+    job_id: str,
+    record: Any,
+) -> dict[str, Any] | None:
+    """Resolve runtime context for a repair proposal.
+
+    For direct Option A proposals (record.gate_id is None), resolve from
+    the proposal's own repair_context_ref and failure_evidence_ref.
+    For legacy gate-backed proposals, fall back to the gate resolver.
+    """
+    # Gate-backed proposals use the existing resolver
+    gate_id = getattr(record, "gate_id", None)
+    if gate_id:
+        gate = uow.phase_gates.get(gate_id)
+        if gate is not None:
+            return _resolve_reviewed_repair_runtime_context(
+                uow=uow, job_id=job_id, gate=gate, proposal_id=record.proposal_id,
+            )
+
+    # Direct proposal — resolve from proposal's own refs
+    context_data: dict[str, Any] = {}
+    repair_context_ref = getattr(record, "repair_context_ref", None)
+    if repair_context_ref:
+        try:
+            context_path = Path(repair_context_ref)
+            if context_path.is_file():
+                loaded_context = json.loads(context_path.read_text(encoding="utf-8"))
+                context_data = loaded_context if isinstance(loaded_context, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            context_data = {}
+
+    evidence_data: dict[str, Any] = {}
+    failure_evidence_ref = getattr(record, "failure_evidence_ref", None)
+    if failure_evidence_ref:
+        try:
+            evidence_path = Path(failure_evidence_ref)
+            if evidence_path.is_file():
+                loaded_evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+                evidence_data = loaded_evidence if isinstance(loaded_evidence, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            evidence_data = {}
+
+    job = uow.v2_jobs.get(job_id)
+    if job is None or not getattr(job, "setup_id", ""):
+        return None
+    setup = uow.v2_setups.get(job.setup_id)
+    if setup is None:
+        return None
+
+    commands = tuple(uow.v2_commands.list_by_job(job_id))
+    events = tuple(uow.v2_events.list_by_job(job_id))
+
+    stage_index = (
+        getattr(record, "route_step_index", None)
+        or context_data.get("stage_index")
+        or evidence_data.get("stage_index")
+        or 0
+    )
+    sandbox_resolution = _resolve_stage_sandbox_root(
+        stage_index=int(stage_index),
+        events=events,
+        commands=commands,
+    )
+    if sandbox_resolution is None:
+        return None
+    sandbox_path, _ = sandbox_resolution
+
+    diff_ref = getattr(record, "diff_ref", None)
+    if not diff_ref or not Path(diff_ref).is_file():
+        return None
+    diff_path = Path(diff_ref)
+    run_dir: str | Path | None = None
+    if diff_path.parent.name == "repair_chain":
+        run_dir = diff_path.parent.parent
+    if run_dir is None:
+        try:
+            run_dir = _v2_resume_run_dir_from_commands(
+                commands,
+                int(stage_index),
+                str(getattr(record, "command_id", "") or context_data.get("command_id") or ""),
+            )
+        except HTTPException:
+            return None
+
+    # Resolve runtime info from context pack if available
+    deterministic_rule_id = str(context_data.get("deterministic_rule_id", "") or "")
+    if not deterministic_rule_id:
+        deterministic_rule_id = str(context_data.get("base_repo_state_checksum", "") or "")
+    if not deterministic_rule_id:
+        deterministic_rule_id = getattr(record, "diff_checksum", "") or "repair_apply"
+
+    risk = "LOW"
+    h2_required = False
+
+    return {
+        "proposal_id": str(record.proposal_id),
+        "command_id": str(getattr(record, "command_id", "") or context_data.get("command_id") or evidence_data.get("command_id") or ""),
+        "sandbox_path": str(sandbox_path),
+        "run_dir": str(run_dir),
+        "legacy_path": str(setup.legacy_app_path),
+        "deterministic_rule_id": deterministic_rule_id,
+        "source_profile": str(context_data.get("source_profile") or evidence_data.get("source_profile") or ""),
+        "target_profile": str(context_data.get("target_profile") or evidence_data.get("target_profile") or ""),
+        "risk": risk,
+        "expected_validation": (),
+        "h2_required": h2_required,
+        "target_path": diff_ref,
+    }
+
+
+def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
+    *,
+    uow: Any,
+    job_id: str,
+    record: Any,
+    validation: ValidationResult,
+    apply_context: dict[str, Any],
+    run_dir: str | Path,
+    sandbox_path: str | Path,
+    model_client: Any | None = None,
+) -> Any:
+    """Create the next Option A proposal from post-apply validation evidence."""
+    stage_index = int(getattr(record, "route_step_index", 0) or 0)
+    command_id = str(getattr(record, "command_id", "") or "")
+    attempt_number = int(getattr(record, "attempt_number", 0) or 0) + 1
+    run_path = Path(run_dir)
+    repairs_dir = run_path / "repairs"
+    repairs_dir.mkdir(parents=True, exist_ok=True)
+
+    validation_summary = "; ".join(validation.errors) or "Validation failed after reviewed repair apply."
+    artifact_refs = dict(validation.artifact_refs or {})
+    if getattr(record, "diff_checksum", None):
+        artifact_refs["prior_diff_checksum"] = str(record.diff_checksum)
+    changed_files = _json_string_list(getattr(record, "affected_paths_json", None))
+
+    accepted_checksums = tuple(
+        value for value in (
+            getattr(record, "diff_checksum", None),
+            getattr(record, "reviewer_output_checksum", None),
+            getattr(record, "policy_validation_checksum", None),
+        )
+        if value
+    )
+    evidence = build_failure_evidence(
+        failure_source=FailureSource.VALIDATION,
+        job_id=job_id,
+        stage_index=stage_index,
+        command_id=command_id,
+        failure_summary=validation_summary,
+        changed_files=tuple(changed_files),
+        source_profile=str(apply_context.get("source_profile", "")),
+        target_profile=str(apply_context.get("target_profile", "")),
+        accepted_artifact_checksums=accepted_checksums,
+        artifact_refs=artifact_refs,
+        safe_log_preview=validation_summary,
+    )
+    context_pack = build_repair_context_pack(
+        failure_evidence=evidence,
+        job_id=job_id,
+        stage_index=stage_index,
+        command_id=command_id,
+        source_profile=str(apply_context.get("source_profile", "")),
+        target_profile=str(apply_context.get("target_profile", "")),
+        prior_proposal_checksums=accepted_checksums,
+        prior_reviewer_notes=(),
+        changed_files=tuple(changed_files),
+        cycle_number=attempt_number,
+        max_cycles=DEFAULT_MAX_REPAIR_ATTEMPTS,
+    )
+
+    evidence_path = repairs_dir / f"repair_validation_failure_evidence_attempt_{attempt_number}.json"
+    context_path = repairs_dir / f"repair_validation_context_pack_attempt_{attempt_number}.json"
+    evidence_path.write_text(
+        json.dumps(failure_evidence_to_dict(evidence), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    context_path.write_text(
+        json.dumps(context_pack_to_dict(context_pack), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    repair_gate_svc = V2RepairGateService(
+        gate_service=V2PhaseGateService(uow.phase_gates),
+    )
+    result = repair_gate_svc.create_reviewed_repair_proposal_on_failure(
+        job_id=job_id,
+        stage_index=stage_index,
+        command_id=command_id,
+        failure_evidence_ref=str(evidence_path),
+        repair_context_ref=str(context_path),
+        run_dir=str(run_path),
+        sandbox_path=str(sandbox_path),
+        legacy_path=str(apply_context.get("legacy_path", "")),
+        source_profile=str(apply_context.get("source_profile", "")),
+        target_profile=str(apply_context.get("target_profile", "")),
+        h2_required=bool(apply_context.get("h2_required", False)),
+        model_client=model_client,
+        uow=uow,
+    )
+    if result.status == "created":
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="repair_proposal_ready",
+            status="ready",
+            message=f"Next reviewed repair proposal ready for command {command_id}",
+            payload={
+                "proposal_id": result.proposal_id,
+                "job_id": job_id,
+                "stage_index": stage_index,
+                "command_id": command_id,
+                "diff_checksum": result.diff_checksum,
+                "reviewer_decision": result.reviewer_decision,
+                "attempt_number": result.attempt_number,
+                "remaining_attempts": result.remaining_attempts,
+            },
+        )
+    else:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=stage_index,
+            event_type="repair_attempts_exhausted"
+            if result.status == "attempts_exhausted"
+            else "reviewed_repair_unavailable",
+            status="failed" if result.status == "attempts_exhausted" else "skipped",
+            message=result.reason or "Next reviewed repair proposal unavailable.",
+            payload={
+                "job_id": job_id,
+                "stage_index": stage_index,
+                "command_id": command_id,
+                "reviewer_decision": result.reviewer_decision,
+                "attempt_number": result.attempt_number,
+                "remaining_attempts": result.remaining_attempts,
+            },
+        )
+    return result
+
+
+def _json_string_list(value: Any) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, (list, tuple)):
+        return tuple(str(item) for item in value if item)
+    if not isinstance(value, str) or not value.strip():
+        return ()
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return ()
+    if not isinstance(parsed, list):
+        return ()
+    return tuple(str(item) for item in parsed if item)
+
+
 def _parse_reviewed_repair_gate_refs(source_artifact_refs_json: str) -> tuple[dict[str, str], tuple[str, ...]]:
     try:
         parsed = json.loads(source_artifact_refs_json)
@@ -12439,6 +12824,7 @@ _PIPELINE_PHASES = (
     ("test_validation", "Test Validation", {"test_started", "test_completed", "test_failed"}),
     ("failure_repair", "Repair/Failure", {
         "repair_started", "repair_fallback_generated", "repair_completed",
+        "repair_proposal_ready", "reviewed_repair_unavailable",
     }),
     ("result_contract", "Result Contract", {"result_contract_failed"}),
     ("final_report", "Final Report", {
@@ -12472,6 +12858,7 @@ _IMPORTANT_EVENT_TYPES = {
     "transform_failed",
     "build_failed",
     "repair_started",
+    "repair_completed",
     "repair_fallback_generated",
     "next_stage_queued",
     "final_report_started",
@@ -12701,6 +13088,11 @@ def _v2_artifact_base_roots(*, setup: Any, commands: tuple[Any, ...]) -> tuple[P
                 add(argv[index + 1])
             if str(item) in {"--legacy", "--sandbox"} and index + 1 < len(argv):
                 add(argv[index + 1])
+    # Fallback: also scan known alternate run roots so the collector can
+    # find model output candidates stored outside the repo root.
+    alt_run_root = Path.home() / "Desktop" / "modernized-v2-runs"
+    if alt_run_root.is_dir() and alt_run_root not in roots:
+        roots.append(alt_run_root.resolve(strict=False))
     return tuple(roots)
 
 
@@ -12765,6 +13157,7 @@ _PRIMARY_EVENT_PRIORITY = {
 
 _REPAIR_EVENT_TYPES = {
     "repair_started",
+    "repair_completed",
     "repair_fallback_generated",
     "repair_proposal_revised",
     "reviewer_critique_created",
@@ -12772,6 +13165,9 @@ _REPAIR_EVENT_TYPES = {
     "repair_patch_applied",
     "repair_validation_completed",
     "repair_rollback_completed",
+    "repair_proposal_ready",
+    "reviewed_repair_unavailable",
+    "repair_attempts_exhausted",
 }
 
 

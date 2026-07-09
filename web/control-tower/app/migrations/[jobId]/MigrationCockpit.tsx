@@ -987,6 +987,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [artifactPreviewBusy, setArtifactPreviewBusy] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const [liveRefreshWarning, setLiveRefreshWarning] = useState<string | null>(null);
+  const [repairRefreshKey, setRepairRefreshKey] = useState(0);
   const [gateState, setGateState] = useState<GatePanelState>({ status: "loading" });
   const [report, setReport] = useState<V2FinalReportResponse | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
@@ -1168,6 +1169,13 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       "pom_validation_failed",
       "pom_repair_plan_created",
       "pom_change_rolled_back",
+      // PR-C repair state events
+      "repair_proposal_ready",
+      "reviewed_repair_unavailable",
+      "repair_callback_error",
+      "repair_attempts_exhausted",
+      "repair_validation_failed",
+      "repair_validation_passed",
     ]) {
       source.addEventListener(type, (event) => {
         appendEventFromSse((event as MessageEvent).data);
@@ -1221,6 +1229,9 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         void refreshGateState().catch(() => {
           // keep existing gate state on refresh failure
         });
+      }
+      if (AMF252_REPAIR_EVENTS.has(event.type)) {
+        setRepairRefreshKey((k) => k + 1);
       }
     } catch {
       setStreamState("reconnecting");
@@ -1877,7 +1888,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
 
       {/* PR-C — Repair Proposal Panel */}
       {normalizedJobId && (
-        <RepairProposalPanel jobId={normalizedJobId} />
+        <RepairProposalPanel jobId={normalizedJobId} repairRefreshKey={repairRefreshKey} />
       )}
 
       {/* Assistant Panel */}
@@ -2195,4 +2206,22 @@ const IMPORTANT_SSE_TYPES = new Set([
   "pom_validation_failed",
   "pom_repair_plan_created",
   "pom_change_rolled_back",
+  // PR-C repair state events
+  "repair_proposal_ready",
+  "reviewed_repair_unavailable",
+  "repair_callback_error",
+  "repair_attempts_exhausted",
+  "repair_validation_failed",
+  "repair_validation_passed",
+  "repair_completed",
+]);
+
+const AMF252_REPAIR_EVENTS = new Set([
+  "repair_proposal_ready",
+  "reviewed_repair_unavailable",
+  "repair_callback_error",
+  "repair_attempts_exhausted",
+  "repair_validation_failed",
+  "repair_validation_passed",
+  "repair_completed",
 ]);

@@ -1117,13 +1117,15 @@ class V2OrchestratorRunner:
                 payload={"command_id": command_id, "transform_status": transform_status},
             )
         elif _is_failure_status(transform_status):
+            transform_payload = {"command_id": command_id, "transform_status": transform_status}
+            _add_repair_refs_to_payload(result, transform_payload)
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="sandbox_transform_failed",
                 status="failed",
                 message=f"Sandbox transform failed: {transform_status}",
-                payload={"command_id": command_id, "transform_status": transform_status},
+                payload=transform_payload,
             )
 
         if build_status == "BUILD_PASSED_IN_SANDBOX":
@@ -1136,13 +1138,15 @@ class V2OrchestratorRunner:
                 payload={"command_id": command_id, "build_status": build_status},
             )
         elif _is_failure_status(build_status):
+            build_payload = {"command_id": command_id, "build_status": build_status}
+            _add_repair_refs_to_payload(result, build_payload)
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="build_failed",
                 status="failed",
                 message=f"Sandbox build failed: {build_status}",
-                payload={"command_id": command_id, "build_status": build_status},
+                payload=build_payload,
             )
 
         if test_status in _SUCCESS_TEST_STATUSES:
@@ -1159,13 +1163,15 @@ class V2OrchestratorRunner:
                 payload={"command_id": command_id, "test_status": test_status},
             )
         elif _is_failure_status(test_status):
+            test_payload = {"command_id": command_id, "test_status": test_status}
+            _add_repair_refs_to_payload(result, test_payload)
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="test_failed",
                 status="failed",
                 message=f"Sandbox test validation failed: {test_status}",
-                payload={"command_id": command_id, "test_status": test_status},
+                payload=test_payload,
             )
 
     def _emit_failure_repair_events(
@@ -1279,6 +1285,18 @@ class V2OrchestratorRunner:
             encoding="utf-8",
         )
 
+        # Inject internal refs into result for downstream callback
+        result["_repair_failure_evidence_ref"] = str(evidence_path)
+        result["_repair_context_pack_ref"] = str(context_path)
+        result["_repair_run_dir"] = str(run_dir)
+        result["_repair_failure_evidence_checksum"] = evidence.content_checksum
+        result["_repair_context_pack_checksum"] = context_pack.context_pack_checksum
+        result["_repair_base_repo_state_checksum"] = context_pack.base_repo_state_checksum
+        sandbox = result.get("sandbox_path") or result.get("sandbox_root") or ""
+        if sandbox:
+            result["_repair_sandbox_path"] = str(sandbox)
+        result["_repair_h2_required"] = bool(result.get("h2_required") or result.get("h2_startup_required"))
+
         self._event(
             job_id=job_id,
             stage=stage_index,
@@ -1348,6 +1366,7 @@ class V2OrchestratorRunner:
                 "test_status": test_status,
                 **public_contract,
             }
+            _add_repair_refs_to_payload(result, build_payload)
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -1370,6 +1389,7 @@ class V2OrchestratorRunner:
                 "test_status": test_status,
                 **public_contract,
             }
+            _add_repair_refs_to_payload(result, test_payload)
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -1396,6 +1416,7 @@ class V2OrchestratorRunner:
                 "repair_fallback_generated": bool(fallback),
                 **public_contract,
             }
+            _add_repair_refs_to_payload(result, transform_payload)
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -2949,3 +2970,12 @@ def _list_or_none(value: Any) -> list[str] | None:
         items = [str(item) for item in value]
         return items if items else None
     return None
+
+
+def _add_repair_refs_to_payload(result: dict[str, Any], payload: dict[str, Any]) -> None:
+    for key in ("_repair_failure_evidence_ref", "_repair_context_pack_ref", "_repair_run_dir",
+                "_repair_sandbox_path", "_repair_failure_evidence_checksum",
+                "_repair_context_pack_checksum", "_repair_base_repo_state_checksum",
+                "_repair_h2_required", "source_profile", "target_profile", "changed_files"):
+        if key in result:
+            payload[key] = result[key]

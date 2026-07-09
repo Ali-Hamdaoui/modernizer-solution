@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -34,7 +35,7 @@ REQUIRED_SCHEMAS = (
 TOKEN_BUDGETS = {
     "plan_proposal": {"input": 24000, "output": 6000},
     "plan_revision": {"input": 18000, "output": 5000},
-    "repair_proposal": {"input": 20000, "output": 6000},
+    "repair_proposal": {"input": 40000, "output": 20000},
     "reviewer_critique": {"input": 16000, "output": 4000},
     "assistant_answer": {"input": 8000, "output": 2000},
     "action_request": {"input": 6000, "output": 1500},
@@ -95,12 +96,22 @@ REPAIR_PRIMARY_OUTPUT_SCHEMA = {
         "root_cause": {"type": "string"},
         "fix_strategy": {"type": "string"},
         "changed_files": {"type": "array", "items": {"type": "string"}},
-        "proposed_diff": {"type": "string"},
+        "proposed_diff": {
+            "type": "string",
+            "minLength": 20,
+            "description": (
+                "Raw Git-style unified diff. Must include file headers and hunk markers. "
+                "Must not be Markdown fenced. Must be directly applyable as a patch."
+            ),
+        },
         "deterministic_rule_id": {"type": "string"},
         "risk": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
         "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
         "rationale": {"type": "string"},
-        "no_fix_reason": {"type": "string"},
+        "no_fix_reason": {
+            "type": "string",
+            "description": "Only set when the provided evidence is insufficient or no safe patch can be produced.",
+        },
         "machine_readable_metadata": {"type": "object"},
     },
 }
@@ -573,6 +584,22 @@ class SchemaValidator:
             raise SchemaValidationError(
                 f"Expected number at {'.'.join(path)!r}, got {type(value).__name__}"
             )
+        if "string" in schema_types and isinstance(value, str):
+            min_length = schema.get("minLength")
+            if min_length is not None and len(value) < int(min_length):
+                raise SchemaValidationError(
+                    f"String at {'.'.join(path)!r} is shorter than minLength {min_length}"
+                )
+            max_length = schema.get("maxLength")
+            if max_length is not None and len(value) > int(max_length):
+                raise SchemaValidationError(
+                    f"String at {'.'.join(path)!r} is longer than maxLength {max_length}"
+                )
+            pattern = schema.get("pattern")
+            if pattern and re.search(str(pattern), value) is None:
+                raise SchemaValidationError(
+                    f"String at {'.'.join(path)!r} does not match pattern {pattern!r}"
+                )
 
         # Check required fields
         if "object" in schema_types and isinstance(value, dict):

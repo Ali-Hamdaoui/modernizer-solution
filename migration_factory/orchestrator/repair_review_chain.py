@@ -86,18 +86,24 @@ def _build_deterministic_repair_payload(
 
 def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checksum: str) -> str:
     return (
-        "You are a repair proposer. Analyze the build/test failure evidence below "
-        "and propose an exact unified diff to fix the issue.\n\n"
-        "Return JSON with these required keys:\n"
-        "  root_cause, fix_strategy, changed_files (list of file paths), "
+        "You are the AMF-252 repair proposer.\n"
+        "Your task is to produce a minimal, safe, raw Git-style unified diff that fixes the failing build/test evidence.\n\n"
+        "Return ONLY valid JSON. Do NOT wrap in Markdown fences or code blocks. "
+        "Do NOT include any text before or after the JSON.\n\n"
+        "Required JSON keys: "
+        "root_cause (string), fix_strategy (string), changed_files (list of file paths), "
         "proposed_diff (unified diff string), deterministic_rule_id (or 'no_safe_rule'), "
-        "risk (LOW/MEDIUM/HIGH), confidence (0.0-1.0), rationale.\n"
-        "If no safe fix is possible, set 'no_fix_reason' and make proposed_diff empty.\n\n"
+        "risk (LOW/MEDIUM/HIGH), confidence (0.0-1.0), rationale (string).\n"
+        "Only set no_fix_reason when the provided context lacks enough evidence to safely create a patch.\n"
+        "If no_fix_reason is set, explain exactly which required evidence is missing.\n\n"
         "CONSTRAINTS:\n"
         "- Do NOT include commands, paths to execute, provider data, endpoint data, "
         "env data, deployment data, or approvals.\n"
         "- Do NOT include absolute sandbox paths.\n"
-        "- The proposed_diff must be a valid unified diff format.\n"
+        "- The proposed_diff must be a valid unified diff format. "
+        "Do NOT wrap it in Markdown fences (```diff ... ```).\n"
+        "- In normal repair mode, proposed_diff must be non-empty.\n"
+        "- Empty diff is an unavailable outcome, not an applyable proposal.\n"
         "- Do not skip or disable tests as a fix.\n"
         "- The fix must stay within the sandbox scope and declared changed files.\n\n"
         f"Deterministic repair artifact checksum: {deterministic_checksum}\n\n"
@@ -136,27 +142,47 @@ def _reviewer_repair_prompt(
 
 
 def _coerce_primary_repair_output(content: str) -> dict[str, Any]:
+    content = str(content)
+    if not content.strip():
+        raise RepairReviewChainProductionError(
+            "invalid_response_missing_content: primary repair output is empty"
+        )
     try:
-        parsed = json.loads(str(content))
+        parsed = json.loads(content)
         if not isinstance(parsed, dict):
-            return _fallback_primary_repair_output(content)
-    except json.JSONDecodeError:
-        return _fallback_primary_repair_output(content)
+            raise RepairReviewChainProductionError(
+                f"invalid_response_non_json: parsed value is {type(parsed).__name__}, expected dict"
+            )
+    except json.JSONDecodeError as exc:
+        snippet = content[:1000]
+        raise RepairReviewChainProductionError(
+            f"invalid_response_non_json: JSON parse error — {exc.msg} "
+            f"(line {exc.lno}, col {exc.colpos}). "
+            f"Content length={len(content)}, first 1000 chars: {snippet}"
+        )
 
-    required = {"root_cause", "fix_strategy", "changed_files", "proposed_diff", "risk", "confidence"}
+    required = {"root_cause", "fix_strategy", "changed_files", "proposed_diff", "risk", "confidence", "rationale"}
     missing = required - set(parsed.keys())
     if missing:
         raise RepairReviewChainProductionError(
-            f"primary repair output missing required fields: {sorted(missing)}"
+            f"invalid_response_schema_validation_failed: missing required fields: {sorted(missing)}"
+        )
+
+    proposed_diff = str(parsed.get("proposed_diff") or "")
+    if not proposed_diff.strip():
+        raise RepairReviewChainProductionError(
+            "invalid_response_missing_proposed_diff: proposed_diff is empty or missing"
+        )
+    if "```" in proposed_diff:
+        raise RepairReviewChainProductionError(
+            "invalid_response_markdown_fenced_diff: proposed_diff is wrapped in Markdown fences"
+        )
+    if not _looks_like_unified_diff(proposed_diff):
+        raise RepairReviewChainProductionError(
+            "invalid_response_non_unified_diff: proposed_diff does not contain unified diff markers"
         )
 
     return parsed
-
-
-def _fallback_primary_repair_output(content: str) -> dict[str, Any]:
-    raise RepairReviewChainProductionError(
-        "primary repair output must be valid JSON with all required fields"
-    )
 
 
 def _coerce_reviewer_repair_output(
@@ -166,12 +192,24 @@ def _coerce_reviewer_repair_output(
     primary_checksum: str,
     diff_checksum: str,
 ) -> dict[str, Any]:
+    content = str(content)
+    if not content.strip():
+        raise RepairReviewChainProductionError(
+            "invalid_response_missing_content: reviewer output is empty"
+        )
     try:
-        parsed = json.loads(str(content))
+        parsed = json.loads(content)
         if not isinstance(parsed, dict):
-            raise RepairReviewChainProductionError("reviewer output must be JSON")
-    except json.JSONDecodeError:
-        raise RepairReviewChainProductionError("reviewer output must be valid JSON")
+            raise RepairReviewChainProductionError(
+                f"invalid_response_non_json: reviewer parsed value is {type(parsed).__name__}, expected dict"
+            )
+    except json.JSONDecodeError as exc:
+        snippet = content[:1000]
+        raise RepairReviewChainProductionError(
+            f"invalid_response_non_json: reviewer JSON parse error — {exc.msg} "
+            f"(line {exc.lno}, col {exc.colpos}). "
+            f"Content length={len(content)}, first 1000 chars: {snippet}"
+        )
 
     decision = str(parsed.get("decision") or "").strip().lower()
     if decision not in {"accept", "revise", "reject"}:
@@ -244,7 +282,9 @@ def _validate_primary_repair_output(output: dict[str, Any]) -> list[str]:
 
     diff = str(output.get("proposed_diff", ""))
     if diff.strip():
-        if not _is_unified_diff(diff):
+        if "```" in diff:
+            failures.append("proposed_diff appears to be Markdown fenced")
+        elif not _looks_like_unified_diff(diff):
             failures.append("proposed_diff does not appear to be a valid unified diff")
 
     forbidden_paths = _check_forbidden_paths_in_diff(diff)
@@ -258,12 +298,22 @@ def _validate_primary_repair_output(output: dict[str, Any]) -> list[str]:
     return failures
 
 
-def _is_unified_diff(diff: str) -> bool:
-    lines = diff.strip().splitlines()
-    has_header = any(line.startswith("--- ") for line in lines)
-    has_changes = any(line.startswith("--- ") or line.startswith("+++ ") or line.startswith("@@") for line in lines)
-    has_diff = any(line.startswith("+") or line.startswith("-") for line in lines)
-    return (has_header or has_changes) and has_diff
+def _looks_like_unified_diff(diff: str) -> bool:
+    if not diff or not diff.strip():
+        return False
+    text = diff.strip()
+    if "```" in text:
+        return False
+    has_file_header = (
+        "diff --git " in text
+        or ("--- " in text and "+++ " in text)
+    )
+    has_hunk = "@@" in text
+    has_change = any(
+        line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
+        for line in text.splitlines()
+    )
+    return has_file_header and has_hunk and has_change
 
 
 def _check_forbidden_paths_in_diff(diff: str) -> list[str]:
@@ -353,6 +403,62 @@ def _compute_final_repair_artifact_checksum(payload: dict[str, Any]) -> str:
 # ── F5: Main producer ─────────────────────────────────────────────
 
 
+def _persist_proposer_diagnostic(
+    *,
+    output_dir: Path,
+    raw_content: str,
+    schema_name: str,
+    validation_error: str,
+    finish_reason: Any = None,
+    response_format: Any = None,
+    model_metadata: dict[str, Any] | None = None,
+) -> Path:
+    """Persist a safe diagnostic artifact when proposer output is invalid.
+
+    Captures role metadata, parsed JSON keys, content lengths, and the
+    validation error reason — without leaking raw prompt, endpoint, or key data.
+    """
+    parsed_json: dict[str, Any] = {}
+    try:
+        parsed_json = json.loads(raw_content) if raw_content.strip() else {}
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    changed_files = parsed_json.get("changed_files")
+    changed_files_count = len(changed_files) if isinstance(changed_files, list) else 0
+
+    safe_preview = raw_content[:1000] if raw_content else ""
+    for pattern in (
+        "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
+        "-----BEGIN", "bearer ", "Bearer ",
+    ):
+        if pattern in safe_preview:
+            safe_preview = "[REDACTED - pattern detected]"
+
+    diagnostic: dict[str, Any] = {
+        "diagnostic_kind": "proposer_validation_failure",
+        "role": "main",
+        "responsibility": "repair_proposal",
+        "schema_name": schema_name,
+        "validation_error": validation_error,
+        "parsed_keys": sorted(parsed_json.keys()) if isinstance(parsed_json, dict) else [],
+        "raw_content_preview": safe_preview,
+        "redacted_summary": {
+            "root_cause": str(parsed_json.get("root_cause") or ""),
+            "fix_strategy": str(parsed_json.get("fix_strategy") or ""),
+            "no_fix_reason": str(parsed_json.get("no_fix_reason") or ""),
+            "changed_files_count": changed_files_count,
+        },
+        "finish_reason": str(finish_reason) if finish_reason is not None else "",
+        "response_format_used": str(response_format) if response_format is not None else "",
+        "model_metadata": model_metadata or {},
+        "created_at": utc_now_text(),
+    }
+    path = output_dir / "repair_diagnostic_proposer.json"
+    _write_json(path, diagnostic)
+    return path
+
+
 def produce_repair_review_chain(
     *,
     failure_evidence: FailureEvidence,
@@ -410,34 +516,85 @@ def produce_repair_review_chain(
         require_schema=True,
     )
 
-    # ── PR-G: Complete/fail proposer invocation ──────────────────────
     fallback_used_primary = str(getattr(primary_result, "source", "") or "") == "deterministic"
-    if proposer_invocation_id is not None:
-        if primary_result.success:
-            invocation_ledger.complete_invocation(
-                proposer_invocation_id,
-                output=primary_result.content,
-                redacted_summary=primary_result.redacted_summary,
-                fallback_used=fallback_used_primary,
-            )
-        else:
+
+    if not primary_result.success:
+        if proposer_invocation_id is not None:
             invocation_ledger.fail_invocation(
                 proposer_invocation_id,
                 redacted_error=primary_result.failure_reason,
                 redacted_summary=primary_result.redacted_summary,
                 fallback_used=fallback_used_primary,
             )
-
-    if not primary_result.success:
         raise RepairReviewChainProductionError(
             f"primary repair model failed closed: {primary_result.failure_reason or primary_result.model_status}"
         )
 
-    primary_output = _coerce_primary_repair_output(primary_result.content)
-    primary_failures = _validate_primary_repair_output(primary_output)
+    try:
+        primary_output = _coerce_primary_repair_output(primary_result.content)
+        primary_failures = _validate_primary_repair_output(primary_output)
+    except RepairReviewChainProductionError as exc:
+        validation_error = str(exc)
+        _persist_proposer_diagnostic(
+            output_dir=output_dir,
+            raw_content=primary_result.content,
+            schema_name="RepairPrimaryOutput",
+            validation_error=validation_error,
+            finish_reason=getattr(primary_result, "finish_reason", None),
+            response_format=getattr(primary_result, "response_format_used", None),
+            model_metadata={
+                "source": getattr(primary_result, "source", ""),
+                "model_status": getattr(primary_result, "model_status", ""),
+                "provider": getattr(primary_result, "provider", ""),
+                "role": getattr(primary_result, "role", ""),
+                "configured_max_input_tokens": getattr(primary_result, "configured_max_input_tokens", 0),
+                "configured_max_output_tokens": getattr(primary_result, "configured_max_output_tokens", 0),
+                "response_format_used": getattr(primary_result, "response_format_used", ""),
+            },
+        )
+        if proposer_invocation_id is not None:
+            invocation_ledger.fail_invocation(
+                proposer_invocation_id,
+                redacted_error=validation_error,
+                redacted_summary=primary_result.redacted_summary,
+                fallback_used=fallback_used_primary,
+            )
+        raise
+
     if primary_failures:
-        raise RepairReviewChainProductionError(
-            "invalid primary repair output: " + "; ".join(primary_failures)
+        validation_error = "invalid primary repair output: " + "; ".join(primary_failures)
+        _persist_proposer_diagnostic(
+            output_dir=output_dir,
+            raw_content=primary_result.content,
+            schema_name="RepairPrimaryOutput",
+            validation_error=validation_error,
+            finish_reason=getattr(primary_result, "finish_reason", None),
+            response_format=getattr(primary_result, "response_format_used", None),
+            model_metadata={
+                "source": getattr(primary_result, "source", ""),
+                "model_status": getattr(primary_result, "model_status", ""),
+                "provider": getattr(primary_result, "provider", ""),
+                "role": getattr(primary_result, "role", ""),
+                "configured_max_input_tokens": getattr(primary_result, "configured_max_input_tokens", 0),
+                "configured_max_output_tokens": getattr(primary_result, "configured_max_output_tokens", 0),
+                "response_format_used": getattr(primary_result, "response_format_used", ""),
+            },
+        )
+        if proposer_invocation_id is not None:
+            invocation_ledger.fail_invocation(
+                proposer_invocation_id,
+                redacted_error=validation_error,
+                redacted_summary=primary_result.redacted_summary,
+                fallback_used=fallback_used_primary,
+            )
+        raise RepairReviewChainProductionError(validation_error)
+
+    if proposer_invocation_id is not None:
+        invocation_ledger.complete_invocation(
+            proposer_invocation_id,
+            output=primary_result.content,
+            redacted_summary=primary_result.redacted_summary,
+            fallback_used=fallback_used_primary,
         )
 
     primary_checksum = _compute_primary_repair_checksum(primary_output)

@@ -205,6 +205,29 @@ READ_ONLY_REPAIR_ACTIONS: tuple[str, ...] = (
 
 
 @dataclass(frozen=True)
+class RepairUnavailableState:
+    attempted: bool
+    status: str
+    reason_code: str = ""
+    detail: str = ""
+    event_type: str = ""
+    created_at: str = ""
+    allowed_actions: tuple[str, ...] = ()
+
+
+def repair_unavailable_state_to_dict(state: RepairUnavailableState) -> dict[str, Any]:
+    return {
+        "attempted": state.attempted,
+        "status": state.status,
+        "reason_code": state.reason_code,
+        "detail": state.detail,
+        "event_type": state.event_type,
+        "created_at": state.created_at,
+        "allowed_actions": list(state.allowed_actions),
+    }
+
+
+@dataclass(frozen=True)
 class FilesChangedSummary:
     path: str
     change_type: str
@@ -246,6 +269,8 @@ class ReviewedDiffProposal:
     required_validation: tuple[str, ...] = ()
     allowed_actions: tuple[str, ...] = READ_ONLY_REPAIR_ACTIONS
     redactions: tuple[str, ...] = ()
+    apply_status: str | None = None
+    rerun_status: str | None = None
 
 
 def build_reviewed_diff_proposal_projection(
@@ -343,6 +368,8 @@ def reviewed_diff_proposal_to_safe_dict(proposal: ReviewedDiffProposal) -> dict[
         "required_validation": list(proposal.required_validation),
         "allowed_actions": list(proposal.allowed_actions),
         "redactions": list(proposal.redactions),
+        "apply_status": proposal.apply_status,
+        "rerun_status": proposal.rerun_status,
     }
 
 
@@ -487,6 +514,8 @@ def build_reviewed_diff_proposal_from_record(
     final_diff_text: str | None = None,
     reviewer_decision: str | None = None,
     reviewer_reasoning: str | None = None,
+    apply_status: str | None = None,
+    rerun_status: str | None = None,
 ) -> ReviewedDiffProposal:
     """Build a ReviewedDiffProposal from persisted V2RepairProposalRecord fields.
 
@@ -541,6 +570,8 @@ def build_reviewed_diff_proposal_from_record(
         required_validation=required_validation,
         allowed_actions=allowed_actions,
         redactions=tuple(dict.fromkeys(redactions)),
+        apply_status=_maybe_str(apply_status),
+        rerun_status=_maybe_str(rerun_status),
     )
 
 

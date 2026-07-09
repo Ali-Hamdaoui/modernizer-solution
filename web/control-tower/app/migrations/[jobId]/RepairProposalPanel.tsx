@@ -12,6 +12,7 @@ import type {
   ReviewedDiffProposal,
   SafeDiffPreview as SafeDiffPreviewType,
   RepairAttemptSummary,
+  RepairState,
 } from "../../../lib/contracts";
 import { ReviewedDiffTabs } from "./ReviewedDiffTabs";
 import { RepairAttemptTimeline } from "./RepairAttemptTimeline";
@@ -19,9 +20,10 @@ import { RepairActionsBar } from "./RepairActionsBar";
 
 type ProposalState =
   | { status: "loading" }
-  | { status: "no-proposal" }
+  | { status: "no-proposal"; repairState?: RepairState }
+  | { status: "unavailable"; repairState: RepairState }
   | { status: "error"; message: string }
-  | { status: "available"; proposal: ReviewedDiffProposal };
+  | { status: "available"; proposal: ReviewedDiffProposal; repairState?: RepairState };
 
 type DiffState =
   | { status: "idle" }
@@ -35,7 +37,7 @@ type AttemptsState =
   | { status: "error"; message: string }
   | { status: "available"; attempts: RepairAttemptSummary[] };
 
-export function RepairProposalPanel({ jobId }: { jobId: string }) {
+export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string; repairRefreshKey?: number }) {
   const [proposalState, setProposalState] = useState<ProposalState>({ status: "loading" });
   const [diffState, setDiffState] = useState<DiffState>({ status: "idle" });
   const [attemptsState, setAttemptsState] = useState<AttemptsState>({ status: "idle" });
@@ -52,7 +54,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
         const response = await getCurrentRepairProposal(jobId);
         if (cancelled) return;
         if (response.proposal) {
-          setProposalState({ status: "available", proposal: response.proposal });
+          setProposalState({ status: "available", proposal: response.proposal, repairState: response.repair_state ?? undefined });
           setDiffState({ status: "loading" });
           setAttemptsState({ status: "loading" });
           const [diffResponse, attemptsResponse] = await Promise.all([
@@ -70,6 +72,17 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
           } else {
             setAttemptsState({ status: "available", attempts: [] });
           }
+        } else if (response.repair_state) {
+          if (
+            response.repair_state.status === "unavailable" ||
+            response.repair_state.status === "blocked" ||
+            response.repair_state.status === "attempts_exhausted" ||
+            response.repair_state.status === "error"
+          ) {
+            setProposalState({ status: "unavailable", repairState: response.repair_state });
+          } else {
+            setProposalState({ status: "no-proposal", repairState: response.repair_state });
+          }
         } else {
           setProposalState({ status: "no-proposal" });
         }
@@ -84,7 +97,7 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
     }
     load();
     return () => { cancelled = true; };
-  }, [jobId]);
+  }, [jobId, repairRefreshKey]);
 
   async function refreshProposalData() {
     if (!jobId) return;
@@ -107,6 +120,17 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
           setAttemptsState({ status: "available", attempts: attemptsResponse.attempts });
         } else {
           setAttemptsState({ status: "available", attempts: [] });
+        }
+      } else if (response.repair_state) {
+        if (
+          response.repair_state.status === "unavailable" ||
+          response.repair_state.status === "blocked" ||
+          response.repair_state.status === "attempts_exhausted" ||
+          response.repair_state.status === "error"
+        ) {
+          setProposalState({ status: "unavailable", repairState: response.repair_state });
+        } else {
+          setProposalState({ status: "no-proposal", repairState: response.repair_state });
         }
       } else {
         setProposalState({ status: "no-proposal" });
@@ -141,21 +165,16 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
 
   async function handleApproveSandboxApply() {
     if (!jobId) return;
-    const state = proposalState;
-    if (state.status !== "available") return;
-    setApprovePending(true);
-    try {
-      const reviewerVerdictId = state.proposal.reviewer_verdict?.reviewer_verdict_id;
-      const gateId = state.proposal.gate_id;
-      if (!reviewerVerdictId || !gateId) return;
-      await approveRepairProposal(jobId, state.proposal.proposal_id, {
-        proposal_id: state.proposal.proposal_id,
-        diff_checksum: state.proposal.diff_checksum,
-        reviewer_verdict_id: reviewerVerdictId,
-        gate_id: gateId,
-        idempotency_key: `approve-${state.proposal.proposal_id}-${Date.now()}`,
-      });
-      await refreshProposalData();
+      const state = proposalState;
+      if (state.status !== "available") return;
+      setApprovePending(true);
+      try {
+        await approveRepairProposal(jobId, state.proposal.proposal_id, {
+          proposal_id: state.proposal.proposal_id,
+          diff_checksum: state.proposal.diff_checksum,
+          idempotency_key: crypto.randomUUID(),
+        });
+        await refreshProposalData();
     } catch {
       // Safe error display — no raw paths/stacks
     } finally {
@@ -177,6 +196,27 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
       <section className="panel" data-testid="repair-proposal-panel">
         <h2>Repair Proposal</h2>
         <p className="meta">No repair proposal available for this job.</p>
+        {proposalState.repairState?.status ? (
+          <p className="meta">Repair state: {proposalState.repairState.status}</p>
+        ) : null}
+      </section>
+    );
+  }
+
+  if (proposalState.status === "unavailable") {
+    const rs = proposalState.repairState;
+    return (
+      <section className="panel" data-testid="repair-proposal-panel">
+        <h2>Reviewed Repair</h2>
+        <p className="meta">Reviewed repair unavailable</p>
+        <p className="meta">No reviewed diff was created.</p>
+        {rs.reason_code && <p className="meta">Reason: {rs.reason_code}</p>}
+        {rs.detail && <p className="meta">Details: {rs.detail}</p>}
+        {rs.created_at && <p className="meta">At: {rs.created_at}</p>}
+        <p className="meta">No apply action is available.</p>
+        {rs.allowed_actions?.includes("view_failure_summary") && (
+          <p className="meta">See failure summary for details.</p>
+        )}
       </section>
     );
   }
@@ -227,28 +267,16 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
             <strong>{proposal.revision_number}</strong>
           </div>
         )}
-        {proposal.gate_id && (
-          <div className="table-row">
-            <span className="meta">Gate</span>
-            <strong>{proposal.gate_id}</strong>
-          </div>
-        )}
-        {proposal.diagnosis_ref && (
-          <div className="table-row">
-            <span className="meta">Diagnosis</span>
-            <strong>{proposal.diagnosis_ref}</strong>
-          </div>
-        )}
-        {proposal.repair_plan_ref && (
-          <div className="table-row">
-            <span className="meta">Repair plan</span>
-            <strong>{proposal.repair_plan_ref}</strong>
-          </div>
-        )}
         {proposal.diff_checksum && (
           <div className="table-row">
             <span className="meta">Diff checksum</span>
             <strong className="checksum">{proposal.diff_checksum}</strong>
+          </div>
+        )}
+        {proposal.reviewer_verdict?.decision && (
+          <div className="table-row">
+            <span className="meta">Reviewer decision</span>
+            <strong>{proposal.reviewer_verdict.decision}</strong>
           </div>
         )}
       </div>
@@ -284,7 +312,14 @@ export function RepairProposalPanel({ jobId }: { jobId: string }) {
         onApproveSandboxApply={handleApproveSandboxApply}
         revisionPending={revisionPending}
         approvePending={approvePending}
-        approveEnabled={proposal.status === "user_review_required" || proposal.status === "reviewer_accepted"}
+        approveEnabled={
+          (proposal.status === "user_review_required" || proposal.status === "reviewer_accepted") &&
+          (proposal.allowed_actions?.includes("approve_sandbox_apply") ||
+            proposalState.repairState?.allowed_actions?.includes("approve_sandbox_apply")) &&
+          diff?.checksum_mismatch !== true &&
+          diff?.parse_status !== "unparseable" &&
+          diff?.parse_status !== "hunk_count_mismatch"
+        }
         checksumMismatch={diff?.checksum_mismatch ?? false}
         rejectDisabled={true}
       />
