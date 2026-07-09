@@ -1089,6 +1089,21 @@ describe("V2 Migration Cockpit contract", () => {
     expect(actual).toBe("completed");
   });
 
+  it("reduceStageStatus: terminal migration event completes a one-step route", () => {
+    const events: V2JobEvent[] = [
+      { stage: 1, type: "stage_started", status: "running", sequence: 1 } as unknown as V2JobEvent,
+      {
+        stage: 1,
+        type: "migration_completed",
+        status: "completed",
+        sequence: 2,
+        payload: { reason: "migration_completed" },
+      } as unknown as V2JobEvent,
+    ];
+
+    expect(reduceStageStatus(events, 1)).toBe("completed");
+  });
+
   it("reduceStageStatus: old blocked does not override later running", () => {
     const events: V2JobEvent[] = [
       { stage: 1, type: "stage_blocked_for_approval", status: "blocked", sequence: 1 } as unknown as V2JobEvent,
