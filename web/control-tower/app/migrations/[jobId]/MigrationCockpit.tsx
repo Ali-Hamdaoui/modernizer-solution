@@ -52,7 +52,6 @@ import type {
   MigrationProfileId,
 } from "../../../lib/contracts";
 import { MIGRATION_PROFILE_OPTIONS } from "../../../lib/contracts";
-import Stage3DependencyReview from "./Stage3DependencyReview";
 import Stage4TargetVersionComparison from "./Stage4TargetVersionComparison";
 import { RepairProposalPanel } from "./RepairProposalPanel";
 
@@ -1948,24 +1947,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           </div>
         ))}
       </section>
-
-      {/* F14 — Stage 3 Dependency Review */}
-      {data && (
-        <section style={{ gridColumn: "1 / -1" }}>
-          <Stage3DependencyReview
-            jobId={normalizedJobId || jobId || ""}
-            stage3Completed={
-              (data.stages || []).some(
-                (s) => s.stage_index === 3 && s.chain_status === "completed"
-              )
-            }
-            events={data.events.map((e) => ({
-              type: e.type,
-              payload: (e as Record<string, unknown>).payload as Record<string, unknown> | undefined,
-            }))}
-          />
-        </section>
-      )}
 
       {/* Latest-stage target dependency version file comparison */}
       {data && (
