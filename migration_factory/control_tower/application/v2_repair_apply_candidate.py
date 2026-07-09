@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import getpass
 import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
@@ -12,7 +13,16 @@ from migration_factory.control_tower.application.redaction import redact_absolut
 from migration_factory.control_tower.application.v2_post_repair_verification import run_post_repair_verification
 from migration_factory.control_tower.application.v2_repair_family_registry import repair_family_policy
 from migration_factory.control_tower.application.v2_repair_subfamily_classifier import classify_repair_subfamily
-from migration_factory.control_tower.domain.checksums import sha256_canonical_json, stream_sha256, utc_now_text
+from migration_factory.control_tower.domain.checksums import sha256_canonical_json, sha256_hex, stream_sha256, utc_now_text
+from migration_factory.repair_loop.patch_apply import apply_patch_to_sandbox, rollback_patch
+from migration_factory.repair_loop.patch_gate import (
+    PATCH_SOURCE_LLM_REVIEWED,
+    POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1,
+    REVIEWED_LLM_DECISION_ALLOWED,
+    evaluate_reviewed_llm_patch,
+    extract_touched_paths,
+    reviewed_llm_policy_checksum_input,
+)
 
 
 SUPPORTED_FAMILY = "INITMOCKS_TO_OPENMOCKS_CANDIDATE"
@@ -52,12 +62,18 @@ def create_repair_apply_candidate(*args: Any, **kwargs: Any) -> dict[str, Any] |
     return _create_candidate_from_r8_evidence(args[0], args[1], args[2])
 
 
-def approve_repair_apply_candidate(candidate: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+def approve_repair_apply_candidate(
+    candidate: dict[str, Any],
+    request: dict[str, Any],
+    *,
+    actor_identity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Record checksum-bound human approval. Request carries no patch/path."""
 
     candidate = candidate if isinstance(candidate, dict) else {}
     request = request if isinstance(request, dict) else {}
-    _must(str(candidate.get("candidate_kind") or "") != "llm_unknown_family", "llm_candidate_not_actionable")
+    if _is_reviewed_llm_candidate(candidate):
+        return _approve_reviewed_llm_candidate(candidate, request, actor_identity=actor_identity)
     _must(candidate.get("status") == "pending_human_approval", "candidate_not_pending_human_approval")
     _must(str(request.get("repair_candidate_id") or "") == str(candidate.get("repair_candidate_id") or ""), "repair_candidate_id_mismatch")
     _must(str(request.get("patch_checksum") or "") == str(candidate.get("patch_checksum") or ""), "patch_checksum_mismatch")
@@ -83,12 +99,19 @@ def apply_approved_repair_candidate(
     *,
     verification_runner: Callable[[Path], tuple[bool, str]] | None = None,
     post_repair_verification_runner: Callable[..., dict[str, Any]] | None = None,
+    downstream_resume: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Apply backend-owned recipe to sandbox only, verify, rollback on failure."""
 
     candidate = candidate if isinstance(candidate, dict) else {}
     approval = approval if isinstance(approval, dict) else {}
-    _must(str(candidate.get("candidate_kind") or "") != "llm_unknown_family", "llm_candidate_not_actionable")
+    if _is_reviewed_llm_candidate(candidate):
+        return _apply_reviewed_llm_candidate(
+            candidate,
+            approval,
+            post_repair_verification_runner=post_repair_verification_runner,
+            downstream_resume=downstream_resume,
+        )
     _must(approval.get("approval_status") == "approved", "approval_required")
     _must(approval.get("repair_candidate_id") == candidate.get("repair_candidate_id"), "approval_candidate_mismatch")
     target = Path(str(candidate.get("_target_path") or "")).resolve()
@@ -178,6 +201,673 @@ def repair_state_narration(candidate: dict[str, Any] | None) -> str:
         f"Proof: {public.get('proof_artifact') or 'pending'}. "
         "Downstream remains blocked because repair apply never auto-starts next stages and proof must be reviewed."
     )
+
+
+def _is_reviewed_llm_candidate(candidate: dict[str, Any]) -> bool:
+    return (
+        str(candidate.get("candidate_kind") or "") == "llm_unknown_family"
+        and str(candidate.get("patch_source") or "") == PATCH_SOURCE_LLM_REVIEWED
+        and str(candidate.get("policy_id") or "") == POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1
+    )
+
+
+def _approve_reviewed_llm_candidate(
+    candidate: dict[str, Any],
+    request: dict[str, Any],
+    *,
+    actor_identity: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    for key in ("approved_by", "actor", "actor_id", "username", "principal"):
+        _must(request.get(key) in (None, ""), "browser_actor_identity_not_allowed")
+    _must(str(request.get("repair_candidate_id") or "") == str(candidate.get("repair_candidate_id") or ""), "repair_candidate_id_mismatch")
+    _must(str(candidate.get("status") or "") in {"read_only", "pending_human_approval"}, "candidate_not_eligible_for_approval")
+    metadata = candidate.get("_llm_candidate_metadata") if isinstance(candidate.get("_llm_candidate_metadata"), dict) else {}
+    policy = metadata.get("policy_validation") if isinstance(metadata.get("policy_validation"), dict) else {}
+    actor = _backend_actor_payload(actor_identity)
+    _must(str(candidate.get("patch_source") or "") == PATCH_SOURCE_LLM_REVIEWED, "patch_source_mismatch")
+    _must(str(candidate.get("policy_id") or "") == POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1, "policy_id_mismatch")
+    _must(str(policy.get("decision") or "") == REVIEWED_LLM_DECISION_ALLOWED, "policy_not_allowed")
+    _must(_candidate_reviewer_decision(candidate) == "accept", "reviewer_not_accepted")
+    _must(not isinstance(candidate.get("approval"), dict), "candidate_already_approved")
+    _must(not isinstance(candidate.get("execution"), dict), "terminal_execution_exists")
+    _must(not bool(candidate.get("superseded_by_repair_candidate_id") or candidate.get("superseded_by_candidate_id")), "candidate_superseded")
+    _must(str(candidate.get("rejection_status") or candidate.get("reviewer_rejection_status") or "") not in {"rejected", "reject"}, "conflicting_rejection_exists")
+    _must(str(request.get("candidate_checksum") or "") == str(candidate.get("candidate_checksum") or ""), "candidate_checksum_mismatch")
+    _must(
+        str(request.get("reviewed_diff_checksum") or request.get("patch_checksum") or "") == str(candidate.get("patch_checksum") or ""),
+        "reviewed_diff_checksum_mismatch",
+    )
+    _must(
+        str(request.get("policy_validation_checksum") or "") == str(candidate.get("policy_validation_checksum") or ""),
+        "policy_validation_checksum_mismatch",
+    )
+    _require_persisted_policy_checksums(
+        candidate,
+        approval_policy_checksum=str(request.get("policy_validation_checksum") or ""),
+    )
+    _must(
+        str(request.get("review_chain_identity_checksum") or request.get("proposal_checksum") or "")
+        == str(candidate.get("review_chain_identity_checksum") or candidate.get("proposal_checksum") or ""),
+        "review_chain_identity_checksum_mismatch",
+    )
+    _must(
+        str(request.get("base_repository_state_checksum") or "") == str(candidate.get("base_repo_state_checksum") or ""),
+        "base_repository_state_checksum_mismatch",
+    )
+    approval_payload = {
+        "repair_candidate_id": candidate["repair_candidate_id"],
+        "candidate_checksum": candidate["candidate_checksum"],
+        "reviewed_diff_checksum": candidate["patch_checksum"],
+        "policy_validation_checksum": candidate["policy_validation_checksum"],
+        "review_chain_identity_checksum": candidate.get("review_chain_identity_checksum") or candidate.get("proposal_checksum") or "",
+        "base_repository_state_checksum": candidate.get("base_repo_state_checksum") or "",
+        "approval_scope": "sandbox_only",
+        "reviewer_decision": "accept",
+        "backend_actor_type": actor["actor_type"],
+        "backend_actor_id": actor["actor_id"],
+    }
+    return {
+        "approval_id": f"repair-approval-{uuid4().hex[:12]}",
+        "approval_status": "approved",
+        "status": "approved",
+        **approval_payload,
+        "approval_checksum": _reviewed_llm_approval_checksum(approval_payload),
+        "apply_enabled": True,
+        "created_at": utc_now_text(),
+    }
+
+
+def _apply_reviewed_llm_candidate(
+    candidate: dict[str, Any],
+    approval: dict[str, Any],
+    *,
+    post_repair_verification_runner: Callable[..., dict[str, Any]] | None = None,
+    downstream_resume: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    existing_execution = candidate.get("execution") if isinstance(candidate.get("execution"), dict) else None
+    if existing_execution and str(existing_execution.get("status") or "") in {"verified", "rolled_back", "failed"}:
+        return dict(existing_execution)
+
+    _must(approval.get("approval_status") == "approved", "approval_required")
+    _must(candidate.get("status") == "approved", "candidate_not_approved")
+    _must(approval.get("repair_candidate_id") == candidate.get("repair_candidate_id"), "approval_candidate_mismatch")
+    _must(str(approval.get("candidate_checksum") or "") == str(candidate.get("candidate_checksum") or ""), "approval_candidate_checksum_mismatch")
+    _must(str(approval.get("reviewed_diff_checksum") or "") == str(candidate.get("patch_checksum") or ""), "approval_reviewed_diff_checksum_mismatch")
+    _must(str(approval.get("policy_validation_checksum") or "") == str(candidate.get("policy_validation_checksum") or ""), "approval_policy_checksum_mismatch")
+    _must(
+        str(approval.get("review_chain_identity_checksum") or "") == str(candidate.get("review_chain_identity_checksum") or candidate.get("proposal_checksum") or ""),
+        "approval_review_chain_identity_checksum_mismatch",
+    )
+    _must(
+        str(approval.get("base_repository_state_checksum") or "") == str(candidate.get("base_repo_state_checksum") or ""),
+        "approval_base_repository_state_checksum_mismatch",
+    )
+    _must(str(approval.get("approval_scope") or "") == "sandbox_only", "approval_scope_mismatch")
+    _must(_candidate_reviewer_decision(candidate) == "accept", "reviewer_not_accepted")
+    _must(str(approval.get("reviewer_decision") or "") == "accept", "reviewer_not_accepted")
+    _must(_reviewed_llm_approval_checksum(_approval_checksum_payload(approval)) == str(approval.get("approval_checksum") or ""), "approval_checksum_mismatch")
+    _must(not bool(candidate.get("superseded_by_repair_candidate_id") or candidate.get("superseded_by_candidate_id")), "candidate_superseded")
+    _must(str(candidate.get("rejection_status") or candidate.get("reviewer_rejection_status") or "") not in {"rejected", "reject"}, "conflicting_rejection_exists")
+    _must(int(candidate.get("attempt_number") or 1) <= int(candidate.get("max_attempts") or 3), "attempt_limit_exceeded")
+
+    sandbox = Path(str(candidate.get("_sandbox_root") or "")).resolve()
+    run_dir = Path(str(candidate.get("_run_dir") or "")).resolve()
+    legacy = Path(str(candidate.get("_legacy_path") or "")).resolve()
+    review_dir = Path(str(candidate.get("_review_chain_output_dir") or "")).resolve()
+    diff_path = Path(str(candidate.get("_reviewed_diff_ref") or "")).resolve()
+    _must(sandbox.is_dir() and run_dir.is_dir() and legacy.is_dir(), "context_binding_unavailable")
+    _must(_is_contained(diff_path, review_dir), "reviewed_diff_ref_outside_output_dir")
+    _must(diff_path.is_file(), "reviewed_diff_file_missing")
+    diff_bytes = diff_path.read_bytes()
+    reviewed_diff_checksum = "sha256:" + sha256_hex(diff_bytes)
+    _must(reviewed_diff_checksum == str(candidate.get("patch_checksum") or ""), "reviewed_diff_checksum_mismatch")
+    try:
+        diff_text = diff_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("invalid_encoding") from exc
+    touched_paths, path_errors = extract_touched_paths(diff_text)
+    _must(not path_errors, "malformed_diff")
+    _must(_pre_apply_file_checksums_match(sandbox, candidate.get("_pre_apply_file_checksums"), touched_paths), "pre_apply_checksum_mismatch")
+
+    metadata = candidate.get("_llm_candidate_metadata") if isinstance(candidate.get("_llm_candidate_metadata"), dict) else {}
+    policy_identity = {
+        "job_id": str(candidate.get("job_id") or ""),
+        "stage_index": int(candidate.get("stage_index") or 0),
+        "command_id": str(candidate.get("command_id") or ""),
+        "route": "llm_reviewed_unknown",
+        "failure_evidence_checksum": str(candidate.get("failure_evidence_checksum") or metadata.get("failure_evidence_checksum") or ""),
+        "context_checksum": str(candidate.get("context_checksum") or metadata.get("context_checksum") or ""),
+        "base_repo_state_checksum": str(candidate.get("base_repo_state_checksum") or metadata.get("base_repo_state_checksum") or ""),
+        "reviewer_output_checksum": str(candidate.get("reviewer_output_checksum") or metadata.get("reviewer_output_checksum") or ""),
+        "review_chain_identity_checksum": str(candidate.get("review_chain_identity_checksum") or candidate.get("proposal_checksum") or ""),
+    }
+    policy_result = evaluate_reviewed_llm_patch(
+        reviewed_diff_bytes=diff_bytes,
+        reviewed_diff_path=diff_path,
+        reviewed_diff_checksum=reviewed_diff_checksum,
+        sandbox_path=sandbox,
+        run_dir=run_dir,
+        legacy_path=legacy,
+        declared_changed_files=tuple(str(path) for path in candidate.get("_declared_changed_files") or ()),
+        allowed_route_scope=tuple(str(scope) for scope in candidate.get("_allowed_route_scope") or ()),
+        evidence_changed_files=tuple(str(path) for path in candidate.get("_evidence_changed_files") or ()),
+        **policy_identity,
+    )
+    _must(policy_result.decision == REVIEWED_LLM_DECISION_ALLOWED, "reviewed_llm_policy_rejected")
+    apply_time_policy_checksum = "sha256:" + sha256_canonical_json(reviewed_llm_policy_checksum_input(policy_result))
+    _must(apply_time_policy_checksum == str(candidate.get("policy_validation_checksum") or ""), "apply_time_policy_checksum_mismatch")
+    _must(apply_time_policy_checksum == str(approval.get("policy_validation_checksum") or ""), "apply_time_policy_checksum_mismatch")
+    _must(apply_time_policy_checksum == str(metadata.get("policy_validation_checksum") or ""), "apply_time_policy_checksum_mismatch")
+    _require_persisted_policy_checksums(
+        candidate,
+        approval_policy_checksum=str(approval.get("policy_validation_checksum") or ""),
+        apply_time_policy_checksum=apply_time_policy_checksum,
+    )
+
+    apply_result = apply_patch_to_sandbox(
+        run_dir=run_dir,
+        sandbox_path=sandbox,
+        attempt=int(candidate.get("attempt_number") or 1),
+        unified_diff=diff_text,
+        touched_paths=list(touched_paths),
+        exact_patch_bytes=diff_bytes,
+    )
+    if apply_result.status != "APPLIED":
+        rollback_status = "not_needed"
+        rollback_reason = apply_result.reason
+        if apply_result.status == "FAILED":
+            rollback_ok, rollback_reason = rollback_patch(
+                sandbox_path=sandbox,
+                snapshot_dir=apply_result.snapshot_dir,
+                touched_paths=list(touched_paths),
+                created_paths=apply_result.created_paths,
+            )
+            rollback_status = "succeeded" if rollback_ok and _pre_apply_file_checksums_match(sandbox, candidate.get("_pre_apply_file_checksums"), touched_paths) else "failed"
+        return _reviewed_llm_execution_result(
+            candidate,
+            approval,
+            status="failed",
+            verification_status="not_started",
+            rollback_status=rollback_status,
+            post_apply_checksum="",
+            verification_log=rollback_reason,
+            proof_artifact="",
+            extra={"apply_status": apply_result.status.lower(), "downstream_resume_status": "blocked", "downstream_start_allowed": False},
+        )
+
+    post_apply_checksum = f"sha256:{sha256_canonical_json(apply_result.after_hashes)}"
+    try:
+        post_repair = run_post_repair_verification(
+            job_id=str(candidate.get("job_id") or ""),
+            stage_index=int(candidate.get("stage_index") or 1),
+            repair_candidate=candidate,
+            approval=approval,
+            command_runner=post_repair_verification_runner,
+        )
+        post_repair_proof_checksum = _validate_post_repair_verification_proof(sandbox, candidate, approval, post_repair)
+    except Exception as exc:
+        return _rollback_after_post_repair_exception(
+            sandbox=sandbox,
+            candidate=candidate,
+            approval=approval,
+            apply_result=apply_result,
+            touched_paths=touched_paths,
+            reason=str(exc) or exc.__class__.__name__,
+            post_repair=locals().get("post_repair") if isinstance(locals().get("post_repair"), dict) else {},
+        )
+
+    passed = post_repair.get("post_repair_verification_status") == "passed"
+    if passed:
+        downstream = _resolve_downstream_resume(candidate, post_repair, downstream_resume)
+        post_apply_file_checksums = _current_file_checksums(sandbox, touched_paths)
+        proof = _write_proof(
+            sandbox=sandbox,
+            candidate=candidate,
+            approval=approval,
+            status="verified",
+            post_apply_checksum=post_apply_checksum,
+            verification_log="reviewed_llm_post_repair_verification_passed",
+            rollback_status="not_needed",
+            extra=_reviewed_llm_proof_bindings(
+                candidate=candidate,
+                approval=approval,
+                pre_apply_file_checksums=candidate.get("_pre_apply_file_checksums"),
+                post_apply_file_checksums=post_apply_file_checksums,
+                post_repair_verification_status="passed",
+                post_repair_verification_proof_checksum=post_repair_proof_checksum,
+                rollback_status="not_needed",
+                downstream=downstream,
+            ),
+        )
+        final_proof_checksum = _validate_repair_proof_checksum(sandbox, candidate)
+        execution = _reviewed_llm_execution_result(
+            candidate,
+            approval,
+            status="verified",
+            verification_status="passed",
+            rollback_status="not_needed",
+            post_apply_checksum=post_apply_checksum,
+            verification_log="reviewed_llm_post_repair_verification_passed",
+            proof_artifact=proof,
+            proof_checksum=final_proof_checksum,
+            extra={
+                "apply_status": "applied",
+                "post_repair_verification_proof_checksum": post_repair_proof_checksum,
+                "post_repair_verification": _post_repair_execution_diagnostics(post_repair, candidate),
+                **_post_repair_execution_diagnostics(post_repair, candidate),
+                **downstream,
+            },
+        )
+        return execution
+
+    rollback_ok, rollback_reason = rollback_patch(
+        sandbox_path=sandbox,
+        snapshot_dir=apply_result.snapshot_dir,
+        touched_paths=list(touched_paths),
+        created_paths=apply_result.created_paths,
+    )
+    rollback_status = "succeeded" if rollback_ok and _pre_apply_file_checksums_match(sandbox, candidate.get("_pre_apply_file_checksums"), touched_paths) else "failed"
+    post_rollback_checksums = _current_file_checksums(sandbox, touched_paths)
+    downstream = _blocked_downstream()
+    final_status = "rolled_back" if rollback_status == "succeeded" else "failed"
+    proof = _write_proof(
+        sandbox=sandbox,
+        candidate=candidate,
+        approval=approval,
+        status=final_status,
+        post_apply_checksum=f"sha256:{sha256_canonical_json(post_rollback_checksums)}",
+        verification_log=str(post_repair.get("post_repair_failure_kind") or post_repair.get("stage_recovery_status") or rollback_reason),
+        rollback_status=rollback_status,
+        extra=_reviewed_llm_proof_bindings(
+            candidate=candidate,
+            approval=approval,
+            pre_apply_file_checksums=candidate.get("_pre_apply_file_checksums"),
+            post_apply_file_checksums=post_rollback_checksums,
+            post_repair_verification_status="failed",
+            post_repair_verification_proof_checksum=post_repair_proof_checksum,
+            rollback_status=rollback_status,
+            downstream=downstream,
+        ),
+    )
+    final_proof_checksum = _validate_repair_proof_checksum(sandbox, candidate)
+    return _reviewed_llm_execution_result(
+        candidate,
+        approval,
+        status=final_status,
+        verification_status="failed",
+        rollback_status=rollback_status,
+        post_apply_checksum=f"sha256:{sha256_canonical_json(post_rollback_checksums)}",
+        verification_log=str(post_repair.get("post_repair_failure_kind") or post_repair.get("stage_recovery_status") or rollback_reason),
+        proof_artifact=proof,
+        proof_checksum=final_proof_checksum,
+        extra={
+            "apply_status": final_status,
+            "post_repair_verification_proof_checksum": post_repair_proof_checksum,
+            "post_repair_verification": _post_repair_execution_diagnostics(post_repair, candidate),
+            **_post_repair_execution_diagnostics(post_repair, candidate),
+            **downstream,
+        },
+    )
+
+
+def _reviewed_llm_execution_result(
+    candidate: dict[str, Any],
+    approval: dict[str, Any],
+    *,
+    status: str,
+    verification_status: str,
+    rollback_status: str,
+    post_apply_checksum: str,
+    verification_log: str,
+    proof_artifact: str,
+    proof_checksum: str = "",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = _execution_result(
+        candidate,
+        approval,
+        status,
+        post_apply_checksum,
+        verification_status,
+        verification_log,
+        rollback_status,
+        proof_artifact,
+    )
+    payload.update({
+        "candidate_checksum": candidate.get("candidate_checksum", ""),
+        "reviewed_diff_checksum": candidate.get("patch_checksum", ""),
+        "policy_validation_checksum": candidate.get("policy_validation_checksum", ""),
+        "review_chain_identity_checksum": candidate.get("review_chain_identity_checksum") or candidate.get("proposal_checksum") or "",
+        "patch_source": PATCH_SOURCE_LLM_REVIEWED,
+    })
+    if extra:
+        payload.update(extra)
+    payload.update({
+        "status": status,
+        "execution_status": status,
+        "verification_status": verification_status,
+        "rollback_status": rollback_status,
+        "proof_artifact": proof_artifact,
+        "downstream_start_allowed": bool(payload.get("downstream_start_allowed")),
+    })
+    if proof_checksum:
+        payload["proof_checksum"] = proof_checksum
+    return payload
+
+
+def _pre_apply_file_checksums_match(sandbox: Path, expected: Any, touched_paths: list[str]) -> bool:
+    if not isinstance(expected, dict):
+        return False
+    return _current_file_checksums(sandbox, touched_paths) == {str(key): str(value) for key, value in expected.items()}
+
+
+def _current_file_checksums(sandbox: Path, touched_paths: list[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for rel in touched_paths:
+        normalized = str(rel).replace("\\", "/")
+        path = (sandbox / normalized).resolve()
+        try:
+            path.relative_to(sandbox)
+        except ValueError:
+            result[normalized] = ""
+            continue
+        result[normalized] = "sha256:" + sha256_hex(path.read_bytes()) if path.is_file() else ""
+    return result
+
+
+def _backend_actor_payload(actor_identity: dict[str, Any] | None) -> dict[str, str]:
+    identity = actor_identity if isinstance(actor_identity, dict) else {}
+    actor_type = str(identity.get("actor_type") or "local_operator").strip()
+    actor_id = str(identity.get("actor_id") or "").strip()
+    if not actor_id:
+        actor_id = getpass.getuser()
+    _must(bool(actor_type and actor_id), "backend_actor_identity_required")
+    return {"actor_type": actor_type[:80], "actor_id": actor_id[:160]}
+
+
+def _candidate_reviewer_decision(candidate: dict[str, Any]) -> str:
+    if "reviewer_decision" in candidate:
+        return str(candidate.get("reviewer_decision") or "")
+    metadata = candidate.get("_llm_candidate_metadata") if isinstance(candidate.get("_llm_candidate_metadata"), dict) else {}
+    return str(metadata.get("reviewer_decision") or "")
+
+
+def _approval_checksum_payload(approval: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "repair_candidate_id": str(approval.get("repair_candidate_id") or ""),
+        "candidate_checksum": str(approval.get("candidate_checksum") or ""),
+        "reviewed_diff_checksum": str(approval.get("reviewed_diff_checksum") or ""),
+        "policy_validation_checksum": str(approval.get("policy_validation_checksum") or ""),
+        "review_chain_identity_checksum": str(approval.get("review_chain_identity_checksum") or ""),
+        "base_repository_state_checksum": str(approval.get("base_repository_state_checksum") or ""),
+        "approval_scope": str(approval.get("approval_scope") or ""),
+        "reviewer_decision": str(approval.get("reviewer_decision") or ""),
+        "backend_actor_type": str(approval.get("backend_actor_type") or ""),
+        "backend_actor_id": str(approval.get("backend_actor_id") or ""),
+    }
+
+
+def _reviewed_llm_approval_checksum(payload: dict[str, Any]) -> str:
+    return f"sha256:{sha256_canonical_json(_approval_checksum_payload(payload))}"
+
+
+def _blocked_downstream(reason: str = "blocked") -> dict[str, Any]:
+    return {
+        "downstream_start_allowed": False,
+        "downstream_resume_status": "blocked",
+        "downstream_command_id": "",
+        "downstream_stage_index": 0,
+        "downstream_blocked_reason": reason,
+    }
+
+
+def _resolve_downstream_resume(
+    candidate: dict[str, Any],
+    post_repair: dict[str, Any],
+    downstream_resume: Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]] | None,
+) -> dict[str, Any]:
+    if downstream_resume is None:
+        return _blocked_downstream("downstream_resume_unavailable")
+    try:
+        result = downstream_resume(candidate, post_repair)
+    except Exception as exc:
+        return _blocked_downstream(redact_model_summary(str(exc))[:200] or "downstream_resume_failed")
+    if not isinstance(result, dict):
+        return _blocked_downstream("downstream_resume_invalid")
+    status = str(result.get("downstream_resume_status") or result.get("status") or "").strip()
+    command_id = str(result.get("downstream_command_id") or result.get("command_id") or "").strip()
+    stage_index = int(result.get("downstream_stage_index") or result.get("stage_index") or 0)
+    if status == "queued" and command_id and stage_index > 0:
+        return {
+            "downstream_start_allowed": True,
+            "downstream_resume_status": "queued",
+            "downstream_command_id": command_id,
+            "downstream_stage_index": stage_index,
+        }
+    if status in {"route_complete", "completed"}:
+        return {
+            "downstream_start_allowed": False,
+            "downstream_resume_status": "route_complete",
+            "downstream_command_id": "",
+            "downstream_stage_index": int(stage_index or candidate.get("stage_index") or 0),
+        }
+    return _blocked_downstream(str(result.get("reason") or status or "downstream_resume_not_queued"))
+
+
+def _post_repair_artifact_ref(candidate: dict[str, Any]) -> str:
+    return str(PurePosixPath(".migration") / "post-repair-verification" / str(candidate.get("repair_candidate_id") or "repair") / "post-repair-verification.json")
+
+
+def _repair_proof_artifact_ref(candidate: dict[str, Any]) -> str:
+    return str(PurePosixPath(".migration") / "repair-proofs" / f"{candidate['repair_candidate_id']}.json")
+
+
+def _post_repair_execution_diagnostics(post_repair: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    safe_keys = {
+        "post_repair_verification_status",
+        "stage_recovery_status",
+        "commands",
+        "classification",
+        "evidence_pack",
+        "environment_summary",
+        "toolchain_warnings",
+        "next_repair_candidate",
+        "next_repair_candidate_blocked_reason",
+        "next_repair_candidate_blocked_gate",
+        "next_repair_candidate_gate_trace",
+        "started_at",
+        "completed_at",
+        "post_repair_failure_kind",
+        "repair_blocked_reason",
+    }
+    diagnostics = {key: post_repair[key] for key in safe_keys if key in post_repair}
+    diagnostics["post_repair_proof_artifact"] = _post_repair_artifact_ref(candidate)
+    return diagnostics
+
+
+def _rollback_after_post_repair_exception(
+    *,
+    sandbox: Path,
+    candidate: dict[str, Any],
+    approval: dict[str, Any],
+    apply_result: Any,
+    touched_paths: list[str],
+    reason: str,
+    post_repair: dict[str, Any],
+) -> dict[str, Any]:
+    try:
+        rollback_ok, rollback_reason = rollback_patch(
+            sandbox_path=sandbox,
+            snapshot_dir=apply_result.snapshot_dir,
+            touched_paths=list(touched_paths),
+            created_paths=apply_result.created_paths,
+        )
+    except Exception as exc:
+        rollback_ok = False
+        rollback_reason = str(exc) or exc.__class__.__name__
+    rollback_status = "succeeded" if rollback_ok and _pre_apply_file_checksums_match(sandbox, candidate.get("_pre_apply_file_checksums"), touched_paths) else "failed"
+    restored_checksums = _current_file_checksums(sandbox, touched_paths)
+    downstream = _blocked_downstream("post_repair_verification_proof_invalid")
+    final_status = "rolled_back" if rollback_status == "succeeded" else "failed"
+    proof = _write_proof(
+        sandbox=sandbox,
+        candidate=candidate,
+        approval=approval,
+        status=final_status,
+        post_apply_checksum=f"sha256:{sha256_canonical_json(restored_checksums)}",
+        verification_log=reason,
+        rollback_status=rollback_status,
+        extra={
+            **_reviewed_llm_proof_bindings(
+                candidate=candidate,
+                approval=approval,
+                pre_apply_file_checksums=candidate.get("_pre_apply_file_checksums"),
+                post_apply_file_checksums=restored_checksums,
+                post_repair_verification_status="failed",
+                post_repair_verification_proof_checksum="",
+                rollback_status=rollback_status,
+                downstream=downstream,
+            ),
+            "post_repair_exception_reason": redact_model_summary(reason)[:1200],
+            "rollback_reason": redact_model_summary(rollback_reason)[:1200],
+        },
+    )
+    final_proof_checksum = _validate_repair_proof_checksum(sandbox, candidate)
+    return _reviewed_llm_execution_result(
+        candidate,
+        approval,
+        status=final_status,
+        verification_status="failed",
+        rollback_status=rollback_status,
+        post_apply_checksum=f"sha256:{sha256_canonical_json(restored_checksums)}",
+        verification_log=reason,
+        proof_artifact=proof,
+        proof_checksum=final_proof_checksum,
+        extra={
+            "apply_status": final_status,
+            "proof_checksum": final_proof_checksum,
+            "post_repair_verification_proof_checksum": "",
+            "post_repair_verification": _post_repair_execution_diagnostics(post_repair, candidate),
+            **_post_repair_execution_diagnostics(post_repair, candidate),
+            "post_repair_exception_reason": redact_model_summary(reason)[:1200],
+            "rollback_reason": redact_model_summary(rollback_reason)[:1200],
+            **downstream,
+        },
+    )
+
+
+def _post_repair_proof_path(sandbox: Path, candidate: dict[str, Any]) -> Path:
+    repair_candidate_id = str(candidate.get("repair_candidate_id") or "repair")
+    return sandbox / ".migration" / "post-repair-verification" / repair_candidate_id / "post-repair-verification.json"
+
+
+def _validate_post_repair_verification_proof(sandbox: Path, candidate: dict[str, Any], approval: dict[str, Any], post_repair: dict[str, Any]) -> str:
+    proof_path = _post_repair_proof_path(sandbox, candidate).resolve()
+    _must(_is_contained(proof_path, sandbox), "post_repair_verification_proof_outside_sandbox")
+    _must(proof_path.is_file(), "post_repair_verification_proof_missing")
+    try:
+        proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ValueError("post_repair_verification_proof_malformed") from exc
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("post_repair_verification_proof_malformed") from exc
+    _must(isinstance(proof, dict), "post_repair_verification_proof_malformed")
+    stored_checksum = str(proof.get("proof_checksum") or "")
+    _must(bool(stored_checksum), "post_repair_verification_proof_checksum_missing")
+    payload = dict(proof)
+    payload.pop("proof_checksum", None)
+    recomputed = f"sha256:{sha256_canonical_json(payload)}"
+    _must(recomputed == stored_checksum, "post_repair_verification_proof_checksum_mismatch")
+    if str(post_repair.get("proof_checksum") or ""):
+        _must(str(post_repair.get("proof_checksum") or "") == stored_checksum, "post_repair_verification_proof_checksum_mismatch")
+    _must(str(proof.get("job_id") or "") == str(candidate.get("job_id") or ""), "post_repair_verification_proof_job_mismatch")
+    _must(int(proof.get("stage_index") or 0) == int(candidate.get("stage_index") or 0), "post_repair_verification_proof_stage_mismatch")
+    _must(str(proof.get("repair_candidate_id") or "") == str(candidate.get("repair_candidate_id") or ""), "post_repair_verification_proof_candidate_mismatch")
+    _must(str(proof.get("approval_id") or "") == str(approval.get("approval_id") or ""), "post_repair_verification_proof_approval_mismatch")
+    if str(post_repair.get("post_repair_verification_status") or "") == "passed":
+        _must(str(post_repair.get("stage_recovery_status") or "") == "recovered", "post_repair_verification_stage_recovery_mismatch")
+        _must(str(proof.get("post_repair_verification_status") or "") == "passed", "post_repair_verification_proof_status_mismatch")
+        _must(str(proof.get("stage_recovery_status") or "") == "recovered", "post_repair_verification_proof_stage_recovery_mismatch")
+    return stored_checksum
+
+
+def _repair_proof_path(sandbox: Path, candidate: dict[str, Any]) -> Path:
+    return sandbox / ".migration" / "repair-proofs" / f"{candidate['repair_candidate_id']}.json"
+
+
+def _validate_repair_proof_checksum(sandbox: Path, candidate: dict[str, Any]) -> str:
+    proof_path = _repair_proof_path(sandbox, candidate).resolve()
+    _must(_is_contained(proof_path, sandbox), "repair_proof_outside_sandbox")
+    _must(proof_path.is_file(), "repair_proof_missing")
+    try:
+        proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    except UnicodeDecodeError as exc:
+        raise ValueError("repair_proof_malformed") from exc
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("repair_proof_malformed") from exc
+    _must(isinstance(proof, dict), "repair_proof_malformed")
+    stored_checksum = str(proof.get("proof_checksum") or "")
+    _must(bool(stored_checksum), "repair_proof_checksum_missing")
+    payload = dict(proof)
+    payload.pop("proof_checksum", None)
+    _must(f"sha256:{sha256_canonical_json(payload)}" == stored_checksum, "repair_proof_checksum_mismatch")
+    return stored_checksum
+
+
+def _require_persisted_policy_checksums(
+    candidate: dict[str, Any],
+    *,
+    approval_policy_checksum: str,
+    apply_time_policy_checksum: str | None = None,
+) -> None:
+    metadata = candidate.get("_llm_candidate_metadata") if isinstance(candidate.get("_llm_candidate_metadata"), dict) else {}
+    checksums = {
+        "candidate": str(candidate.get("policy_validation_checksum") or ""),
+        "approval": str(approval_policy_checksum or ""),
+        "metadata": str(metadata.get("policy_validation_checksum") or ""),
+        "persisted_proposal": str(candidate.get("_persisted_proposal_policy_validation_checksum") or ""),
+        "persisted_policy_event": str(candidate.get("_persisted_policy_event_checksum") or ""),
+    }
+    if apply_time_policy_checksum is not None:
+        checksums["apply_time"] = str(apply_time_policy_checksum or "")
+    _must(bool(checksums["persisted_proposal"]), "persisted_proposal_policy_checksum_missing")
+    _must(bool(checksums["persisted_policy_event"]), "persisted_policy_event_checksum_missing")
+    _must(all(bool(value) for value in checksums.values()), "apply_time_policy_checksum_mismatch")
+    _must(len(set(checksums.values())) == 1, "apply_time_policy_checksum_mismatch")
+
+
+def _reviewed_llm_proof_bindings(
+    *,
+    candidate: dict[str, Any],
+    approval: dict[str, Any],
+    pre_apply_file_checksums: Any,
+    post_apply_file_checksums: dict[str, str],
+    post_repair_verification_status: str,
+    post_repair_verification_proof_checksum: str,
+    rollback_status: str,
+    downstream: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "job_id": str(candidate.get("job_id") or ""),
+        "stage_index": int(candidate.get("stage_index") or 0),
+        "command_id": str(candidate.get("command_id") or ""),
+        "repair_candidate_id": str(candidate.get("repair_candidate_id") or ""),
+        "candidate_checksum": str(candidate.get("candidate_checksum") or ""),
+        "approval_id": str(approval.get("approval_id") or ""),
+        "approval_checksum": str(approval.get("approval_checksum") or ""),
+        "reviewed_diff_checksum": str(candidate.get("patch_checksum") or ""),
+        "policy_validation_checksum": str(candidate.get("policy_validation_checksum") or ""),
+        "review_chain_identity_checksum": str(candidate.get("review_chain_identity_checksum") or candidate.get("proposal_checksum") or ""),
+        "base_repository_state_checksum": str(candidate.get("base_repo_state_checksum") or ""),
+        "pre_apply_file_checksums": {str(k): str(v) for k, v in (pre_apply_file_checksums or {}).items()} if isinstance(pre_apply_file_checksums, dict) else {},
+        "post_apply_file_checksums": post_apply_file_checksums,
+        "post_repair_verification_status": post_repair_verification_status,
+        "post_repair_verification_proof_checksum": post_repair_verification_proof_checksum,
+        "rollback_status": rollback_status,
+        "downstream_resume_status": str(downstream.get("downstream_resume_status") or ""),
+        "downstream_command_id": str(downstream.get("downstream_command_id") or ""),
+        "downstream_stage_index": int(downstream.get("downstream_stage_index") or 0),
+    }
 
 
 def _create_candidate_from_r8_evidence(
@@ -825,7 +1515,17 @@ def _execution_result(candidate: dict[str, Any], approval: dict[str, Any], statu
     }
 
 
-def _write_proof(*, sandbox: Path, candidate: dict[str, Any], approval: dict[str, Any], status: str, post_apply_checksum: str, verification_log: str, rollback_status: str) -> str:
+def _write_proof(
+    *,
+    sandbox: Path,
+    candidate: dict[str, Any],
+    approval: dict[str, Any],
+    status: str,
+    post_apply_checksum: str,
+    verification_log: str,
+    rollback_status: str,
+    extra: dict[str, Any] | None = None,
+) -> str:
     proof_dir = sandbox / ".migration" / "repair-proofs"
     proof_dir.mkdir(parents=True, exist_ok=True)
     proof_path = proof_dir / f"{candidate['repair_candidate_id']}.json"
@@ -844,9 +1544,11 @@ def _write_proof(*, sandbox: Path, candidate: dict[str, Any], approval: dict[str
         "downstream_start_allowed": False,
         "created_at": utc_now_text(),
     }
+    if extra:
+        proof.update(extra)
     proof["proof_checksum"] = f"sha256:{sha256_canonical_json(proof)}"
     proof_path.write_text(json.dumps(proof, indent=2, sort_keys=True), encoding="utf-8")
-    return redact_absolute_paths(str(proof_path))
+    return _repair_proof_artifact_ref(candidate)
 
 
 def _default_verification(target: Path) -> tuple[bool, str]:

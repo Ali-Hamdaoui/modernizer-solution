@@ -7,8 +7,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from migration_factory.control_tower.adapters.fastapi import create_app
+from migration_factory.control_tower.adapters.fastapi.app import ApproveRepairCandidateRequest
 from migration_factory.control_tower.application.v2_llm_read_only_candidate_persistence import (
     EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED,
     EVENT_LLM_READ_ONLY_CANDIDATE_BLOCKED,
@@ -18,6 +20,7 @@ from migration_factory.control_tower.application.v2_llm_read_only_candidate_pers
 )
 from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelResult
 from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
+from migration_factory.control_tower.application import v2_repair_apply_candidate as repair_apply_module
 from migration_factory.control_tower.application.v2_repair_apply_candidate import (
     apply_approved_repair_candidate,
     approve_repair_apply_candidate,
@@ -27,14 +30,18 @@ from migration_factory.control_tower.application.v2_repair_projection import (
     reviewed_diff_proposal_to_safe_dict,
 )
 from migration_factory.control_tower.application.v2_repair_route_decision import RepairRouteDecision
+from migration_factory.control_tower.application.v2_stage_progression import V2StageProgressionService
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json, sha256_hex
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteControlTowerUnitOfWork
+from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import SqliteV2CommandRepository
 from migration_factory.control_tower.infrastructure.sqlite.v2_event_repository import SqliteV2JobEventRepository
+from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import SqliteV2JobRepository
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_candidate_repository import (
     SqliteV2RepairCandidateRepository,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import SqliteV2RepairRepository
+from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import SqliteV2SetupRepository
 from migration_factory.repair_loop.patch_gate import (
     PATCH_SOURCE_LLM_REVIEWED,
     POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1,
@@ -159,6 +166,7 @@ def _policy_paths(tmp_path: Path) -> tuple[Path, Path, Path]:
     app = sandbox / "src" / "main" / "java" / "App.java"
     app.parent.mkdir(parents=True, exist_ok=True)
     app.write_text("old\n", encoding="utf-8")
+    (sandbox / "pom.xml").write_text("<project><modelVersion>4.0.0</modelVersion></project>\n", encoding="utf-8")
     legacy.mkdir(parents=True, exist_ok=True)
     return sandbox, run_dir, legacy
 
@@ -296,6 +304,155 @@ def _persist(conn: sqlite3.Connection, tmp_path: Path, **overrides: Any) -> tupl
         source_gate_id="source-gate-1",
     )
     return result, repair_repo, candidate_repo, context
+
+
+def _seed_downstream_context(conn: sqlite3.Connection, tmp_path: Path) -> None:
+    now = "2026-07-09T00:00:00.000000Z"
+    output_parent = tmp_path / "modernized"
+    ai_hub = tmp_path / "ai-hub"
+    output_parent.mkdir(parents=True, exist_ok=True)
+    ai_hub.mkdir(parents=True, exist_ok=True)
+    conn.execute(
+        """INSERT OR IGNORE INTO v2_migration_setups (
+            setup_id, run_name, legacy_app_path, output_parent_path, ai_hub_path,
+            java11_home, java17_home, java21_home, maven_cmd, proof_level,
+            skip_endpoint_smoke, migration_flags_json, setup_checksum,
+            checksum_algorithm, created_at, created_by, correlation_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "setup-wf04a",
+            "WF04A",
+            str(tmp_path / "legacy"),
+            str(output_parent),
+            str(ai_hub),
+            str(tmp_path / "jdk11"),
+            str(tmp_path / "jdk17"),
+            str(tmp_path / "jdk21"),
+            "mvn",
+            "compile",
+            1,
+            "{}",
+            "setup-checksum",
+            "sha256_canonical_json_v1",
+            now,
+            "test",
+            None,
+        ),
+    )
+    conn.execute(
+        """INSERT OR IGNORE INTO v2_migration_jobs (
+            job_id, setup_id, setup_checksum, pipeline_id, stage_chain_json,
+            status, created_at, updated_at, correlation_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            "job-wf04a",
+            "setup-wf04a",
+            "setup-checksum",
+            "springboot-216-to-400-java21-four-stage",
+            "{}",
+            "running",
+            now,
+            now,
+            None,
+        ),
+    )
+
+
+def _downstream_resume_callback(conn: sqlite3.Connection, tmp_path: Path) -> Any:
+    _seed_downstream_context(conn, tmp_path)
+
+    def _callback(candidate: dict[str, Any], post_repair: dict[str, Any]) -> dict[str, Any]:
+        evidence_pack = post_repair.get("evidence_pack") if isinstance(post_repair.get("evidence_pack"), dict) else {}
+        current_stage_result = dict(evidence_pack)
+        current_stage_result["final_status"] = "TRANSFORM_APPLIED_IN_SANDBOX"
+        current_stage_result["build_status"] = "BUILD_PASSED_IN_SANDBOX"
+        current_stage_result["test_status"] = "TEST_PASSED"
+        current_stage_result["sandbox_path"] = candidate["_sandbox_root"]
+        current_stage_result["output_sandbox_ref"] = candidate["_sandbox_root"]
+        job = SqliteV2JobRepository(conn).get("job-wf04a")
+        assert job is not None
+        result = V2StageProgressionService(
+            SqliteV2SetupRepository(conn),
+            SqliteV2CommandRepository(conn),
+        ).queue_next_stage(
+            job_id="job-wf04a",
+            setup_id=job.setup_id,
+            current_stage=int(candidate["stage_index"]),
+            sandbox_path=candidate["_sandbox_root"],
+            current_stage_result=current_stage_result,
+        )
+        if result.status == "queued":
+            return {
+                "downstream_resume_status": "queued",
+                "downstream_command_id": result.command_id,
+                "downstream_stage_index": result.to_stage,
+            }
+        if result.status == "completed":
+            return {"downstream_resume_status": "route_complete", "downstream_stage_index": result.to_stage}
+        return {"downstream_resume_status": "blocked", "reason": result.reason or result.status, "downstream_stage_index": result.to_stage}
+
+    return _callback
+
+
+def _backend_actor() -> dict[str, str]:
+    return {"actor_type": "local_operator", "actor_id": "test-operator"}
+
+
+def _rewrite_internal_candidate(conn: sqlite3.Connection, repair_candidate_id: str, mutator: Any) -> None:
+    row = conn.execute(
+        "SELECT internal_json FROM v2_repair_apply_candidates WHERE repair_candidate_id = ?",
+        (repair_candidate_id,),
+    ).fetchone()
+    assert row is not None
+    candidate = json.loads(str(row["internal_json"]))
+    mutator(candidate)
+    conn.execute(
+        "UPDATE v2_repair_apply_candidates SET internal_json = ? WHERE repair_candidate_id = ?",
+        (json.dumps(candidate, sort_keys=True, separators=(",", ":")), repair_candidate_id),
+    )
+
+
+def _post_repair_proof_path(candidate: dict[str, Any]) -> Path:
+    return (
+        Path(candidate["_sandbox_root"])
+        / ".migration"
+        / "post-repair-verification"
+        / candidate["repair_candidate_id"]
+        / "post-repair-verification.json"
+    )
+
+
+def _write_post_repair_proof(candidate: dict[str, Any], *, malformed: bool = False, forged: bool = False) -> dict[str, Any]:
+    proof_path = _post_repair_proof_path(candidate)
+    proof_path.parent.mkdir(parents=True, exist_ok=True)
+    if malformed:
+        proof_path.write_text("{not-json", encoding="utf-8")
+    else:
+        proof = {
+            "job_id": candidate["job_id"],
+            "stage_index": candidate["stage_index"],
+            "repair_candidate_id": candidate["repair_candidate_id"],
+            "approval_id": candidate.get("approval", {}).get("approval_id", ""),
+            "post_repair_verification_status": "passed",
+            "stage_recovery_status": "recovered",
+            "commands": [],
+            "evidence_pack_checksum": "",
+            "classification": {},
+            "proof_created_at": "2026-07-09T00:00:00.000000Z",
+            "downstream_start_allowed": False,
+        }
+        proof["proof_checksum"] = "sha256:" + ("0" * 64) if forged else f"sha256:{sha256_canonical_json(proof)}"
+        proof_path.write_text(json.dumps(proof, sort_keys=True), encoding="utf-8")
+    return {
+        "post_repair_verification_status": "passed",
+        "stage_recovery_status": "recovered",
+        "commands": [],
+        "evidence_pack": {},
+        "classification": {},
+        "proof_artifact": str(proof_path),
+        "post_repair_proof_artifact": str(proof_path),
+        "downstream_start_allowed": False,
+    }
 
 
 def test_accept_persists_one_proposal_one_candidate_and_replay_is_idempotent(tmp_path: Path) -> None:
@@ -1179,40 +1336,626 @@ def test_exact_diff_bytes_projection_and_bindings_preserved(tmp_path: Path) -> N
     assert projection["safe_diff_preview"]["files"][0]["path"] == "src/main/java/App.java"
 
 
-def test_repository_rejects_approval_execution_and_public_reads_stay_false(tmp_path: Path) -> None:
+def _llm_approval_request(candidate: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "repair_candidate_id": candidate["repair_candidate_id"],
+        "candidate_checksum": candidate["candidate_checksum"],
+        "reviewed_diff_checksum": candidate["patch_checksum"],
+        "policy_validation_checksum": candidate["policy_validation_checksum"],
+        "review_chain_identity_checksum": candidate["review_chain_identity_checksum"],
+        "base_repository_state_checksum": candidate["base_repo_state_checksum"],
+    }
+
+
+def test_repository_persists_reviewed_llm_approval_and_execution_states(tmp_path: Path) -> None:
     conn = _conn()
     result, _, candidate_repo, _ = _persist(conn, tmp_path)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
 
-    with pytest.raises(ValueError, match="llm_candidate_not_actionable"):
-        candidate_repo.save_approval("job-wf04a", 1, result.llm_repair_candidate_id, {"approval_status": "approved"})
-    with pytest.raises(ValueError, match="llm_candidate_not_actionable"):
-        candidate_repo.save_execution("job-wf04a", 1, result.llm_repair_candidate_id, {"status": "applied"})
+    candidate_repo.save_approval("job-wf04a", 1, result.llm_repair_candidate_id, approval)
+    approved = candidate_repo.get_public("job-wf04a", 1, result.llm_repair_candidate_id)
+    assert approved["status"] == "approved"
+    assert approved["approval_enabled"] is False
+    assert approved["apply_enabled"] is True
 
-    conn.execute(
-        """UPDATE v2_repair_apply_candidates
-           SET status = 'approved', approval_json = ?, execution_json = ?
-           WHERE repair_candidate_id = ?""",
-        (json.dumps({"approval_status": "approved"}), json.dumps({"status": "applied"}), result.llm_repair_candidate_id),
+    execution = apply_approved_repair_candidate(
+        candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id),
+        approval,
+        post_repair_verification_runner=_ReviewedLlmPostRepairRunner(pass_tests=True),
+        downstream_resume=lambda *_: {
+            "downstream_resume_status": "route_complete",
+            "downstream_stage_index": 1,
+        },
     )
+    candidate_repo.save_execution("job-wf04a", 1, result.llm_repair_candidate_id, execution)
     public = candidate_repo.get_public("job-wf04a", 1, result.llm_repair_candidate_id)
     latest = candidate_repo.latest_public_for_job("job-wf04a")
 
     for value in (public, latest):
-        assert value["status"] == "read_only"
+        assert value["status"] == "verified"
         assert value["approval_enabled"] is False
         assert value["apply_enabled"] is False
+        assert value["downstream_start_allowed"] is False
+        assert value["downstream_resume_status"] == "route_complete"
         assert value["sandbox_only"] is True
 
 
-def test_application_guards_still_reject_llm_candidate(tmp_path: Path) -> None:
+def test_reviewed_llm_application_guard_requires_exact_approval_checksums(tmp_path: Path) -> None:
     conn = _conn()
     result, _, candidate_repo, _ = _persist(conn, tmp_path)
     candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
 
-    with pytest.raises(ValueError, match="llm_candidate_not_actionable"):
-        approve_repair_apply_candidate(candidate, {})
-    with pytest.raises(ValueError, match="llm_candidate_not_actionable"):
-        apply_approved_repair_candidate(candidate, {"approval_status": "approved"})
+    with pytest.raises(ValueError, match="browser_actor_identity_not_allowed"):
+        approve_repair_apply_candidate(
+            candidate,
+            {**_llm_approval_request(candidate), "approved_by": "browser-user"},
+            actor_identity=_backend_actor(),
+        )
+
+    request = _llm_approval_request(candidate)
+    request["candidate_checksum"] = "sha256:" + "0" * 64
+    with pytest.raises(ValueError, match="candidate_checksum_mismatch"):
+        approve_repair_apply_candidate(candidate, request, actor_identity=_backend_actor())
+    with pytest.raises(ValueError, match="approval_required"):
+        apply_approved_repair_candidate(candidate, {})
+
+
+@pytest.mark.parametrize(
+    ("binding", "reason"),
+    [
+        ("proposal", "persisted_proposal_policy_checksum_missing"),
+        ("policy_event", "persisted_policy_event_checksum_missing"),
+        ("mismatch", "apply_time_policy_checksum_mismatch"),
+    ],
+)
+def test_reviewed_llm_policy_bindings_are_mandatory_for_approval_and_apply(
+    tmp_path: Path,
+    binding: str,
+    reason: str,
+) -> None:
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(conn, tmp_path)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+
+    app_candidate = dict(candidate)
+    if binding == "proposal":
+        app_candidate.pop("_persisted_proposal_policy_validation_checksum", None)
+    elif binding == "policy_event":
+        app_candidate.pop("_persisted_policy_event_checksum", None)
+    else:
+        app_candidate["_persisted_proposal_policy_validation_checksum"] = "sha256:" + "0" * 64
+    with pytest.raises(ValueError, match=reason):
+        approve_repair_apply_candidate(app_candidate, _llm_approval_request(app_candidate), actor_identity=_backend_actor())
+
+    if binding == "proposal":
+        _rewrite_internal_candidate(
+            conn,
+            result.llm_repair_candidate_id,
+            lambda stored: stored["_llm_candidate_metadata"].update({"llm_candidate_proposal_id": "missing-proposal"}),
+        )
+    elif binding == "policy_event":
+        _rewrite_internal_candidate(conn, result.llm_repair_candidate_id, lambda stored: stored.update({"stage_index": 99}))
+    else:
+        conn.execute(
+            "UPDATE v2_repair_proposals SET policy_validation_checksum = ? WHERE proposal_id = ?",
+            ("sha256:" + "0" * 64, result.llm_candidate_proposal_id),
+        )
+    with pytest.raises(ValueError, match=reason):
+        candidate_repo.save_approval("job-wf04a", 1, result.llm_repair_candidate_id, approval)
+
+    apply_candidate = dict(candidate)
+    if binding == "proposal":
+        apply_candidate.pop("_persisted_proposal_policy_validation_checksum", None)
+    elif binding == "policy_event":
+        apply_candidate.pop("_persisted_policy_event_checksum", None)
+    else:
+        apply_candidate["_persisted_policy_event_checksum"] = "sha256:" + "0" * 64
+    apply_candidate["status"] = "approved"
+    with pytest.raises(ValueError, match=reason):
+        apply_approved_repair_candidate(apply_candidate, approval)
+
+
+def test_reviewed_llm_policy_bindings_all_equal_pass(tmp_path: Path) -> None:
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(conn, tmp_path)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+
+    candidate_repo.save_approval("job-wf04a", 1, result.llm_repair_candidate_id, approval)
+
+    approved = candidate_repo.get_public("job-wf04a", 1, result.llm_repair_candidate_id)
+    assert approved["status"] == "approved"
+    assert candidate["_persisted_proposal_policy_validation_checksum"] == candidate["policy_validation_checksum"]
+    assert candidate["_persisted_policy_event_checksum"] == candidate["policy_validation_checksum"]
+
+
+@pytest.mark.parametrize(
+    ("decision", "reason"),
+    [
+        ("", "reviewer_not_accepted"),
+        ("reject", "reviewer_not_accepted"),
+    ],
+)
+def test_reviewed_llm_reviewer_decision_is_explicitly_required(
+    tmp_path: Path,
+    decision: str,
+    reason: str,
+) -> None:
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(conn, tmp_path)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    mutated = dict(candidate)
+    mutated["_llm_candidate_metadata"] = dict(candidate["_llm_candidate_metadata"])
+    if decision:
+        mutated["_llm_candidate_metadata"]["reviewer_decision"] = decision
+    else:
+        mutated["_llm_candidate_metadata"].pop("reviewer_decision", None)
+
+    with pytest.raises(ValueError, match=reason):
+        approve_repair_apply_candidate(mutated, _llm_approval_request(mutated), actor_identity=_backend_actor())
+
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+    _rewrite_internal_candidate(
+        conn,
+        result.llm_repair_candidate_id,
+        lambda stored: (
+            stored["_llm_candidate_metadata"].pop("reviewer_decision", None)
+            if not decision
+            else stored["_llm_candidate_metadata"].update({"reviewer_decision": decision})
+        ),
+    )
+    with pytest.raises(ValueError, match="llm_approval_reviewer_not_accepted"):
+        candidate_repo.save_approval("job-wf04a", 1, result.llm_repair_candidate_id, approval)
+
+
+def test_reviewed_llm_reviewer_decision_is_approval_checksum_bound(tmp_path: Path) -> None:
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(conn, tmp_path)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+    changed = dict(approval)
+    changed["reviewer_decision"] = "reject"
+
+    assert repair_apply_module._reviewed_llm_approval_checksum(changed) != approval["approval_checksum"]
+    with pytest.raises(ValueError, match="reviewer_not_accepted"):
+        apply_approved_repair_candidate({**candidate, "status": "approved"}, changed)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "approved_by",
+        "actor",
+        "actor_id",
+        "patch",
+        "patch_text",
+        "patch_bytes",
+        "target_path",
+        "sandbox",
+        "sandbox_path",
+        "legacy_path",
+        "run_dir",
+        "command",
+        "environment",
+    ],
+)
+def test_public_approval_request_rejects_browser_controlled_fields(field: str) -> None:
+    with pytest.raises(ValidationError):
+        ApproveRepairCandidateRequest.model_validate(
+            {
+                "repair_candidate_id": "candidate",
+                "candidate_checksum": "sha256:" + "1" * 64,
+                "reviewed_diff_checksum": "sha256:" + "2" * 64,
+                "policy_validation_checksum": "sha256:" + "3" * 64,
+                "review_chain_identity_checksum": "sha256:" + "4" * 64,
+                "base_repository_state_checksum": "sha256:" + "5" * 64,
+                field: "browser-controlled",
+            }
+        )
+
+
+class _ReviewedLlmPostRepairRunner:
+    def __init__(self, *, pass_tests: bool = True) -> None:
+        self.pass_tests = pass_tests
+        self.calls: list[list[str]] = []
+
+    def __call__(self, command: list[str], cwd: Path, env: dict[str, str] | None = None) -> dict[str, Any]:
+        self.calls.append(list(command))
+        executable = Path(command[0]).name.lower() if command else ""
+        if executable in {"java.exe", "java"}:
+            executable = "java"
+        if executable in {"mvn.cmd", "mvn.bat", "mvn.exe", "mvn"}:
+            executable = "mvn"
+        key = " ".join([executable, *command[1:]]) if command else ""
+        if key == "java -version":
+            return {"exit_code": 0, "stdout": "", "stderr": 'openjdk version "17.0.1"'}
+        if key == "mvn -version":
+            return {"exit_code": 0, "stdout": "Apache Maven 3.9.9", "stderr": ""}
+        if key == "mvn -DskipTests clean compile":
+            return {"exit_code": 0, "stdout": "[INFO] BUILD SUCCESS", "stderr": ""}
+        if key == "mvn test":
+            return {
+                "exit_code": 0 if self.pass_tests else 1,
+                "stdout": "Tests run: 1, Failures: 0, Errors: 0" if self.pass_tests else "Tests run: 1, Failures: 1",
+                "stderr": "" if self.pass_tests else "reviewed repair verification failed",
+            }
+        if key == "mvn dependency:tree -DoutputType=text":
+            return {"exit_code": 0, "stdout": "", "stderr": ""}
+        return {"exit_code": 1, "stdout": "", "stderr": f"unexpected command {key}"}
+
+
+def test_reviewed_llm_human_approval_apply_verification_and_downstream_resume_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MAVEN_CMD", "mvn")
+    conn = _conn()
+    result, repair_repo, candidate_repo, _ = _persist(conn, tmp_path)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    sandbox_app = Path(candidate["_sandbox_root"]) / "src/main/java/App.java"
+    legacy_app = tmp_path / "legacy" / "src/main/java/App.java"
+    legacy_app.parent.mkdir(parents=True, exist_ok=True)
+    legacy_app.write_text("old\n", encoding="utf-8")
+    diff_bytes = Path(candidate["_reviewed_diff_ref"]).read_bytes()
+
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+    candidate_repo.save_approval("job-wf04a", 1, candidate["repair_candidate_id"], approval)
+    approved = candidate_repo.get_internal("job-wf04a", 1, candidate["repair_candidate_id"])
+    runner = _ReviewedLlmPostRepairRunner(pass_tests=True)
+    execution = apply_approved_repair_candidate(
+        approved,
+        approval,
+        post_repair_verification_runner=runner,
+        downstream_resume=_downstream_resume_callback(conn, tmp_path),
+    )
+    candidate_repo.save_execution("job-wf04a", 1, candidate["repair_candidate_id"], execution)
+    replay = apply_approved_repair_candidate(candidate_repo.get_internal("job-wf04a", 1, candidate["repair_candidate_id"]), approval)
+
+    assert execution["execution_status"] == "verified"
+    assert execution["verification_status"] == "passed"
+    assert execution["rollback_status"] == "not_needed"
+    assert execution["post_repair_verification_status"] == "passed"
+    assert execution["downstream_resume_status"] == "queued"
+    assert execution["downstream_start_allowed"] is True
+    assert execution["downstream_command_id"]
+    assert execution["downstream_stage_index"] == 2
+    assert replay["execution_status"] == "verified"
+    assert sandbox_app.read_text(encoding="utf-8") == "new\n"
+    assert legacy_app.read_text(encoding="utf-8") == "old\n"
+    assert (Path(candidate["_run_dir"]) / "repairs" / "patch_attempt_1.diff").read_bytes() == diff_bytes
+    final_proof_path = Path(candidate["_sandbox_root"], ".migration", "repair-proofs", f"{candidate['repair_candidate_id']}.json")
+    post_repair_proof_path = _post_repair_proof_path(candidate)
+    final_proof = json.loads(final_proof_path.read_text(encoding="utf-8"))
+    post_repair_proof = json.loads(post_repair_proof_path.read_text(encoding="utf-8"))
+    assert execution["proof_artifact"] == f".migration/repair-proofs/{candidate['repair_candidate_id']}.json"
+    assert execution["post_repair_proof_artifact"] == (
+        f".migration/post-repair-verification/{candidate['repair_candidate_id']}/post-repair-verification.json"
+    )
+    assert execution["proof_artifact"] != execution["post_repair_proof_artifact"]
+    assert execution["proof_checksum"] == final_proof["proof_checksum"]
+    assert execution["post_repair_verification_proof_checksum"] == post_repair_proof["proof_checksum"]
+    assert final_proof["status"] == "verified"
+    assert final_proof["approval_id"] == approval["approval_id"]
+    assert final_proof["post_repair_verification_proof_checksum"] == post_repair_proof["proof_checksum"]
+    assert post_repair_proof["job_id"] == candidate["job_id"]
+    assert post_repair_proof["stage_index"] == candidate["stage_index"]
+    assert post_repair_proof["repair_candidate_id"] == candidate["repair_candidate_id"]
+    assert post_repair_proof["approval_id"] == approval["approval_id"]
+    assert post_repair_proof["post_repair_verification_status"] == "passed"
+    assert post_repair_proof["stage_recovery_status"] == "recovered"
+    assert final_proof_path.is_file()
+    assert post_repair_proof_path.is_file()
+    assert len(repair_repo.list_proposals_by_job("job-wf04a")) == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM v2_stage_commands WHERE job_id = ? AND stage_index = ? AND command_id = ?",
+        ("job-wf04a", 2, execution["downstream_command_id"]),
+    ).fetchone()[0] == 1
+    assert len([row for row in conn.execute("SELECT * FROM v2_repair_apply_candidates WHERE job_id = ?", ("job-wf04a",)).fetchall()]) == 1
+
+
+def test_reviewed_llm_apply_preserves_exact_diff_bytes_without_final_newline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MAVEN_CMD", "mvn")
+    diff_bytes = (
+        b"diff --git a/src/main/java/App.java b/src/main/java/App.java\n"
+        b"--- a/src/main/java/App.java\n"
+        b"+++ b/src/main/java/App.java\n"
+        b"@@ -1,1 +1,1 @@\n"
+        b"-old\n"
+        b"+new\n"
+        b"\\ No newline at end of file"
+    )
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(conn, tmp_path, diff_bytes=diff_bytes)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+    candidate_repo.save_approval("job-wf04a", 1, candidate["repair_candidate_id"], approval)
+    approved = candidate_repo.get_internal("job-wf04a", 1, candidate["repair_candidate_id"])
+
+    execution = apply_approved_repair_candidate(
+        approved,
+        approval,
+        post_repair_verification_runner=_ReviewedLlmPostRepairRunner(pass_tests=True),
+        downstream_resume=_downstream_resume_callback(conn, tmp_path),
+    )
+
+    patch_bytes = (Path(candidate["_run_dir"]) / "repairs" / "patch_attempt_1.diff").read_bytes()
+    assert execution["execution_status"] == "verified"
+    assert Path(candidate["_reviewed_diff_ref"]).read_bytes() == diff_bytes
+    assert patch_bytes == diff_bytes
+    assert "sha256:" + sha256_hex(patch_bytes) == candidate["patch_checksum"]
+
+
+@pytest.mark.parametrize(
+    ("proof_mode", "reason"),
+    [
+        ("missing", "post_repair_verification_proof_missing"),
+        ("malformed", "post_repair_verification_proof_malformed"),
+        ("forged", "post_repair_verification_proof_checksum_mismatch"),
+    ],
+)
+def test_reviewed_llm_post_repair_proof_must_validate_before_downstream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    proof_mode: str,
+    reason: str,
+) -> None:
+    monkeypatch.setenv("MAVEN_CMD", "mvn")
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(conn, tmp_path)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+    candidate_repo.save_approval("job-wf04a", 1, candidate["repair_candidate_id"], approval)
+    approved = candidate_repo.get_internal("job-wf04a", 1, candidate["repair_candidate_id"])
+    sandbox_app = Path(approved["_sandbox_root"], "src/main/java/App.java")
+    legacy_app = Path(approved["_legacy_path"], "src/main/java/App.java")
+    legacy_app.parent.mkdir(parents=True, exist_ok=True)
+    legacy_app.write_text("legacy-original\n", encoding="utf-8")
+    sandbox_before = sandbox_app.read_bytes()
+    legacy_before = legacy_app.read_bytes()
+    downstream_calls: list[str] = []
+
+    def _fake_post_repair(**_: Any) -> dict[str, Any]:
+        if proof_mode == "malformed":
+            return _write_post_repair_proof(approved, malformed=True)
+        if proof_mode == "forged":
+            return _write_post_repair_proof(approved, forged=True)
+        proof_path = _post_repair_proof_path(approved)
+        if proof_path.exists():
+            proof_path.unlink()
+        return {
+            "post_repair_verification_status": "passed",
+            "stage_recovery_status": "recovered",
+            "commands": [],
+            "evidence_pack": {},
+            "classification": {},
+            "downstream_start_allowed": False,
+        }
+
+    def _downstream(*_: Any) -> dict[str, Any]:
+        downstream_calls.append("called")
+        return {"downstream_resume_status": "queued", "downstream_command_id": "should-not-exist", "downstream_stage_index": 2}
+
+    monkeypatch.setattr(repair_apply_module, "run_post_repair_verification", _fake_post_repair)
+    execution = apply_approved_repair_candidate(approved, approval, downstream_resume=_downstream)
+    candidate_repo.save_execution("job-wf04a", 1, candidate["repair_candidate_id"], execution)
+
+    assert reason in execution["verification_log"]
+    assert execution["execution_status"] == "rolled_back"
+    assert execution["status"] == "rolled_back"
+    assert execution["rollback_status"] == "succeeded"
+    assert execution["downstream_resume_status"] == "blocked"
+    assert execution["downstream_start_allowed"] is False
+    assert execution["downstream_command_id"] == ""
+    assert sandbox_app.read_bytes() == sandbox_before
+    assert legacy_app.read_bytes() == legacy_before
+    assert downstream_calls == []
+    assert conn.execute("SELECT COUNT(*) FROM v2_stage_commands").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize(
+    ("mutator", "reason"),
+    [
+        (lambda candidate: candidate.update({"policy_validation_checksum": "sha256:" + "0" * 64}), "policy_validation_checksum_mismatch"),
+        (lambda candidate: candidate["_llm_candidate_metadata"]["policy_validation"].update({"decision": "BLOCKED"}), "policy_not_allowed"),
+        (lambda candidate: candidate["_llm_candidate_metadata"].update({"reviewer_decision": "reject"}), "reviewer_not_accepted"),
+        (lambda candidate: candidate.update({"review_chain_identity_checksum": "sha256:" + "1" * 64}), "review_chain_identity_checksum_mismatch"),
+        (lambda candidate: candidate.update({"base_repo_state_checksum": "sha256:" + "2" * 64}), "base_repository_state_checksum_mismatch"),
+    ],
+)
+def test_reviewed_llm_approval_negative_revalidations(
+    tmp_path: Path,
+    mutator: Any,
+    reason: str,
+) -> None:
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(conn, tmp_path)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    request = _llm_approval_request(candidate)
+    mutator(candidate)
+
+    with pytest.raises(ValueError, match=reason):
+        approve_repair_apply_candidate(candidate, request, actor_identity=_backend_actor())
+
+
+def test_repository_rejects_forged_approval_checksum_and_fake_execution(tmp_path: Path) -> None:
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(conn, tmp_path)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+    forged = dict(approval)
+    forged["approval_checksum"] = "sha256:" + "0" * 64
+    with pytest.raises(ValueError, match="llm_approval_checksum_mismatch"):
+        candidate_repo.save_approval("job-wf04a", 1, candidate["repair_candidate_id"], forged)
+
+    candidate_repo.save_approval("job-wf04a", 1, candidate["repair_candidate_id"], approval)
+    valid_execution = apply_approved_repair_candidate(
+        candidate_repo.get_internal("job-wf04a", 1, candidate["repair_candidate_id"]),
+        approval,
+        post_repair_verification_runner=_ReviewedLlmPostRepairRunner(pass_tests=True),
+        downstream_resume=lambda *_: {
+            "downstream_resume_status": "route_complete",
+            "downstream_stage_index": 1,
+        },
+    )
+    fake_execution = dict(valid_execution)
+    fake_execution.update({
+        "downstream_start_allowed": True,
+        "downstream_resume_status": "queued",
+        "downstream_command_id": "missing-command",
+        "downstream_stage_index": 2,
+    })
+    with pytest.raises(ValueError, match="llm_execution_fake_downstream_command"):
+        candidate_repo.save_execution("job-wf04a", 1, candidate["repair_candidate_id"], fake_execution)
+    without_proof = dict(valid_execution)
+    without_proof["proof_artifact"] = ""
+    with pytest.raises(ValueError, match="llm_execution_verification_proof_required"):
+        candidate_repo.save_execution("job-wf04a", 1, candidate["repair_candidate_id"], without_proof)
+    fake_proof = dict(valid_execution)
+    fake_proof["proof_artifact"] = "artifact:proof"
+    with pytest.raises(ValueError, match="llm_execution_fake_proof_artifact"):
+        candidate_repo.save_execution("job-wf04a", 1, candidate["repair_candidate_id"], fake_proof)
+
+
+def test_reviewed_llm_apply_rejects_stale_sandbox_and_tampered_diff_after_approval(tmp_path: Path) -> None:
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(conn, tmp_path)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+    candidate_repo.save_approval("job-wf04a", 1, candidate["repair_candidate_id"], approval)
+    approved = candidate_repo.get_internal("job-wf04a", 1, candidate["repair_candidate_id"])
+    Path(approved["_sandbox_root"], "src/main/java/App.java").write_text("stale\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="pre_apply_checksum_mismatch"):
+        apply_approved_repair_candidate(approved, approval)
+
+    Path(approved["_sandbox_root"], "src/main/java/App.java").write_text("old\n", encoding="utf-8")
+    Path(approved["_reviewed_diff_ref"]).write_text(Path(approved["_reviewed_diff_ref"]).read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="reviewed_diff_checksum_mismatch"):
+        apply_approved_repair_candidate(approved, approval)
+
+
+def test_reviewed_llm_apply_rejects_apply_time_policy_checksum_mismatch(tmp_path: Path) -> None:
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(conn, tmp_path)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+    candidate_repo.save_approval("job-wf04a", 1, candidate["repair_candidate_id"], approval)
+    approved = candidate_repo.get_internal("job-wf04a", 1, candidate["repair_candidate_id"])
+    approved["_persisted_policy_event_checksum"] = "sha256:" + "0" * 64
+
+    with pytest.raises(ValueError, match="apply_time_policy_checksum_mismatch"):
+        apply_approved_repair_candidate(approved, approval)
+
+
+def test_reviewed_llm_verification_failure_rolls_back_and_blocks_downstream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MAVEN_CMD", "mvn")
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(conn, tmp_path)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    target = Path(candidate["_sandbox_root"], "src/main/java/App.java")
+    before = target.read_bytes()
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+    candidate_repo.save_approval("job-wf04a", 1, candidate["repair_candidate_id"], approval)
+    approved = candidate_repo.get_internal("job-wf04a", 1, candidate["repair_candidate_id"])
+    runner = _ReviewedLlmPostRepairRunner(pass_tests=False)
+
+    execution = apply_approved_repair_candidate(approved, approval, post_repair_verification_runner=runner)
+
+    assert execution["execution_status"] == "rolled_back"
+    assert execution["verification_status"] == "failed"
+    assert execution["rollback_status"] == "succeeded"
+    assert execution["downstream_resume_status"] == "blocked"
+    assert target.read_bytes() == before
+
+
+def test_reviewed_llm_verification_failure_restores_multi_file_and_removes_created_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MAVEN_CMD", "mvn")
+    diff_text = (
+        "diff --git a/src/main/java/App.java b/src/main/java/App.java\n"
+        "--- a/src/main/java/App.java\n"
+        "+++ b/src/main/java/App.java\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-old\n"
+        "+new\n"
+        "diff --git a/src/main/java/New.java b/src/main/java/New.java\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/src/main/java/New.java\n"
+        "@@ -0,0 +1 @@\n"
+        "+created\n"
+    )
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(
+        conn,
+        tmp_path,
+        diff_text=diff_text,
+        changed_files=["src/main/java/App.java", "src/main/java/New.java"],
+    )
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    app_path = Path(candidate["_sandbox_root"], "src/main/java/App.java")
+    new_path = Path(candidate["_sandbox_root"], "src/main/java/New.java")
+    before = app_path.read_bytes()
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+    candidate_repo.save_approval("job-wf04a", 1, candidate["repair_candidate_id"], approval)
+    approved = candidate_repo.get_internal("job-wf04a", 1, candidate["repair_candidate_id"])
+
+    execution = apply_approved_repair_candidate(
+        approved,
+        approval,
+        post_repair_verification_runner=_ReviewedLlmPostRepairRunner(pass_tests=False),
+    )
+
+    assert execution["execution_status"] == "rolled_back"
+    assert execution["rollback_status"] == "succeeded"
+    assert execution["downstream_resume_status"] == "blocked"
+    assert app_path.read_bytes() == before
+    assert not new_path.exists()
+    proof = json.loads(Path(candidate["_sandbox_root"], ".migration", "repair-proofs", f"{candidate['repair_candidate_id']}.json").read_text(encoding="utf-8"))
+    assert proof["rollback_status"] == "succeeded"
+    assert proof["pre_apply_file_checksums"] == proof["post_apply_file_checksums"]
+
+
+def test_reviewed_llm_rollback_failure_reports_failed_and_blocks_downstream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MAVEN_CMD", "mvn")
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(conn, tmp_path)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+    candidate_repo.save_approval("job-wf04a", 1, candidate["repair_candidate_id"], approval)
+    approved = candidate_repo.get_internal("job-wf04a", 1, candidate["repair_candidate_id"])
+
+    def _failed_rollback(**_: Any) -> tuple[bool, str]:
+        return False, "simulated rollback failure"
+
+    monkeypatch.setattr(repair_apply_module, "rollback_patch", _failed_rollback)
+    execution = apply_approved_repair_candidate(
+        approved,
+        approval,
+        post_repair_verification_runner=_ReviewedLlmPostRepairRunner(pass_tests=False),
+    )
+
+    assert execution["execution_status"] == "failed"
+    assert execution["status"] == "failed"
+    assert execution["rollback_status"] == "failed"
+    assert execution["downstream_resume_status"] == "blocked"
+    assert execution["downstream_start_allowed"] is False
+    proof = json.loads(Path(candidate["_sandbox_root"], ".migration", "repair-proofs", f"{candidate['repair_candidate_id']}.json").read_text(encoding="utf-8"))
+    assert proof["status"] == "failed"
+    assert proof["rollback_status"] == "failed"
+    assert proof["downstream_resume_status"] == "blocked"
 
 
 def test_app_runner_dispatch_uses_authoritative_diagnosis_and_persists_once(tmp_path: Path) -> None:
@@ -1284,7 +2027,7 @@ def test_app_runner_dispatch_uses_authoritative_diagnosis_and_persists_once(tmp_
     assert len(repair_repo.list_proposals_by_job("job-wf04a")) == 1
     assert latest_candidate["candidate_kind"] == "llm_unknown_family"
     assert latest_candidate["status"] == "read_only"
-    assert latest_candidate["approval_enabled"] is False
+    assert latest_candidate["approval_enabled"] is True
     assert latest_candidate["apply_enabled"] is False
     assert conn.execute("SELECT COUNT(*) FROM v2_phase_gates").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM v2_stage_commands WHERE job_id = ? AND stage_index > 1", ("job-wf04a",)).fetchone()[0] == 0

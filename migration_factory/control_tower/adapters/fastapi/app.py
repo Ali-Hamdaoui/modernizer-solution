@@ -866,9 +866,14 @@ class PomRollbackRequestSchema(BaseModel):
 class ApproveRepairCandidateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     repair_candidate_id: str
-    patch_checksum: str
-    target_file_checksum: str
-    review_checksum: str
+    patch_checksum: str | None = None
+    target_file_checksum: str | None = None
+    review_checksum: str | None = None
+    candidate_checksum: str | None = None
+    reviewed_diff_checksum: str | None = None
+    policy_validation_checksum: str | None = None
+    review_chain_identity_checksum: str | None = None
+    base_repository_state_checksum: str | None = None
 
 
 class ApplyRepairCandidateRequest(BaseModel):
@@ -1968,10 +1973,15 @@ def create_app(
             if candidate is None:
                 raise _error(status.HTTP_404_NOT_FOUND, "REPAIR_CANDIDATE_NOT_FOUND", "Repair candidate not found.")
             try:
-                approval = approve_repair_apply_candidate(candidate, payload.model_dump())
+                actor = resolved_actor_provider.current_actor()
+                approval = approve_repair_apply_candidate(
+                    candidate,
+                    payload.model_dump(),
+                    actor_identity={"actor_type": actor.actor_type, "actor_id": actor.actor_id},
+                )
+                uow.v2_repair_candidates.save_approval(job_id, stage_index, repair_candidate_id, approval)
             except ValueError as exc:
                 raise _error(status.HTTP_409_CONFLICT, "REPAIR_CANDIDATE_CHECKSUM_MISMATCH", str(exc)) from exc
-            uow.v2_repair_candidates.save_approval(job_id, stage_index, repair_candidate_id, approval)
             public = uow.v2_repair_candidates.get_public(job_id, stage_index, repair_candidate_id)
         return {"approval": redact_public_data(approval), "candidate": redact_public_data(public or {})}
 
@@ -1994,15 +2004,79 @@ def create_app(
                 raise _error(status.HTTP_409_CONFLICT, "REPAIR_CANDIDATE_NOT_APPROVED", "Repair candidate approval required.")
             _bind_post_repair_runtime_env(candidate, uow, job_id)
             try:
-                execution = apply_approved_repair_candidate(candidate, approval)
+                execution = apply_approved_repair_candidate(
+                    candidate,
+                    approval,
+                    downstream_resume=lambda repair_candidate, post_repair: _queue_downstream_after_reviewed_llm_repair(
+                        uow,
+                        job_id=job_id,
+                        stage_index=stage_index,
+                        repair_candidate=repair_candidate,
+                        post_repair=post_repair,
+                    ),
+                )
+                uow.v2_repair_candidates.save_execution(job_id, stage_index, repair_candidate_id, execution)
             except ValueError as exc:
                 raise _error(status.HTTP_409_CONFLICT, "REPAIR_CANDIDATE_PRE_APPLY_REJECTED", str(exc)) from exc
-            uow.v2_repair_candidates.save_execution(job_id, stage_index, repair_candidate_id, execution)
             next_candidate = execution.get("_next_repair_candidate") if isinstance(execution.get("_next_repair_candidate"), dict) else None
             if next_candidate is not None:
                 uow.v2_repair_candidates.save_candidate(next_candidate)
             public = uow.v2_repair_candidates.get_public(job_id, stage_index, repair_candidate_id)
         return {"execution": redact_public_data(execution), "candidate": redact_public_data(public or {})}
+
+    def _queue_downstream_after_reviewed_llm_repair(
+        uow: Any,
+        *,
+        job_id: str,
+        stage_index: int,
+        repair_candidate: dict[str, Any],
+        post_repair: dict[str, Any],
+    ) -> dict[str, Any]:
+        if post_repair.get("post_repair_verification_status") != "passed":
+            return {"downstream_resume_status": "blocked", "reason": "post_repair_verification_not_passed"}
+        job = uow.v2_jobs.get(job_id) if hasattr(uow, "v2_jobs") else None
+        if job is None:
+            return {"downstream_resume_status": "blocked", "reason": "job_not_found"}
+        sandbox_path = str(repair_candidate.get("_sandbox_root") or "").strip()
+        if not sandbox_path:
+            return {"downstream_resume_status": "blocked", "reason": "sandbox_path_missing"}
+        evidence_pack = post_repair.get("evidence_pack") if isinstance(post_repair.get("evidence_pack"), dict) else {}
+        current_stage_result = dict(evidence_pack)
+        current_stage_result["final_status"] = "TRANSFORM_APPLIED_IN_SANDBOX"
+        current_stage_result["build_status"] = "BUILD_PASSED_IN_SANDBOX"
+        current_stage_result["test_status"] = "TEST_PASSED"
+        current_stage_result["sandbox_path"] = sandbox_path
+        current_stage_result["output_sandbox_ref"] = sandbox_path
+        service = V2StageProgressionService(
+            uow.v2_setups,
+            uow.v2_commands,
+            getattr(uow, "artifact_revisions", None),
+            getattr(uow, "run_configurations", None),
+        )
+        result = service.queue_next_stage(
+            job_id=job_id,
+            setup_id=job.setup_id,
+            current_stage=stage_index,
+            sandbox_path=sandbox_path,
+            current_stage_result=current_stage_result,
+        )
+        if result.status == "queued" and result.command_id:
+            return {
+                "downstream_resume_status": "queued",
+                "downstream_command_id": result.command_id,
+                "downstream_stage_index": result.to_stage,
+            }
+        if result.status == "completed":
+            return {
+                "downstream_resume_status": "route_complete",
+                "downstream_command_id": "",
+                "downstream_stage_index": result.to_stage,
+            }
+        return {
+            "downstream_resume_status": "blocked",
+            "reason": result.reason or result.status,
+            "downstream_stage_index": result.to_stage,
+        }
 
     def _bind_post_repair_runtime_env(candidate: dict[str, Any], uow: Any, job_id: str) -> None:
         job = uow.v2_jobs.get(job_id) if hasattr(uow, "v2_jobs") else None

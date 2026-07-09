@@ -372,6 +372,7 @@ class LlmReadOnlyCandidatePersistenceService:
             stored_diff_checksum=raw_diff_checksum.removeprefix("sha256:"),
         )
         touched = tuple(file.path for file in preview.files)
+        pre_apply_file_checksums = _sandbox_file_checksums(Path(sandbox_path), touched) if sandbox_path is not None else {}
         now = utc_now_text()
         metadata = {
             "candidate_kind": "llm_unknown_family",
@@ -422,6 +423,14 @@ class LlmReadOnlyCandidatePersistenceService:
             "created_at": now,
             "_llm_candidate_metadata": metadata,
             "_reviewed_diff_ref": str(diff_path),
+            "_review_chain_output_dir": str(Path(output_dir).resolve()),
+            "_sandbox_root": str(Path(sandbox_path).resolve()) if sandbox_path is not None else "",
+            "_run_dir": str(Path(run_dir).resolve()) if run_dir is not None else "",
+            "_legacy_path": str(Path(legacy_path).resolve()) if legacy_path is not None else "",
+            "_allowed_route_scope": list(allowed_route_scope),
+            "_declared_changed_files": list(declared_changed_files),
+            "_evidence_changed_files": list(context_pack.changed_files),
+            "_pre_apply_file_checksums": pre_apply_file_checksums,
         }
         return {
             "llm_candidate_proposal_id": llm_candidate_proposal_id,
@@ -720,6 +729,21 @@ def _declared_changed_files(primary_output: dict[str, Any], final_artifact: dict
         if isinstance(changed, list):
             return tuple(str(path).replace("\\", "/") for path in changed if str(path).strip())
     return ()
+
+
+def _sandbox_file_checksums(sandbox_path: Path, paths: tuple[str, ...]) -> dict[str, str]:
+    sandbox = sandbox_path.resolve()
+    checksums: dict[str, str] = {}
+    for rel in paths:
+        normalized = str(rel).replace("\\", "/")
+        target = (sandbox / normalized).resolve()
+        try:
+            target.relative_to(sandbox)
+        except ValueError:
+            checksums[normalized] = ""
+            continue
+        checksums[normalized] = "sha256:" + sha256_hex(target.read_bytes()) if target.is_file() else ""
+    return checksums
 
 
 def _policy_block_prepared(

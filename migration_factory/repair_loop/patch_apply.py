@@ -45,6 +45,7 @@ def apply_patch_to_sandbox(
     attempt: int,
     unified_diff: str,
     touched_paths: list[str],
+    exact_patch_bytes: bytes | None = None,
     run: RunCallable = subprocess.run,
 ) -> PatchApplyResult:
     run_path = Path(run_dir)
@@ -52,8 +53,11 @@ def apply_patch_to_sandbox(
     repairs_dir = run_path / "repairs"
     repairs_dir.mkdir(parents=True, exist_ok=True)
     patch_path = repairs_dir / f"patch_attempt_{attempt}.diff"
-    patch_text = unified_diff if unified_diff.endswith("\n") else unified_diff + "\n"
-    patch_path.write_text(patch_text, encoding="utf-8")
+    if exact_patch_bytes is None:
+        patch_text = unified_diff if unified_diff.endswith("\n") else unified_diff + "\n"
+        patch_path.write_bytes(patch_text.encode("utf-8"))
+    else:
+        patch_path.write_bytes(exact_patch_bytes)
 
     snapshot_dir = repairs_dir / "snapshots" / f"attempt_{attempt}"
     snapshot_dir.mkdir(parents=True, exist_ok=True)
