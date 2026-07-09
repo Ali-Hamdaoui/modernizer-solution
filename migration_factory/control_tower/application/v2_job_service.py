@@ -225,7 +225,7 @@ class V2MigrationJobService:
 
         route = compute_profile_route(resolved_source_profile, resolved_target_profile)
         projected_route_steps = tuple(
-            route_step_to_dict(step)
+            route_step_to_dict(step, include_execution_stage=True)
             for step in project_route_steps(route, stages=tuple(stages))
         )
 
@@ -322,7 +322,7 @@ class V2MigrationJobService:
             excluded_stages=route.excluded_stages,
             skipped_stages=route.skipped_stages,
             route_steps=tuple(
-                route_step_to_dict(step)
+                route_step_to_dict(step, include_execution_stage=True)
                 for step in project_route_steps(route, stages=tuple(stages))
             ),
             auto_approval_enabled=self._job_repo.get_auto_approval_enabled(job_id),
@@ -379,7 +379,7 @@ class V2MigrationJobService:
                 excluded_stages=route.excluded_stages,
                 skipped_stages=route.skipped_stages,
                 route_steps=tuple(
-                    route_step_to_dict(step)
+                    route_step_to_dict(step, include_execution_stage=True)
                     for step in project_route_steps(route, stages=tuple(stages))
                 ),
                 auto_approval_enabled=self._job_repo.get_auto_approval_enabled(r.job_id),
