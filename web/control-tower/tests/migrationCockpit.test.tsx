@@ -1063,6 +1063,68 @@ describe("V2 Migration Cockpit contract", () => {
     expect(entries[1]).toMatchObject({ route_step_index: 2, status: "running" });
   });
 
+  it("buildStageTimelineEntries follows execution_stage_index for offset route steps", () => {
+    const routeSteps: V2RouteStepEntry[] = [
+      {
+        route_step_index: 1,
+        stage_index: 2,
+        execution_stage_index: 1,
+        source_profile: "springboot-2.7-java11",
+        target_profile: "springboot-3.5-java17",
+        runtime_profile: "springboot-2.7-to-3.5-java17",
+        catalog: "springboot-3.5-java17",
+        execution_jdk: "java17",
+        status: "pending",
+        approval_gate_id: "",
+        artifact_refs: [],
+        evidence_refs: [],
+      },
+      {
+        route_step_index: 2,
+        stage_index: 3,
+        execution_stage_index: 3,
+        source_profile: "springboot-3.5-java17",
+        target_profile: "springboot-3.5-java21",
+        runtime_profile: "springboot-3.5-java17-to-java21",
+        catalog: "springboot-3.5-java17-to-java21",
+        execution_jdk: "java21",
+        status: "pending",
+        approval_gate_id: "",
+        artifact_refs: [],
+        evidence_refs: [],
+      },
+    ];
+    const firstStepRunningStages = [
+      { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "running", input_source_kind: "legacy_source" },
+      { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "failed", input_source_kind: "stage_1_sandbox" },
+      { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "pending", input_source_kind: "stage_2_sandbox" },
+    ];
+    const secondStepRunningStages = [
+      { stage_index: 1, pipeline_stage: "Stage 1", chain_status: "completed", input_source_kind: "legacy_source" },
+      { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "failed", input_source_kind: "stage_1_sandbox" },
+      { stage_index: 3, pipeline_stage: "Stage 3", chain_status: "running", input_source_kind: "stage_2_sandbox" },
+    ];
+    const secondStepCompletedStages = secondStepRunningStages.map((stage) => (
+      stage.stage_index === 3 ? { ...stage, chain_status: "completed" } : stage
+    ));
+
+    expect(buildStageTimelineEntries(routeSteps, firstStepRunningStages)[0]).toMatchObject({
+      route_step_index: 1,
+      stage_index: 2,
+      status: "running",
+    });
+    expect(buildStageTimelineEntries(routeSteps, secondStepRunningStages)[1]).toMatchObject({
+      route_step_index: 2,
+      stage_index: 3,
+      status: "running",
+    });
+    expect(buildStageTimelineEntries(routeSteps, secondStepCompletedStages)[1]).toMatchObject({
+      route_step_index: 2,
+      stage_index: 3,
+      status: "completed",
+    });
+  });
+
   it("reduceStageStatus: blocked while approval pending", () => {
     // Only approval_required/blocked events → blocked
     const events: V2JobEvent[] = [
@@ -1156,6 +1218,21 @@ describe("V2 Migration Cockpit contract", () => {
     ];
     const actual = reduceStageStatus(events);
     expect(actual).toBe("completed");
+  });
+
+  it("reduceStageStatus: terminal migration event completes a one-step route", () => {
+    const events: V2JobEvent[] = [
+      { stage: 1, type: "stage_started", status: "running", sequence: 1 } as unknown as V2JobEvent,
+      {
+        stage: 1,
+        type: "migration_completed",
+        status: "completed",
+        sequence: 2,
+        payload: { reason: "migration_completed" },
+      } as unknown as V2JobEvent,
+    ];
+
+    expect(reduceStageStatus(events, 1)).toBe("completed");
   });
 
   it("reduceStageStatus: old blocked does not override later running", () => {

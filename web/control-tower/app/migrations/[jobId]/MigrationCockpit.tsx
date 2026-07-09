@@ -132,10 +132,13 @@ export function buildStageTimelineEntries(
   }
 
   const stageStatusByIndex = new Map(stages.map((stage) => [stage.stage_index, stage.chain_status]));
-  return routeSteps.map((routeStep) => ({
-    ...routeStep,
-    status: stageStatusByIndex.get(routeStep.stage_index) ?? routeStep.status,
-  }));
+  return routeSteps.map((routeStep) => {
+    const executionStageIndex = routeStep.execution_stage_index ?? routeStep.stage_index;
+    return {
+      ...routeStep,
+      status: stageStatusByIndex.get(executionStageIndex) ?? routeStep.status,
+    };
+  });
 }
 
 export function getTargetVersionComparisonStageIndex(

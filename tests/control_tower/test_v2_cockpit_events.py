@@ -833,6 +833,34 @@ def test_stage_completed_after_stage_completed(tmp_path: Path) -> None:
     assert stages[1] == "completed", f"Expected completed, got {stages[1]}"
 
 
+def test_terminal_migration_event_completes_active_stage(tmp_path: Path) -> None:
+    """A terminal migration event must complete the active execution stage."""
+    client, conn = _api_client(tmp_path)
+    setup_id = _ready_setup(conn)
+    job_id = _create_job_only(client, setup_id, conn)
+
+    with SqliteUnitOfWork(conn) as uow:
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=1,
+            event_type="stage_started",
+            status="running",
+            message="analysis started",
+            payload={},
+        )
+        uow.v2_events.save(
+            job_id=job_id,
+            stage=1,
+            event_type="migration_completed",
+            status="completed",
+            message="selected target reached",
+            payload={"reason": "migration_completed"},
+        )
+
+    stages = _stages_status(client, job_id)
+    assert stages[1] == "completed", f"Expected completed, got {stages[1]}"
+
+
 def test_old_blocked_event_does_not_override_later_transform_started(tmp_path: Path) -> None:
     """An early blocked event must NOT prevent Stage 1 from becoming RUNNING."""
     client, conn = _api_client(tmp_path)

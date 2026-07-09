@@ -287,6 +287,11 @@ def build_route_steps(source_profile: str, target_profile: str) -> tuple[RouteSt
     return tuple(route_steps)
 
 
+def route_step_execution_stage_index(route_step: RouteStep) -> int:
+    """Return the backend execution stage that emits live events for a route step."""
+    return 1 if route_step.route_step_index == 1 else route_step.stage_index
+
+
 def project_route_steps(
     route: ProfileRoute,
     *,
@@ -295,13 +300,19 @@ def project_route_steps(
     if not route.valid or not route.route_steps:
         return ()
 
+    stage_state_by_index = {
+        int(stage_state.get("stage_index") or 0): stage_state
+        for stage_state in stages
+        if isinstance(stage_state, dict)
+    }
     projected: list[RouteStep] = []
-    for index, step in enumerate(route.route_steps):
-        stage_state = stages[index] if index < len(stages) else {}
+    for step in route.route_steps:
+        execution_stage_index = route_step_execution_stage_index(step)
+        stage_state = stage_state_by_index.get(execution_stage_index, {})
         projected.append(
             RouteStep(
                 route_step_index=step.route_step_index,
-                stage_index=int(stage_state.get("stage_index") or step.stage_index),
+                stage_index=step.stage_index,
                 source_profile=step.source_profile,
                 target_profile=step.target_profile,
                 runtime_profile=step.runtime_profile,
@@ -335,8 +346,8 @@ def route_checksum(route: ProfileRoute) -> str:
     })
 
 
-def route_step_to_dict(route_step: RouteStep) -> dict[str, Any]:
-    return {
+def route_step_to_dict(route_step: RouteStep, *, include_execution_stage: bool = False) -> dict[str, Any]:
+    payload = {
         "route_step_index": route_step.route_step_index,
         "stage_index": route_step.stage_index,
         "source_profile": route_step.source_profile,
@@ -349,6 +360,9 @@ def route_step_to_dict(route_step: RouteStep) -> dict[str, Any]:
         "artifact_refs": list(route_step.artifact_refs),
         "evidence_refs": list(route_step.evidence_refs),
     }
+    if include_execution_stage:
+        payload["execution_stage_index"] = route_step_execution_stage_index(route_step)
+    return payload
 
 
 def build_skipped_stage_ledger(

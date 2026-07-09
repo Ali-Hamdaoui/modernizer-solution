@@ -14,6 +14,8 @@ from migration_factory.control_tower.application.v2_stage_progression import (
     is_stage_included_in_route,
     is_stage_excluded_from_route,
     is_target_reached,
+    project_route_steps,
+    route_step_to_dict,
     route_to_dict,
     build_skipped_stage_ledger,
     route_checksum,
@@ -328,6 +330,27 @@ def test_stage_progression_still_routes_boot35_java17_to_java21_as_stage3_only()
     assert route.skipped_stages == (2,)
     assert route.excluded_stages == (4,)
     assert next_required_stage(route, current_stage=1) == 3
+
+
+def test_project_route_steps_uses_execution_stage_for_offset_two_step_route() -> None:
+    route = compute_profile_route("springboot-2.7-java11", "springboot-3.5-java21")
+    stages = (
+        {"stage_index": 1, "chain_status": "running", "artifact_refs": ["stage-1-artifact"]},
+        {"stage_index": 2, "chain_status": "failed", "artifact_refs": ["wrong-stage-2-artifact"]},
+        {"stage_index": 3, "chain_status": "completed", "evidence_refs": ["stage-3-evidence"]},
+        {"stage_index": 4, "chain_status": "pending"},
+    )
+
+    projected = project_route_steps(route, stages=stages)
+
+    assert [(step.route_step_index, step.stage_index, step.status) for step in projected] == [
+        (1, 2, "running"),
+        (2, 3, "completed"),
+    ]
+    assert projected[0].artifact_refs == ("stage-1-artifact",)
+    assert projected[1].evidence_refs == ("stage-3-evidence",)
+    assert route_step_to_dict(projected[0], include_execution_stage=True)["execution_stage_index"] == 1
+    assert route_step_to_dict(projected[1], include_execution_stage=True)["execution_stage_index"] == 3
 
 
 def test_start_from_springboot_35_java17_to_boot_4() -> None:
