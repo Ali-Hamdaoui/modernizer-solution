@@ -417,6 +417,7 @@ export type V2MigrationJobResponse = {
 export type V2RouteStepEntry = {
   route_step_index: number;
   stage_index: number;
+  execution_stage_index?: number;
   source_profile: MigrationProfileId;
   target_profile: MigrationProfileId;
   runtime_profile: string;
