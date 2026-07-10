@@ -1222,6 +1222,9 @@ export type ReviewedDiffProposal = {
   apply_status?: string | null;
   rerun_status?: string | null;
   validation_proof_status?: string | null;
+  final_diff_source?: "reviewer" | "proposer_fallback" | null;
+  generation_status?: string | null;
+  generation_reason?: string | null;
 };
 
 export type RepairState = {
@@ -1273,6 +1276,7 @@ export type RepairAttemptSummary = {
   created_at: string;
   completed_at: string | null;
   validation_proof_status?: string | null;
+  final_diff_source?: "reviewer" | "proposer_fallback" | null;
 };
 
 export type RepairAttemptsResponse = {

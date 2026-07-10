@@ -58,6 +58,9 @@ class ValidationExecutionContext:
     source_profile: str = ""
     target_profile: str = ""
     runtime_profile: str = ""
+    working_directory: str = ""
+    wrapper: str = ""
+    tool: str = ""
 
     @classmethod
     def from_mapping(cls, value: Any | None) -> "ValidationExecutionContext":

@@ -182,6 +182,12 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         artifact_refs["dependency_policy_report"] = str(result.dependency_policy_report_path)
     if result.dependency_policy_summary_path is not None:
         artifact_refs["dependency_policy_summary"] = str(result.dependency_policy_summary_path)
+    validation_context = dict(result.validation_execution_context or {})
+    for key in ("source_profile", "target_profile"):
+        if not validation_context.get(key) and state.get(key):
+            validation_context[key] = state[key]
+    if not validation_context.get("runtime_profile"):
+        validation_context["runtime_profile"] = runtime_profile
 
     if result.exit_code != 0 or result.status != STATUS_APPLIED or result.sandbox_path is None:
         message = result.message or f"sandbox transform failed with status {result.status}"
@@ -214,6 +220,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
                 "copilot_dependency_advisory_status": result.copilot_dependency_advisory_status,
                 "policy_patch_applied": result.policy_patch_applied,
                 "sandbox_path": str(result.sandbox_path or ""),
+                "validation_execution_context": validation_context,
                 "transform_log_path": str(result.log_file),
                 "artifact_refs": artifact_refs,
                 "profile_id": runtime_profile,
@@ -297,6 +304,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         "copilot_dependency_advisory_status": result.copilot_dependency_advisory_status,
         "policy_patch_applied": result.policy_patch_applied,
         "sandbox_path": str(result.sandbox_path),
+        "validation_execution_context": validation_context,
         "transform_log_path": str(result.log_file),
         "artifact_refs": artifact_refs,
         "profile_id": runtime_profile,

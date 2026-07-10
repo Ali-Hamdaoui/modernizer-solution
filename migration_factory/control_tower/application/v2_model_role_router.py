@@ -49,6 +49,8 @@ class V2RoleModelResult:
     configured_max_input_tokens: int = 0
     configured_max_output_tokens: int = 0
     response_format_used: str = ""
+    configured_deployment: str = ""
+    fallback_deployment: str = ""
 
 
 @dataclass(frozen=True)
@@ -119,6 +121,8 @@ class V2ModelRoleRouter:
                     configured_max_input_tokens=result.configured_max_input_tokens,
                     configured_max_output_tokens=result.configured_max_output_tokens,
                     response_format_used=result.response_format_used,
+                    configured_deployment=route.primary_deployment,
+                    fallback_deployment=route.fallback_deployment,
                 )
             primary_failure = result.failure_reason or primary_failure or "primary_model_failed"
 
@@ -150,6 +154,8 @@ class V2ModelRoleRouter:
                         configured_max_input_tokens=result.configured_max_input_tokens,
                         configured_max_output_tokens=result.configured_max_output_tokens,
                         response_format_used=result.response_format_used,
+                        configured_deployment=route.fallback_deployment,
+                        fallback_deployment=route.fallback_deployment,
                     )
                 fallback_failure = result.failure_reason or fallback_failure or "fallback_model_failed"
             else:

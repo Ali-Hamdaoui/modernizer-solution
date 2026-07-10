@@ -105,13 +105,11 @@ REPAIR_PRIMARY_OUTPUT_SCHEMA = {
                 "Must not be Markdown fenced. Must be directly applyable as a patch."
             ),
         },
-        "deterministic_rule_id": {"type": "string"},
-        "risk": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+        "deterministic_rule_id": {"type": ["string", "null"]},
+        "risk": {"type": ["string", "null"], "enum": ["LOW", "MEDIUM", "HIGH", None]},
         "confidence": {"type": "number"},
         "rationale": {"type": "string"},
-        "no_fix_reason": {
-            "type": ["string", "null"],
-        },
+        "no_fix_reason": {"type": ["string", "null"]},
     },
 }
 
@@ -120,6 +118,9 @@ REPAIR_REVIEWER_OUTPUT_SCHEMA = {
     "additionalProperties": False,
     "required": [
         "decision",
+        "proposed_diff",
+        "changed_files",
+        "review_notes",
         "notes",
         "risks",
         "confidence",
@@ -130,6 +131,9 @@ REPAIR_REVIEWER_OUTPUT_SCHEMA = {
     ],
     "properties": {
         "decision": {"type": "string", "enum": ["accept", "revise", "reject"]},
+        "proposed_diff": {"type": "string"},
+        "changed_files": {"type": "array", "items": {"type": "string"}},
+        "review_notes": {"type": "array", "items": {"type": "string"}},
         "notes": {"type": "array", "items": {"type": "string"}},
         "risks": {"type": "array", "items": {"type": "string"}},
         "confidence": {"type": "number"},

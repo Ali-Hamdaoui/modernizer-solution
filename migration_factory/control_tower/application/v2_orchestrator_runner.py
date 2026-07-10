@@ -1305,28 +1305,20 @@ class V2OrchestratorRunner:
         repair_dir.mkdir(parents=True, exist_ok=True)
         evidence_path = repair_dir / "repair_failure_evidence.json"
         context_path = repair_dir / "repair_context_pack.json"
-        validation_context = {
+        validation_context = dict(result.get("validation_execution_context") or {})
+        validation_context.update({
             "job_id": job_id,
             "command_id": command_id,
+            "run_dir": str(run_dir),
             "stage_index": stage_index,
             "route_step_index": result.get("route_step_index", stage_index),
             "sandbox_path": str(result.get("sandbox_path") or result.get("sandbox_root") or sandbox_root),
-            "validation_command": result.get("validation_command") or result.get("command") or (),
-            "validation_unit_id": result.get("validation_unit_id") or "",
-            "source_changing_unit": bool(result.get("source_changing_unit", True)),
-            "module": result.get("module"),
-            "main_class": result.get("main_class"),
-            "source_jdk_home_env": result.get("source_jdk_home_env"),
-            "target_jdk_home_env": result.get("target_jdk_home_env"),
-            "build_timeout_seconds": result.get("build_timeout_seconds"),
-            "stop_after_start": bool(result.get("stop_after_start", False)),
-            "require_test_reports": bool(result.get("require_test_reports", False)),
-            "h2_required": bool(result.get("h2_required") or result.get("h2_startup_required")),
-            "h2_enabled": bool(result.get("h2_enabled")),
-            "source_profile": str(result.get("source_profile") or ""),
-            "target_profile": str(result.get("target_profile") or ""),
-            "runtime_profile": str(result.get("runtime_profile") or ""),
-        }
+            "validation_command": validation_context.get("validation_command") or result.get("validation_command") or result.get("command") or (),
+            "source_profile": str(result.get("source_profile") or validation_context.get("source_profile") or ""),
+            "target_profile": str(result.get("target_profile") or validation_context.get("target_profile") or ""),
+            "runtime_profile": str(result.get("runtime_profile") or validation_context.get("runtime_profile") or ""),
+            "working_directory": str(result.get("working_directory") or validation_context.get("working_directory") or result.get("sandbox_path") or sandbox_root),
+        })
         validation_context_path = repair_dir / "validation_execution_context.json"
         validation_context_path.write_text(
             json.dumps(validation_context, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -3107,6 +3099,7 @@ def _add_repair_refs_to_payload(result: dict[str, Any], payload: dict[str, Any])
     for key in ("_repair_failure_evidence_ref", "_repair_context_pack_ref", "_repair_run_dir",
                 "_repair_sandbox_path", "_repair_failure_evidence_checksum",
                 "_repair_context_pack_checksum", "_repair_base_repo_state_checksum",
+                "_repair_validation_context_ref", "_repair_validation_context_checksum",
                 "_repair_h2_required", "source_profile", "target_profile", "changed_files"):
         if key in result:
             payload[key] = result[key]

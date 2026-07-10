@@ -250,6 +250,7 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
   }
 
   const proposal = proposalState.proposal;
+  const repairState = proposalState.repairState;
   const diff = diffState.status === "available" ? diffState.diff : null;
   const attempts = attemptsState.status === "available" ? attemptsState.attempts : [];
 
@@ -262,6 +263,12 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
           <span className="meta">Status</span>
           <strong>{proposal.status.replace(/_/g, " ").toUpperCase()}</strong>
         </div>
+        {repairState?.reason_code && (
+          <p className="meta" role="alert">Apply reason: {repairState.reason_code}</p>
+        )}
+        {repairState?.detail && (
+          <p className="meta" role="alert">Apply details: {repairState.detail}</p>
+        )}
         {proposal.stage_index != null && (
           <div className="table-row">
             <span className="meta">Stage</span>
@@ -297,6 +304,21 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
             <span className="meta">Reviewer decision</span>
             <strong>{proposal.reviewer_verdict.decision}</strong>
           </div>
+        )}
+        {proposal.final_diff_source && (
+          <div className="table-row">
+            <span className="meta">Final diff source</span>
+            <strong>{proposal.final_diff_source === "proposer_fallback" ? "Proposer fallback" : "Reviewer"}</strong>
+          </div>
+        )}
+        {proposal.validation_proof_status && (
+          <div className="table-row">
+            <span className="meta">Validation proof</span>
+            <strong>{proposal.validation_proof_status.replace(/_/g, " ")}</strong>
+          </div>
+        )}
+        {proposal.generation_reason && proposal.generation_status === "failed" && (
+          <p className="meta">Generation reason: {proposal.generation_reason}</p>
         )}
       </div>
 

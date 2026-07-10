@@ -272,6 +272,9 @@ class ReviewedDiffProposal:
     apply_status: str | None = None
     rerun_status: str | None = None
     validation_proof_status: str | None = None
+    final_diff_source: str | None = None
+    generation_status: str | None = None
+    generation_reason: str | None = None
 
 
 def build_reviewed_diff_proposal_projection(
@@ -343,6 +346,9 @@ def build_reviewed_diff_proposal_projection(
         required_validation=required_validation,
         allowed_actions=allowed_actions,
         redactions=tuple(dict.fromkeys(redactions)),
+        final_diff_source=_maybe_str(chain.get("final_diff_source")),
+        generation_status=_maybe_str(chain.get("generation_status")),
+        generation_reason=_bounded_redacted_text(str(chain.get("generation_failure_reason") or "")) if chain.get("generation_failure_reason") else None,
     )
 
 
@@ -374,6 +380,9 @@ def reviewed_diff_proposal_to_safe_dict(proposal: ReviewedDiffProposal) -> dict[
         "apply_status": proposal.apply_status,
         "rerun_status": proposal.rerun_status,
         "validation_proof_status": proposal.validation_proof_status,
+        "final_diff_source": proposal.final_diff_source,
+        "generation_status": proposal.generation_status,
+        "generation_reason": proposal.generation_reason,
     }
 
 
@@ -521,6 +530,9 @@ def build_reviewed_diff_proposal_from_record(
     apply_status: str | None = None,
     rerun_status: str | None = None,
     validation_proof_status: str | None = None,
+    final_diff_source: str | None = None,
+    generation_status: str | None = None,
+    generation_reason: str | None = None,
 ) -> ReviewedDiffProposal:
     """Build a ReviewedDiffProposal from persisted V2RepairProposalRecord fields.
 
@@ -578,6 +590,9 @@ def build_reviewed_diff_proposal_from_record(
         apply_status=_maybe_str(apply_status),
         rerun_status=_maybe_str(rerun_status),
         validation_proof_status=_maybe_str(validation_proof_status),
+        final_diff_source=_maybe_str(final_diff_source),
+        generation_status=_maybe_str(generation_status),
+        generation_reason=_bounded_redacted_text(generation_reason) if generation_reason else None,
     )
 
 
@@ -601,6 +616,8 @@ def record_to_attempt_summary(record: Any) -> dict[str, Any]:
         "reviewer_decision": getattr(record, "reviewer_decision", None),
         "diff_checksum": getattr(record, "diff_checksum", None),
         "policy_validation_checksum": getattr(record, "policy_validation_checksum", None),
+        "validation_proof_status": getattr(record, "validation_proof_status", None),
+        "final_diff_source": getattr(record, "final_diff_source", None),
         "validation_result_ref": getattr(record, "validation_result_ref", None),
         "next_gate_id": getattr(record, "next_gate_id", None),
         "next_gate_status": getattr(record, "next_gate_status", None),

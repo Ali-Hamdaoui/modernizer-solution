@@ -36,6 +36,9 @@ class V2AssistantModelResult:
     configured_max_output_tokens: int = 0
     response_format_used: str = ""
     finish_reason: str = ""
+    configured_deployment: str = ""
+    fallback_deployment: str = ""
+    fallback_used: bool = False
 
 
 @dataclass(frozen=True)
@@ -422,6 +425,9 @@ class V2AssistantModelClient:
             configured_max_input_tokens=routed.configured_max_input_tokens,
             configured_max_output_tokens=routed.configured_max_output_tokens,
             response_format_used=routed.response_format_used,
+            configured_deployment=routed.configured_deployment,
+            fallback_deployment=routed.fallback_deployment,
+            fallback_used=routed.fallback_used,
         )
 
     @staticmethod
