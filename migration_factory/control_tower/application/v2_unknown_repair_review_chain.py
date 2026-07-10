@@ -69,6 +69,7 @@ FAILURE_KIND_INVOCATION_LEDGER_START_FAILED = "invocation_ledger_start_failed"
 FAILURE_KIND_PROPOSER_OUTPUT_TRUNCATED = "proposer_output_truncated"
 FAILURE_KIND_PROPOSER_PROVIDER_FAILED = "proposer_provider_failed"
 FAILURE_KIND_PROPOSER_SCHEMA_INVALID = "proposer_schema_invalid"
+FAILURE_KIND_PROPOSER_DIFF_NOT_GIT_UNIFIED = "proposer_diff_not_git_unified"
 FAILURE_KIND_REVIEWER_OUTPUT_TRUNCATED = "reviewer_output_truncated"
 FAILURE_KIND_REVIEWER_PROVIDER_FAILED = "reviewer_provider_failed"
 FAILURE_KIND_REVIEWER_SCHEMA_INVALID = "reviewer_schema_invalid"
@@ -542,6 +543,7 @@ def _classify_review_chain_failure(exc: Exception) -> str:
     if failure_code in {
         FAILURE_KIND_PROPOSER_OUTPUT_TRUNCATED,
         FAILURE_KIND_PROPOSER_SCHEMA_INVALID,
+        FAILURE_KIND_PROPOSER_DIFF_NOT_GIT_UNIFIED,
         FAILURE_KIND_PROPOSER_PROVIDER_FAILED,
         FAILURE_KIND_REVIEWER_OUTPUT_TRUNCATED,
         FAILURE_KIND_REVIEWER_SCHEMA_INVALID,

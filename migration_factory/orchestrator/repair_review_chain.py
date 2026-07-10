@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath, PureWindowsPath
+import re
 from typing import Any
 
 from migration_factory.control_tower.application.v2_assistant_model_client import (
@@ -48,6 +49,15 @@ from migration_factory.repair_loop.repair_context import (
     compute_context_pack_checksum,
     context_pack_to_dict,
 )
+from migration_factory.repair_loop.patch_gate import (
+    REASON_ASSERTION_WEAKENING,
+    REASON_DIRECT_TEST_FAILURE_MASKING,
+    REASON_EXPECTED_EXCEPTION_MASKING,
+    REASON_TEST_DISABLED_OR_SKIPPED,
+    REASON_TRIVIALLY_PASSING_ASSERTION,
+    extract_touched_paths,
+    is_unified_diff as _policy_is_unified_diff,
+)
 
 
 class RepairReviewChainProductionError(RuntimeError):
@@ -58,6 +68,7 @@ class RepairReviewChainProductionError(RuntimeError):
 
 _PRIMARY_CANONICAL_FIELDS = tuple(REPAIR_PRIMARY_OUTPUT_SCHEMA["properties"].keys())
 _REVIEWER_CANONICAL_FIELDS = tuple(REPAIR_REVIEWER_OUTPUT_SCHEMA["properties"].keys())
+REASON_PROPOSER_DIFF_NOT_GIT_UNIFIED = "proposer_diff_not_git_unified"
 
 
 # ── F5-T3: Deterministic repair artifact ─────────────────────────────
@@ -105,7 +116,7 @@ def _build_deterministic_repair_payload(
 def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checksum: str) -> str:
     return (
         "You are a repair proposer. Analyze the build/test failure evidence below "
-        "and propose an exact unified diff to fix the issue.\n\n"
+        "and propose an exact Git-style unified diff to fix the issue.\n\n"
         "Return JSON with these required keys:\n"
         "  schema_version ('1.0'), proposal_kind ('llm_repair_primary'), "
         "root_cause, fix_strategy, changed_files (list of file paths), "
@@ -116,8 +127,27 @@ def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checks
         "- Do NOT include commands, paths to execute, provider data, endpoint data, "
         "env data, deployment data, or approvals.\n"
         "- Do NOT include absolute sandbox paths.\n"
-        "- The proposed_diff must be a valid unified diff format.\n"
+        "- Return an exact Git-style unified diff. The diff string must start with 'diff --git'.\n"
+        "- Use sandbox-relative paths only.\n"
+        "- Do NOT use '*** Begin Patch', '*** Update File:', '*** Add File:', "
+        "'*** Delete File:', or '*** End Patch'.\n"
+        "- Do NOT wrap the diff in markdown fences.\n"
+        "- Do NOT return plain replacement file content or natural-language patch instructions.\n"
+        "- The following raw Git diff text is a compact example of the value for proposed_diff "
+        "inside the JSON response. Do not add a Markdown fence or apply_patch wrapper:\n"
+        "diff --git a/src/main/java/com/example/App.java b/src/main/java/com/example/App.java\n"
+        "--- a/src/main/java/com/example/App.java\n"
+        "+++ b/src/main/java/com/example/App.java\n"
+        "@@ -1,3 +1,3 @@\n"
+        "-old\n"
+        "+new\n"
         "- Do not skip or disable tests as a fix.\n"
+        "- Do not change a test merely to expect the current production exception.\n"
+        "- Do not turn an unexpected failure into an expected exception.\n"
+        "- Do not remove tests, weaken assertions, add trivially passing assertions, "
+        "or edit test infrastructure to hide the failure.\n"
+        "- Prefer fixing src/main/** production code rather than src/test/** unless "
+        "the evidence conclusively proves the test itself is incorrect.\n"
         "- The fix must stay within the sandbox scope and declared changed files.\n\n"
         f"Deterministic repair artifact checksum: {deterministic_checksum}\n\n"
         f"Context:\n{json.dumps(context_pack_to_dict(context_pack), sort_keys=True)}"
@@ -141,11 +171,19 @@ def _reviewer_repair_prompt(
         "reviewed_context_checksum, reviewed_primary_output_checksum, "
         "reviewed_diff_checksum.\n\n"
         "CONSTRAINTS:\n"
-        "- Accept only if the diff is valid unified diff format and addresses "
+        "- Independently verify the diff is a canonical Git unified diff that starts "
+        "with 'diff --git' and contains matching '---', '+++', and '@@' hunk headers.\n"
+        "- Reject apply_patch wrapper syntax, markdown-fenced diffs, replacement file "
+        "content, or natural-language patch instructions.\n"
+        "- Accept only if the diff addresses "
         "the exact failure evidence.\n"
+        "- Reject if declared changed_files do not exactly equal the actual Git diff paths.\n"
+        "- Verify the patch addresses the root cause in production code.\n"
         "- Reject any unsafe diff (absolute paths, security config changes, "
         "execution instructions, test disabling, deleted production code).\n"
-        "- Reject if the diff scope exceeds the declared changed files.\n"
+        "- Reject if the patch merely encodes the existing production failure as expected, "
+        "including assertThrows(CurrentProductionFailure.class, ...) added only to pass the test.\n"
+        "- Reject test disabling, test bypassing, assertion weakening, or trivially passing assertions.\n"
         "- Bind your decision to the exact checksums provided.\n\n"
         f"Deterministic repair artifact checksum: {deterministic_checksum}\n"
         f"Context pack checksum: {context_checksum}\n"
@@ -186,9 +224,14 @@ def _validate_primary_repair_contract(content: str) -> dict[str, Any]:
 
     failures = _validate_primary_repair_output(parsed)
     if failures:
+        failure_code = (
+            REASON_PROPOSER_DIFF_NOT_GIT_UNIFIED
+            if any(REASON_PROPOSER_DIFF_NOT_GIT_UNIFIED in failure for failure in failures)
+            else "proposer_schema_invalid"
+        )
         raise RepairReviewChainProductionError(
             "invalid primary repair output: " + "; ".join(failures),
-            failure_code="proposer_schema_invalid",
+            failure_code=failure_code,
         )
     return parsed
 
@@ -348,8 +391,7 @@ def _validate_primary_repair_output(output: dict[str, Any]) -> list[str]:
         if not isinstance(no_fix_reason, str) or not no_fix_reason.strip():
             failures.append("empty proposed_diff requires non-empty no_fix_reason")
     else:
-        if not _is_unified_diff(diff):
-            failures.append("proposed_diff does not appear to be a valid unified diff")
+        failures.extend(_canonical_git_diff_failures(diff, output.get("changed_files")))
 
     forbidden_paths = _check_forbidden_paths_in_diff(diff)
     if forbidden_paths:
@@ -380,11 +422,111 @@ def _unsafe_relative_path_reason(value: str) -> str:
 
 
 def _is_unified_diff(diff: str) -> bool:
-    lines = diff.strip().splitlines()
-    has_header = any(line.startswith("--- ") for line in lines)
-    has_changes = any(line.startswith("--- ") or line.startswith("+++ ") or line.startswith("@@") for line in lines)
-    has_diff = any(line.startswith("+") or line.startswith("-") for line in lines)
-    return (has_header or has_changes) and has_diff
+    return _forbidden_diff_syntax_reason(diff) == "" and _policy_is_unified_diff(diff)
+
+
+def _canonical_git_diff_failures(diff: str, changed_files: Any) -> list[str]:
+    failures: list[str] = []
+    forbidden = _forbidden_diff_syntax_reason(diff)
+    if forbidden or not _policy_is_unified_diff(diff):
+        failures.append(f"{REASON_PROPOSER_DIFF_NOT_GIT_UNIFIED}: proposed_diff must be canonical Git unified diff text")
+        return failures
+    actual_paths, path_errors = extract_touched_paths(diff)
+    if path_errors:
+        failures.append(f"{REASON_PROPOSER_DIFF_NOT_GIT_UNIFIED}: {'; '.join(path_errors)}")
+        return failures
+    declared = tuple(sorted(dict.fromkeys(str(path).replace("\\", "/") for path in changed_files or () if str(path).strip())))
+    actual = tuple(sorted(dict.fromkeys(actual_paths)))
+    if declared != actual:
+        failures.append(
+            "declared_changed_files_mismatch: changed_files must exactly equal actual Git diff paths"
+        )
+    return failures
+
+
+def _forbidden_diff_syntax_reason(diff: str) -> str:
+    text = str(diff or "")
+    stripped = text.strip()
+    if not stripped:
+        return "empty_diff"
+    forbidden_markers = (
+        "*** Begin Patch",
+        "*** Update File:",
+        "*** Add File:",
+        "*** Delete File:",
+        "*** End Patch",
+    )
+    if any(marker in stripped for marker in forbidden_markers):
+        return "apply_patch_wrapper_syntax"
+    if stripped.startswith("```") or "\n```" in stripped:
+        return "markdown_fence"
+    if not stripped.startswith("diff --git "):
+        return "not_git_diff"
+    return ""
+
+
+def _reviewer_semantic_failures(primary_output: dict[str, Any]) -> list[str]:
+    diff = str(primary_output.get("proposed_diff") or "")
+    failures = _canonical_git_diff_failures(diff, primary_output.get("changed_files"))
+    paths, _ = extract_touched_paths(diff) if _is_unified_diff(diff) else ([], [])
+    failures.extend(_test_masking_semantic_failures(diff, paths))
+    return list(dict.fromkeys(failures))
+
+
+def _test_masking_semantic_failures(diff: str, paths: list[str]) -> list[str]:
+    if not any(_is_test_path(path) for path in paths):
+        return []
+    added: list[str] = []
+    removed: list[str] = []
+    for line in diff.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            added.append(line[1:])
+        elif line.startswith("-") and not line.startswith("---"):
+            removed.append(line[1:])
+    added_text = "\n".join(added)
+    removed_text = "\n".join(removed)
+    added_lower = added_text.lower()
+    removed_lower = removed_text.lower()
+    combined_lower = f"{removed_text}\n{added_text}".lower()
+    failures: list[str] = []
+    if any(marker in added_lower for marker in ("@disabled", "assumptions.", "assumetrue", "assumefalse", "ignore(")):
+        failures.append(REASON_TEST_DISABLED_OR_SKIPPED)
+    if _adds_trivial_assertion(added_text):
+        failures.append(REASON_TRIVIALLY_PASSING_ASSERTION)
+    if "assertthrows" in added_lower and any(marker in combined_lower for marker in ("exception.class", "runtimeexception.class", "illegalstateexception.class", "m1_unknown_runtime_sentinel")):
+        failures.append(REASON_EXPECTED_EXCEPTION_MASKING)
+    if any(marker in removed_lower for marker in ("assertequals", "assertfalse", "fail(", "m1_unknown_runtime_sentinel")) and (
+        "assertthrows" in added_lower or _adds_trivial_assertion(added_text)
+    ):
+        failures.append(REASON_ASSERTION_WEAKENING)
+        failures.append(REASON_DIRECT_TEST_FAILURE_MASKING)
+    if "m1_unknown_runtime_sentinel" in combined_lower and (
+        "assertthrows" in added_lower or _adds_trivial_assertion(added_text) or "@disabled" in added_lower
+    ):
+        failures.extend([
+            REASON_ASSERTION_WEAKENING,
+            REASON_DIRECT_TEST_FAILURE_MASKING,
+            REASON_EXPECTED_EXCEPTION_MASKING,
+        ])
+    return list(dict.fromkeys(failures))
+
+
+def _is_test_path(path: str) -> bool:
+    normalized = str(path).replace("\\", "/").lower()
+    return normalized.startswith("src/test/") or "/src/test/" in f"/{normalized}"
+
+
+def _adds_trivial_assertion(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text).lower()
+    return any(
+        marker in compact
+        for marker in (
+            "asserttrue(true)",
+            "assertthat(true).istrue()",
+            "assertequals(1,1)",
+            "assertequals(true,true)",
+        )
+    )
 
 
 def _check_forbidden_paths_in_diff(diff: str) -> list[str]:
@@ -797,6 +939,18 @@ def produce_repair_review_chain(
             )
             raise RepairReviewChainProductionError(
                 f"reviewer decision failed closed: {validated_reviewer_output['decision']}",
+                failure_code="reviewer_rejected",
+            )
+
+        semantic_failures = _reviewer_semantic_failures(validated_primary_output)
+        if semantic_failures:
+            reviewer_lifecycle.fail(
+                reason="reviewer_semantic_validation_failed: " + "; ".join(semantic_failures),
+                summary="reviewer failed deterministic semantic validation",
+                accepted_provider_source=reviewer_provider_source,
+            )
+            raise RepairReviewChainProductionError(
+                "reviewer semantic validation failed: " + "; ".join(semantic_failures),
                 failure_code="reviewer_rejected",
             )
 

@@ -1620,6 +1620,7 @@ class V2OrchestratorRunner:
             result.get("final_status"),
             "Build/test failure",
         )
+        sandbox_text = _result_sandbox_path(result)
         evidence = build_failure_evidence(
             failure_source=failure_source,
             stage_index=stage_index,
@@ -1643,6 +1644,7 @@ class V2OrchestratorRunner:
             source_profile=source_profile,
             target_profile=target_profile,
             changed_files=changed_files,
+            sandbox_path=Path(sandbox_text) if sandbox_text else None,
             accepted_artifact_checksums=accepted_checksums,
         )
 
@@ -1692,7 +1694,6 @@ class V2OrchestratorRunner:
             if not diagnostic_payloads:
                 return
             diagnostic_event_type, _, _, diagnostic_payload = diagnostic_payloads[0]
-            sandbox_text = _result_sandbox_path(result)
             legacy_text = _first_text(
                 result.get("legacy_path"),
                 artifact_refs.get("legacy_path") if isinstance(artifact_refs, dict) else "",

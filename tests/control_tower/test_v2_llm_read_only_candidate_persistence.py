@@ -471,6 +471,21 @@ def test_accept_persists_one_proposal_one_candidate_and_replay_is_idempotent(tmp
     assert latest["patch_source"] == PATCH_SOURCE_LLM_REVIEWED
     assert latest["policy_id"] == POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1
     assert latest["policy_validation_checksum"] == record.policy_validation_checksum
+    expected_diff = (
+        "diff --git a/src/main/java/App.java b/src/main/java/App.java\n"
+        "--- a/src/main/java/App.java\n"
+        "+++ b/src/main/java/App.java\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+    assert record.diff_ref
+    assert Path(record.diff_ref).read_text(encoding="utf-8") == expected_diff
+    assert latest["patch_checksum"] == "sha256:" + sha256_hex(expected_diff.encode("utf-8"))
+    assert latest["approval_enabled"] is True
+    assert latest["apply_enabled"] is False
+    assert conn.execute("SELECT COUNT(*) FROM v2_repair_proposals").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM v2_repair_apply_candidates").fetchone()[0] == 1
     policy_events = [
         json.loads(event.payload_json)
         for event in SqliteV2JobEventRepository(conn).list_by_job("job-wf04a")

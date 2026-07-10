@@ -33,6 +33,8 @@ from migration_factory.orchestrator.repair_review_chain import (
 )
 from migration_factory.repair_loop.failure_evidence import (
     FailureSource,
+    NormalizedCompilerError,
+    NormalizedTestFailure,
     build_failure_evidence,
 )
 from migration_factory.repair_loop.repair_context import (
@@ -43,6 +45,7 @@ from migration_factory.repair_loop.repair_context import (
 # ── Helpers ───────────────────────────────────────────────────────────
 
 VALID_UNIFIED_DIFF = """\
+diff --git a/src/main/java/App.java b/src/main/java/App.java
 --- a/src/main/java/App.java
 +++ b/src/main/java/App.java
 @@ -1,3 +1,3 @@
@@ -53,14 +56,18 @@ VALID_UNIFIED_DIFF = """\
 
 
 def _valid_primary_json() -> str:
+    return _primary_json_with_diff(VALID_UNIFIED_DIFF, ["src/main/java/App.java"])
+
+
+def _primary_json_with_diff(diff: str, changed_files: list[str]) -> str:
     return json.dumps(
         {
             "schema_version": "1.0",
             "proposal_kind": "llm_repair_primary",
             "root_cause": "Missing import",
             "fix_strategy": "Add import statement",
-            "changed_files": ["src/main/java/App.java"],
-            "proposed_diff": VALID_UNIFIED_DIFF,
+            "changed_files": changed_files,
+            "proposed_diff": diff,
             "risk": "LOW",
             "confidence": 0.9,
             "rationale": "Simple fix",
@@ -103,6 +110,7 @@ def _accept_reviewer_json(prompt: str, *, decision: str = "accept", context_chec
 
 def _large_valid_primary_json() -> str:
     diff_lines = [
+        "diff --git a/src/main/java/App.java b/src/main/java/App.java",
         "--- a/src/main/java/App.java",
         "+++ b/src/main/java/App.java",
         "@@ -1,6 +1,6 @@",
@@ -368,6 +376,22 @@ def test_is_unified_diff_empty() -> None:
     assert _is_unified_diff("") is False
 
 
+def test_is_unified_diff_rejects_apply_patch_wrapper() -> None:
+    diff = (
+        "*** Begin Patch\n"
+        "*** Update File: src/main/java/App.java\n"
+        "@@\n"
+        "-old\n"
+        "+new\n"
+        "*** End Patch\n"
+    )
+    assert _is_unified_diff(diff) is False
+
+
+def test_is_unified_diff_rejects_markdown_fence() -> None:
+    assert _is_unified_diff(f"```diff\n{VALID_UNIFIED_DIFF}```\n") is False
+
+
 # ── F5-T3: _check_forbidden_paths_in_diff ────────────────────────────
 
 
@@ -421,7 +445,7 @@ def test_validate_primary_rejects_empty_root_cause() -> None:
         "root_cause": "",
         "fix_strategy": "valid strategy",
         "proposed_diff": VALID_UNIFIED_DIFF,
-        "changed_files": ["App.java"],
+        "changed_files": ["src/main/java/App.java"],
         "risk": "LOW",
         "confidence": 0.8,
         "rationale": "safe fix",
@@ -434,7 +458,7 @@ def test_validate_primary_rejects_missing_fix_strategy() -> None:
         "root_cause": "valid cause",
         "fix_strategy": "",
         "proposed_diff": VALID_UNIFIED_DIFF,
-        "changed_files": ["App.java"],
+        "changed_files": ["src/main/java/App.java"],
         "risk": "LOW",
         "confidence": 0.8,
         "rationale": "safe fix",
@@ -447,7 +471,7 @@ def test_validate_primary_rejects_invalid_risk() -> None:
         "root_cause": "valid cause",
         "fix_strategy": "valid strategy",
         "proposed_diff": VALID_UNIFIED_DIFF,
-        "changed_files": ["App.java"],
+        "changed_files": ["src/main/java/App.java"],
         "risk": "CRITICAL",
         "confidence": 0.8,
     })
@@ -459,7 +483,7 @@ def test_validate_primary_rejects_confidence_out_of_range() -> None:
         "root_cause": "valid cause",
         "fix_strategy": "valid strategy",
         "proposed_diff": VALID_UNIFIED_DIFF,
-        "changed_files": ["App.java"],
+        "changed_files": ["src/main/java/App.java"],
         "risk": "LOW",
         "confidence": 1.5,
     })
@@ -471,11 +495,24 @@ def test_validate_primary_rejects_non_unified_diff() -> None:
         "root_cause": "valid cause",
         "fix_strategy": "valid strategy",
         "proposed_diff": "just some plain text",
-        "changed_files": ["App.java"],
+        "changed_files": ["src/main/java/App.java"],
         "risk": "LOW",
         "confidence": 0.8,
     })
     assert any("unified diff" in f for f in failures)
+
+
+def test_validate_primary_rejects_declared_changed_files_mismatch() -> None:
+    failures = _validate_primary_repair_output({
+        "root_cause": "valid cause",
+        "fix_strategy": "valid strategy",
+        "proposed_diff": VALID_UNIFIED_DIFF,
+        "changed_files": ["src/main/java/Other.java"],
+        "risk": "LOW",
+        "confidence": 0.8,
+        "rationale": "safe fix",
+    })
+    assert any("declared_changed_files_mismatch" in f for f in failures)
 
 
 def test_validate_primary_accepts_valid_output() -> None:
@@ -483,12 +520,188 @@ def test_validate_primary_accepts_valid_output() -> None:
         "root_cause": "valid cause",
         "fix_strategy": "valid strategy",
         "proposed_diff": VALID_UNIFIED_DIFF,
-        "changed_files": ["App.java"],
+        "changed_files": ["src/main/java/App.java"],
         "risk": "LOW",
         "confidence": 0.8,
         "rationale": "safe fix",
     })
     assert failures == []
+
+
+def test_context_pack_derives_live_shaped_source_evidence_from_bounded_log(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    test_file = sandbox / "src/test/java/com/example/m1/MigrationBehaviorTest.java"
+    prod_file = sandbox / "src/main/java/com/example/m1/MigrationBehavior.java"
+    pom_file = sandbox / "pom.xml"
+    test_file.parent.mkdir(parents=True, exist_ok=True)
+    prod_file.parent.mkdir(parents=True, exist_ok=True)
+    test_file.write_text(
+        "package com.example.m1;\n"
+        "class MigrationBehaviorTest {\n"
+        "  void migratedRuntimeBehaviorMustCompleteSuccessfully() {\n"
+        "    org.junit.jupiter.api.Assertions.assertEquals(\"READY\", new MigrationBehavior().run());\n"
+        "  }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    prod_file.write_text(
+        "package com.example.m1;\n"
+        "class MigrationBehavior { String run() { throw new RuntimeException(\"M1_UNKNOWN_RUNTIME_SENTINEL\"); } }\n",
+        encoding="utf-8",
+    )
+    pom_file.write_text("<project><modelVersion>4.0.0</modelVersion></project>\n", encoding="utf-8")
+    outside_test = tmp_path / "outside/src/test/java/com/example/m1/MigrationBehaviorTest.java"
+    outside_test.parent.mkdir(parents=True, exist_ok=True)
+    outside_test.write_text("outside sandbox sentinel\n", encoding="utf-8")
+    for blocked in (
+        sandbox / ".migration/MigrationBehaviorTest.java",
+        sandbox / ".github/MigrationBehaviorTest.java",
+        sandbox / "target/MigrationBehaviorTest.java",
+    ):
+        blocked.parent.mkdir(parents=True, exist_ok=True)
+        blocked.write_text(f"blocked sentinel: {blocked.parent.name}\n", encoding="utf-8")
+    stack_trace = (
+        "[ERROR] Errors:\n"
+        "[ERROR] MigrationBehaviorTest.unknownBehaviorMustBeReviewedAfterBootUpgrade\n"
+        "java.lang.IllegalStateException: M1_UNKNOWN_RUNTIME_SENTINEL\n"
+        "    at com.example.m1.MigrationBehaviorTest.unknownBehaviorMustBeReviewedAfterBootUpgrade"
+        "(MigrationBehaviorTest.java:13)\n"
+    )
+    evidence = build_failure_evidence(
+        failure_source=FailureSource.TEST,
+        job_id="job-source",
+        stage_index=1,
+        command_id="cmd-source",
+        failure_summary="Build failed after migration",
+        test_failures=(),
+        compiler_errors=(),
+        changed_files=(),
+        safe_log_preview=stack_trace,
+    )
+
+    context = build_repair_context_pack(
+        failure_evidence=evidence,
+        sandbox_path=sandbox,
+    )
+
+    evidence_paths = [entry["path"] for entry in context.source_evidence]
+    assert evidence_paths == [
+        "src/test/java/com/example/m1/MigrationBehaviorTest.java",
+        "src/main/java/com/example/m1/MigrationBehavior.java",
+        "pom.xml",
+    ]
+    assert len(context.source_evidence) <= 8
+    assert sum(entry["byte_length"] for entry in context.source_evidence) <= 12_000
+    for entry in context.source_evidence:
+        relative = Path(entry["path"])
+        assert not relative.is_absolute()
+        raw = (sandbox / relative).read_bytes()
+        assert entry["checksum"] == "sha256:" + sha256_hex(raw)
+        assert entry["byte_length"] == len(raw) <= 12_000
+    projected = json.dumps(context.source_evidence)
+    assert str(tmp_path) not in projected
+    assert "outside sandbox sentinel" not in projected
+    assert "blocked sentinel" not in projected
+
+
+def test_source_evidence_priority_preserves_failure_related_files(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    contents = {
+        "src/main/java/com/example/CompileFailure.java": "class CompileFailure {}\n",
+        "src/test/java/com/example/StructuredBehaviorTest.java": "class StructuredBehaviorTest {}\n",
+        "src/test/java/com/example/LogBehaviorIT.java": "class LogBehaviorIT {}\n",
+        "src/main/java/com/example/StructuredBehavior.java": "class StructuredBehavior {}\n",
+        "src/main/java/com/example/LogBehavior.java": "class LogBehavior {}\n",
+        "pom.xml": "<project/>\n",
+        **{f"src/main/java/com/example/Changed{index}.java": f"class Changed{index} {{}}\n" for index in range(8)},
+    }
+    for relative, content in contents.items():
+        path = sandbox / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    changed_files = tuple(f"src/main/java/com/example/Changed{index}.java" for index in range(8))
+    evidence = build_failure_evidence(
+        failure_source=FailureSource.BUILD,
+        compiler_errors=(NormalizedCompilerError(file_path="src/main/java/com/example/CompileFailure.java"),),
+        test_failures=(
+            NormalizedTestFailure(file_path="src/test/java/com/example/StructuredBehaviorTest.java"),
+        ),
+        changed_files=changed_files,
+        stderr_tail="in com.example.LogBehaviorIT\n",
+    )
+
+    context = build_repair_context_pack(failure_evidence=evidence, sandbox_path=sandbox)
+
+    assert [entry["path"] for entry in context.source_evidence] == [
+        "src/main/java/com/example/CompileFailure.java",
+        "src/test/java/com/example/StructuredBehaviorTest.java",
+        "src/test/java/com/example/LogBehaviorIT.java",
+        "src/main/java/com/example/StructuredBehavior.java",
+        "src/main/java/com/example/LogBehavior.java",
+        "pom.xml",
+        "src/main/java/com/example/Changed0.java",
+        "src/main/java/com/example/Changed1.java",
+    ]
+
+
+def test_source_evidence_preserves_dot_paths_and_blocks_case_insensitively(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    files = {
+        "pom.xml": "<project/>\n",
+        "src/main/java/App.java": "class App {}\n",
+        ".migration/secret.xml": "blocked\n",
+        "migration/secret.xml": "must not be selected by normalization\n",
+        ".GitHub/workflow.yml": "blocked\n",
+        "TARGET/Generated.java": "blocked\n",
+    }
+    for relative, content in files.items():
+        path = sandbox / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    evidence = build_failure_evidence(
+        failure_source=FailureSource.BUILD,
+        changed_files=(
+            "././src/main/java/App.java",
+            ".migration/secret.xml",
+            ".GitHub/workflow.yml",
+            "TARGET/Generated.java",
+        ),
+    )
+
+    context = build_repair_context_pack(failure_evidence=evidence, sandbox_path=sandbox)
+
+    assert [entry["path"] for entry in context.source_evidence] == [
+        "pom.xml",
+        "src/main/java/App.java",
+    ]
+
+
+def test_source_evidence_excludes_symlink_escape(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    (sandbox / "pom.xml").write_text("<project/>\n", encoding="utf-8")
+    outside = tmp_path / "outside/Escape.java"
+    outside.parent.mkdir(parents=True)
+    outside.write_text("class Escape {}\n", encoding="utf-8")
+    escaped_link = sandbox / "src/main/java/Escape.java"
+    escaped_link.parent.mkdir(parents=True)
+    blocked_target = sandbox / ".migration/Secret.java"
+    blocked_target.parent.mkdir(parents=True)
+    blocked_target.write_text("class Secret {}\n", encoding="utf-8")
+    blocked_link = sandbox / "src/main/java/Internal.java"
+    try:
+        escaped_link.symlink_to(outside)
+        blocked_link.symlink_to(blocked_target)
+    except OSError as exc:
+        pytest.skip(f"Symlink creation privilege unavailable: {exc}")
+    evidence = build_failure_evidence(
+        failure_source=FailureSource.BUILD,
+        changed_files=("src/main/java/Escape.java", "src/main/java/Internal.java"),
+    )
+
+    context = build_repair_context_pack(failure_evidence=evidence, sandbox_path=sandbox)
+
+    assert [entry["path"] for entry in context.source_evidence] == ["pom.xml"]
 
 
 # ── F5-T3/T4: Checksum determinism ───────────────────────────────────
@@ -608,6 +821,25 @@ def test_produce_success_with_accept_decision(tmp_path: Path) -> None:
     assert result["review_chain"]["model_roles"]["reviewer"]["available"] is True
     assert "deployment" not in json.dumps(result["review_chain"]["model_roles"]).lower()
     assert "endpoint" not in json.dumps(result["review_chain"]["model_roles"]).lower()
+    proposer_prompt = client.call_kwargs[0]["prompt"]
+    reviewer_prompt = client.call_kwargs[1]["prompt"]
+    assert "diff string must start with 'diff --git'" in proposer_prompt
+    assert "Do NOT use '*** Begin Patch'" in proposer_prompt
+    assert "Do NOT wrap the diff in markdown fences" in proposer_prompt
+    assert "value for proposed_diff inside the JSON response" in proposer_prompt
+    assert (
+        "diff --git a/src/main/java/com/example/App.java b/src/main/java/com/example/App.java\n"
+        "--- a/src/main/java/com/example/App.java\n"
+        "+++ b/src/main/java/com/example/App.java\n"
+        "@@ -1,3 +1,3 @@\n"
+        "-old\n"
+        "+new\n"
+    ) in proposer_prompt
+    assert "Do not change a test merely to expect the current production exception" in proposer_prompt
+    assert "Prefer fixing src/main/** production code" in proposer_prompt
+    assert "Independently verify the diff is a canonical Git unified diff" in reviewer_prompt
+    assert "Reject apply_patch wrapper syntax" in reviewer_prompt
+    assert "assertThrows(CurrentProductionFailure.class" in reviewer_prompt
     chain = result["review_chain"]
     primary_path = tmp_path / "output" / "primary_repair_llm_output.json"
     final_path = tmp_path / "output" / "final_reviewed_repair_artifact.json"
@@ -623,6 +855,77 @@ def test_produce_success_with_accept_decision(tmp_path: Path) -> None:
     assert chain["checksum_algorithms"]["final_artifact_checksum"] == "sha256_canonical_json_v1"
     assert chain["checksum_algorithms"]["primary_output_artifact_checksum"] == "sha256_exact_bytes_v1"
     assert chain["checksum_algorithms"]["final_artifact_persisted_checksum"] == "sha256_exact_bytes_v1"
+
+
+@pytest.mark.parametrize(
+    ("name", "diff"),
+    [
+        (
+            "apply_patch_wrapper",
+            "*** Begin Patch\n*** Update File: src/main/java/App.java\n@@\n-old\n+new\n*** End Patch\n",
+        ),
+        (
+            "markdown_fence",
+            f"```diff\n{VALID_UNIFIED_DIFF}```\n",
+        ),
+        (
+            "plain_instructions",
+            "Replace App.java so it returns READY.\n",
+        ),
+    ],
+)
+def test_proposer_rejects_non_git_diff_before_reviewer_acceptance(tmp_path: Path, name: str, diff: str) -> None:
+    ledger = RecordingLedger()
+    output_dir = tmp_path / name
+    client = SequenceRepairClient([
+        _model_result(_primary_json_with_diff(diff, ["src/main/java/App.java"]), role="proposer"),
+        _model_result("__ACCEPT__", role="reviewer"),
+    ])
+
+    with pytest.raises(RepairReviewChainProductionError) as exc_info:
+        _run_chain(tmp_path, client, ledger, output_name=name)
+
+    assert exc_info.value.failure_code == "proposer_diff_not_git_unified"
+    assert client.calls == [V2ModelRole.PROPOSER]
+    assert [row["status"] for row in ledger.rows.values()] == ["failed"]
+    _assert_fail_closed(output_dir, ledger)
+
+
+def test_reviewer_cannot_accept_test_patch_that_masks_current_exception(tmp_path: Path) -> None:
+    masking_diff = (
+        "diff --git a/src/test/java/com/example/m1/MigrationBehaviorTest.java b/src/test/java/com/example/m1/MigrationBehaviorTest.java\n"
+        "--- a/src/test/java/com/example/m1/MigrationBehaviorTest.java\n"
+        "+++ b/src/test/java/com/example/m1/MigrationBehaviorTest.java\n"
+        "@@ -1,6 +1,7 @@\n"
+        " package com.example.m1;\n"
+        " class MigrationBehaviorTest {\n"
+        "   void migratedRuntimeBehaviorMustCompleteSuccessfully() {\n"
+        "-    org.junit.jupiter.api.Assertions.assertEquals(\"READY\", new MigrationBehavior().run());\n"
+        "+    org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> new MigrationBehavior().run());\n"
+        "   }\n"
+        " }\n"
+    )
+    ledger = RecordingLedger()
+    output_dir = tmp_path / "masking"
+    client = SequenceRepairClient([
+        _model_result(
+            _primary_json_with_diff(
+                masking_diff,
+                ["src/test/java/com/example/m1/MigrationBehaviorTest.java"],
+            ),
+            role="proposer",
+        ),
+        _model_result("__ACCEPT__", role="reviewer"),
+    ])
+
+    with pytest.raises(RepairReviewChainProductionError) as exc_info:
+        _run_chain(tmp_path, client, ledger, output_name="masking")
+
+    assert exc_info.value.failure_code == "reviewer_rejected"
+    assert "expected_exception_masking" in str(exc_info.value)
+    assert client.calls == [V2ModelRole.PROPOSER, V2ModelRole.REVIEWER]
+    assert [row["status"] for row in ledger.rows.values()] == ["completed", "failed"]
+    _assert_fail_closed(output_dir, ledger)
 
 
 def test_invocation_correlation_and_provider_fallback_statuses(tmp_path: Path) -> None:

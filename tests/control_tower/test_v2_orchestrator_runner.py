@@ -1063,6 +1063,65 @@ def test_v2_runner_emits_failure_repair_events_from_result(tmp_path: Path) -> No
     assert event_payloads["repair_context_pack_written"]["context_pack_checksum"] == context["context_pack_checksum"]
 
 
+def test_v2_runner_persists_log_derived_source_evidence(tmp_path: Path) -> None:
+    conn = _conn(tmp_path)
+    _save_command(conn)
+    run_dir = tmp_path / "out" / ".migration" / "runs" / "run-live-source"
+    sandbox = tmp_path / "sandbox"
+    sources = {
+        "src/test/java/com/example/m1/MigrationBehaviorTest.java": (
+            "package com.example.m1;\n"
+            "class MigrationBehaviorTest { void check() { new MigrationBehavior(); } }\n"
+        ),
+        "src/main/java/com/example/m1/MigrationBehavior.java": (
+            "package com.example.m1;\nclass MigrationBehavior {}\n"
+        ),
+        "pom.xml": "<project><modelVersion>4.0.0</modelVersion></project>\n",
+    }
+    for relative, content in sources.items():
+        path = sandbox / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    stack_trace = (
+        "[ERROR] Errors:\n"
+        "[ERROR] MigrationBehaviorTest.unknownBehaviorMustBeReviewedAfterBootUpgrade\n"
+        "java.lang.IllegalStateException: M1_UNKNOWN_RUNTIME_SENTINEL\n"
+        "    at com.example.m1.MigrationBehaviorTest.unknownBehaviorMustBeReviewedAfterBootUpgrade"
+        "(MigrationBehaviorTest.java:13)\n"
+    )
+    runner = V2OrchestratorRunner(
+        unit_of_work_factory=lambda: SqliteUnitOfWork(conn),
+        cwd=tmp_path,
+    )
+
+    runner._maybe_write_repair_failure_context(
+        job_id="job-1",
+        stage_index=1,
+        command_id="cmd-1",
+        result={
+            "run_dir": str(run_dir),
+            "build_status": "BUILD_FAILED_IN_SANDBOX",
+            "failure_summary": "Build failed after migration",
+            "changed_files": [],
+            "safe_log_preview": stack_trace,
+            "sandbox_path": str(sandbox),
+        },
+        stdout_tail="",
+        stderr_tail=stack_trace,
+    )
+
+    evidence = json.loads((run_dir / "repairs" / "repair_failure_evidence.json").read_text(encoding="utf-8"))
+    context = json.loads((run_dir / "repairs" / "repair_context_pack.json").read_text(encoding="utf-8"))
+    assert evidence["compiler_errors"] == []
+    assert evidence["test_failures"] == []
+    assert evidence["changed_files"] == []
+    assert [entry["path"] for entry in context["source_evidence"]] == [
+        "src/test/java/com/example/m1/MigrationBehaviorTest.java",
+        "src/main/java/com/example/m1/MigrationBehavior.java",
+        "pom.xml",
+    ]
+
+
 @pytest.mark.parametrize(
     ("job_id", "stage_index", "source_profile", "target_profile", "expected_source", "expected_target"),
     [
