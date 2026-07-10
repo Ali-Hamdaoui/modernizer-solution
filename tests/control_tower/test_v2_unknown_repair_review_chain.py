@@ -219,9 +219,10 @@ def test_llm_reviewed_unknown_calls_producer_once(monkeypatch: pytest.MonkeyPatc
     result = _run(monkeypatch, tmp_path, producer=producer)
 
     assert result.status == "completed"
-    assert result.non_actionable is True
+    assert result.non_actionable is False
+    assert result.operator_action_required is True
     assert len(calls) == 1
-    assert calls[0]["attempt_number"] == 0
+    assert calls[0]["attempt_number"] == 1
     assert calls[0]["proposal_id"] is None
     assert calls[0]["gate_id"] is None
 
@@ -334,7 +335,12 @@ def test_completed_event_sink_exception_prevents_completed_status(
     )
     assert result.status == "blocked"
     assert result.reason == "event_sink_failed"
-    assert events == ["llm_review_chain_started", "llm_review_chain_completed"]
+    assert events == [
+        "llm_review_chain_started",
+        "llm_review_advisory_recorded",
+        "repair_operator_action_required",
+        "llm_review_chain_completed",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -554,6 +560,8 @@ def test_started_emitted_immediately_before_producer_call(monkeypatch: pytest.Mo
     assert order[:2] == ["llm_review_chain_started", "producer"]
     assert [event["event_type"] for event in events] == [
         "llm_review_chain_started",
+        "llm_review_advisory_recorded",
+        "repair_operator_action_required",
         "llm_review_chain_completed",
     ]
 
@@ -649,7 +657,6 @@ def test_typed_producer_failure_code_is_public_failure_kind(
         ({"raw_diff_bytes_checksum": "sha256:" + "8" * 64}, "review_chain_invalid_result"),
         ({"primary_deterministic_fallback_used": True}, "review_chain_invalid_result"),
         ({"reviewer_deterministic_fallback_used": True}, "review_chain_invalid_result"),
-        ({"reviewer_decision": "reject"}, "review_chain_invalid_result"),
     ],
 )
 def test_invalid_producer_outputs_emit_started_then_blocked(
@@ -690,6 +697,8 @@ def test_valid_producer_output_emits_started_then_completed(
     assert result.status == "completed"
     assert [event["event_type"] for event in events] == [
         "llm_review_chain_started",
+        "llm_review_advisory_recorded",
+        "repair_operator_action_required",
         "llm_review_chain_completed",
     ]
 
@@ -858,7 +867,8 @@ def test_result_contains_no_actionable_fields(monkeypatch: pytest.MonkeyPatch, t
         "downstream",
     )
     blob = json.dumps(payload, sort_keys=True)
-    assert result.non_actionable is True
+    assert result.non_actionable is False
+    assert result.operator_action_required is True
     for marker in forbidden:
         assert marker not in blob
 
@@ -926,16 +936,35 @@ def test_reprocessing_same_review_chain_keeps_wf03_result_stable(
     assert repair_repo.records == {}
 
 
+@pytest.mark.parametrize("reviewer_decision", ["revise", "reject"])
+def test_non_accept_reviewer_outcome_remains_actionable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    reviewer_decision: str,
+) -> None:
+    result = _run(
+        monkeypatch,
+        tmp_path,
+        producer=lambda **kwargs: _accepted_chain_with_diff(
+            tmp_path,
+            kwargs["context_pack"],
+            reviewer_decision=reviewer_decision,
+        ),
+    )
+
+    assert result.status == "completed"
+    assert result.reviewer_outcome in {"accepted_with_concerns", "rejected"}
+    assert result.operator_action_required is True
+
+
 @pytest.mark.parametrize(
     "chain_update",
     [
-        {"reviewer_decision": "revise"},
-        {"reviewer_decision": "reject"},
         {"primary_deterministic_fallback_used": True},
         {"raw_diff_bytes_checksum": "sha256:" + "8" * 64},
     ],
 )
-def test_non_accept_fallback_or_mismatched_checksum_creates_no_candidate(
+def test_fallback_or_mismatched_checksum_creates_no_candidate(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     chain_update: dict[str, Any],

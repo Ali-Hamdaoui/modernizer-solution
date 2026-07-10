@@ -6,20 +6,19 @@ from dataclasses import dataclass
 import getpass
 import os
 from pathlib import Path
-import re
 import sys
 from typing import Any, Protocol
 from urllib.parse import urlparse
 from uuid import uuid4
 
+from migration_factory.control_tower.application.redaction import (
+    redact_public_api_value,
+    redact_public_message,
+)
+
 
 MUTATION_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 DEFAULT_FRONTEND_CLIENT_ID = "control-tower-frontend"
-_WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z]:)(?<![A-Za-z])[A-Za-z]:[\\/](?:[^\\/\s:]*[\\/])*[^\\/\s:]*")
-_POSIX_ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_/<])/(?:[^/\s]+/)*[^/\s]*")
-_ENV_ASSIGNMENT_RE = re.compile(r"\b[A-Z][A-Z0-9_]{1,}=[^\s]+")
-_SECRET_KEY_RE = re.compile(r"(secret|token|password|credential|api[_-]?key)", re.IGNORECASE)
-_PID_RE = re.compile(r"\bpid\b|\bprocess[_-]?id\b|\bhandle\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,35 +98,8 @@ def normalize_correlation_id(value: str | None) -> str:
     return generate_correlation_id()
 
 
-def redact_public_message(message: str) -> str:
-    parsed = urlparse(message)
-    looks_like_safe_url = parsed.scheme in {"http", "https"} and parsed.hostname is not None
-    redacted = _WINDOWS_ABSOLUTE_PATH_RE.sub("[redacted-path]", message)
-    if not looks_like_safe_url:
-        redacted = _POSIX_ABSOLUTE_PATH_RE.sub("[redacted-path]", redacted)
-    redacted = _ENV_ASSIGNMENT_RE.sub("[redacted-env]", redacted)
-    if _SECRET_KEY_RE.search(redacted):
-        redacted = _SECRET_KEY_RE.sub("redacted", redacted)
-    if "traceback" in redacted.lower():
-        redacted = "Internal server error."
-    return redacted
-
-
 def redact_public_data(value: Any) -> Any:
-    if isinstance(value, dict):
-        sanitized: dict[str, Any] = {}
-        for key, item in value.items():
-            lowered = key.lower()
-            if _SECRET_KEY_RE.search(lowered) or _PID_RE.search(lowered):
-                sanitized[key] = "[redacted]"
-                continue
-            sanitized[key] = redact_public_data(item)
-        return sanitized
-    if isinstance(value, (list, tuple)):
-        return [redact_public_data(item) for item in value]
-    if isinstance(value, str):
-        return redact_public_message(value)
-    return value
+    return redact_public_api_value(value)
 
 
 def public_error_payload(code: str, message: str, correlation_id: str) -> dict[str, Any]:

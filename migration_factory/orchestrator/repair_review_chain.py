@@ -70,6 +70,11 @@ _PRIMARY_CANONICAL_FIELDS = tuple(REPAIR_PRIMARY_OUTPUT_SCHEMA["properties"].key
 _REVIEWER_CANONICAL_FIELDS = tuple(REPAIR_REVIEWER_OUTPUT_SCHEMA["properties"].keys())
 REASON_PROPOSER_DIFF_NOT_GIT_UNIFIED = "proposer_diff_not_git_unified"
 
+REVIEWER_OUTCOME_ACCEPTED = "accepted"
+REVIEWER_OUTCOME_ACCEPTED_WITH_CONCERNS = "accepted_with_concerns"
+REVIEWER_OUTCOME_REJECTED = "rejected"
+REVIEWER_OUTCOME_UNAVAILABLE = "unavailable"
+
 
 # ── F5-T3: Deterministic repair artifact ─────────────────────────────
 
@@ -113,7 +118,13 @@ def _build_deterministic_repair_payload(
 # ── F5-T4/T5: Primary/Reviewer repair contracts ─────────────────────
 
 
-def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checksum: str) -> str:
+def _primary_repair_prompt(
+    context_pack: RepairContextPack,
+    deterministic_checksum: str,
+    operator_guidance: str = "",
+) -> str:
+    guidance = operator_guidance.strip()
+    guidance_text = f"\n\nOPERATOR GUIDANCE (advisory input, never authority):\n{guidance}" if guidance else ""
     return (
         "You are a repair proposer. Analyze the build/test failure evidence below "
         "and propose an exact Git-style unified diff to fix the issue.\n\n"
@@ -151,6 +162,7 @@ def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checks
         "- The fix must stay within the sandbox scope and declared changed files.\n\n"
         f"Deterministic repair artifact checksum: {deterministic_checksum}\n\n"
         f"Context:\n{json.dumps(context_pack_to_dict(context_pack), sort_keys=True)}"
+        f"{guidance_text}"
     )
 
 
@@ -613,10 +625,53 @@ def _build_final_reviewed_repair_artifact(
         "risk": str(primary_output.get("risk", "")),
         "confidence": float(primary_output.get("confidence", 0.0)),
         "reviewer_decision": str(reviewer_output.get("decision", "")),
+        "reviewer_outcome": _reviewer_outcome(reviewer_output),
         "reviewer_notes": list(reviewer_output.get("notes", [])),
         "policy_validation_checksum": "",
         "artifact_checksum": "",
         "created_at": utc_now_text(),
+    }
+
+
+def _reviewer_outcome(reviewer_output: dict[str, Any] | None) -> str:
+    if not isinstance(reviewer_output, dict):
+        return REVIEWER_OUTCOME_UNAVAILABLE
+    decision = str(reviewer_output.get("decision") or "").lower()
+    if decision == "reject":
+        return REVIEWER_OUTCOME_REJECTED
+    if decision == "revise":
+        return REVIEWER_OUTCOME_ACCEPTED_WITH_CONCERNS
+    if decision == "accept":
+        concerns = reviewer_output.get("policy_concerns") or reviewer_output.get("risks") or ()
+        return REVIEWER_OUTCOME_ACCEPTED_WITH_CONCERNS if concerns else REVIEWER_OUTCOME_ACCEPTED
+    return REVIEWER_OUTCOME_UNAVAILABLE
+
+
+def _reviewer_projection(
+    reviewer_output: dict[str, Any] | None,
+    *,
+    outcome: str | None = None,
+    available: bool,
+    invocation_id: str | None,
+    provider_source: str,
+    invocation_status: str,
+) -> dict[str, Any]:
+    output = reviewer_output if isinstance(reviewer_output, dict) else {}
+    notes = tuple(str(value) for value in output.get("notes") or ())
+    risks = tuple(str(value) for value in output.get("risks") or ())
+    concerns = tuple(str(value) for value in output.get("policy_concerns") or ())
+    normalized = outcome or _reviewer_outcome(output)
+    risk_level = "HIGH" if normalized == REVIEWER_OUTCOME_REJECTED else "MEDIUM" if normalized == REVIEWER_OUTCOME_ACCEPTED_WITH_CONCERNS else "UNKNOWN" if normalized == REVIEWER_OUTCOME_UNAVAILABLE else "LOW"
+    return {
+        "reviewer_outcome": normalized,
+        "reviewer_availability": available,
+        "reviewer_invocation_status": invocation_status,
+        "reviewer_invocation_id": invocation_id or "",
+        "reviewer_provider_source": provider_source,
+        "reviewer_reason_codes": list(dict.fromkeys([*concerns, *risks]))[:20],
+        "reviewer_risk_level": risk_level,
+        "reviewer_summary": "; ".join(notes)[:1000],
+        "reviewer_recommended_action": "operator_review" if normalized != REVIEWER_OUTCOME_ACCEPTED else "normal_approval",
     }
 
 
@@ -673,6 +728,230 @@ class _LedgerInvocationLifecycle:
         self.terminal = True
 
 
+def _proposer_invalid_attempt_result(
+    *,
+    failure_evidence: FailureEvidence,
+    context_pack: RepairContextPack,
+    output_dir: Path,
+    deterministic_path: Path,
+    deterministic_checksum: str,
+    primary_prompt_path: Path,
+    primary_raw_path: Path,
+    primary_normalized_path: Path,
+    primary_validated_path: Path,
+    primary_raw_checksum: str,
+    primary_normalized_checksum: str,
+    proposer_invocation_id: str | None,
+    proposer_provider_source: str,
+    failure_code: str,
+) -> dict[str, Any]:
+    proposed_diff = ""
+    if primary_normalized_path.is_file():
+        try:
+            normalized = json.loads(primary_normalized_path.read_text(encoding="utf-8"))
+            if isinstance(normalized, dict):
+                proposed_diff = str(normalized.get("proposed_diff") or "")
+        except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+            proposed_diff = ""
+    diff_path = output_dir / "proposer_attempt.diff"
+    diff_checksum = ""
+    if proposed_diff:
+        diff_bytes = proposed_diff.encode("utf-8")
+        diff_path.write_bytes(diff_bytes)
+        diff_checksum = sha256_hex(diff_bytes)
+    chain = {
+        "schema_version": "1.0",
+        "proposal_kind": "llm_repair_attempt",
+        "job_id": context_pack.job_id,
+        "stage_index": context_pack.stage_index,
+        "attempt_number": max(1, int(getattr(context_pack, "cycle_number", 0)) + 1),
+        "attempt_source": "llm",
+        "proposal_valid": False,
+        "technical_applicability": "invalid",
+        "repair_workflow_state": "repair_proposal_invalid",
+        "operator_action_required": True,
+        "hard_gate_reason_codes": [failure_code or "proposer_schema_invalid"],
+        "failure_evidence_checksum": failure_evidence.content_checksum,
+        "context_pack_checksum": context_pack.context_pack_checksum,
+        "base_repo_state_checksum": context_pack.base_repo_state_checksum,
+        "deterministic_artifact_checksum": deterministic_checksum,
+        "primary_raw_response_checksum": primary_raw_checksum,
+        "primary_normalized_output_checksum": primary_normalized_checksum,
+        "primary_output_checksum": "",
+        "reviewer_outcome": REVIEWER_OUTCOME_UNAVAILABLE,
+        "reviewer_availability": False,
+        "reviewer_invocation_status": "not_started",
+        "reviewer_invocation_id": "",
+        "reviewer_provider_source": "",
+        "proposer_invocation_id": proposer_invocation_id or "",
+        "primary_provider_source": proposer_provider_source,
+        "reviewer_output_checksum": "",
+        "proposed_diff_checksum": diff_checksum,
+        "raw_diff_bytes_checksum": diff_checksum,
+        "final_reviewed_diff_checksum": diff_checksum,
+        "final_artifact_checksum": "",
+        "deterministic_artifact_ref": str(deterministic_path),
+        "primary_prompt_ref": str(primary_prompt_path),
+        "primary_raw_response_ref": str(primary_raw_path) if primary_raw_path.is_file() else "",
+        "primary_normalized_output_ref": str(primary_normalized_path) if primary_normalized_path.is_file() else "",
+        "primary_validated_output_ref": str(primary_validated_path) if primary_validated_path.is_file() else "",
+        "final_diff_ref": str(diff_path) if diff_path.is_file() else "",
+        "artifact_refs": {
+            "primary_prompt": str(primary_prompt_path),
+            "primary_raw_response": str(primary_raw_path) if primary_raw_path.is_file() else "",
+            "primary_normalized_output": str(primary_normalized_path) if primary_normalized_path.is_file() else "",
+            "primary_validated_output": str(primary_validated_path) if primary_validated_path.is_file() else "",
+            "final_reviewed_diff": str(diff_path) if diff_path.is_file() else "",
+        },
+    }
+    review_chain_path = output_dir / "review_chain.json"
+    _write_json(review_chain_path, chain)
+    refs = {
+        "deterministic_artifact": str(deterministic_path),
+        "primary_prompt": str(primary_prompt_path),
+        "primary_raw_response": chain["primary_raw_response_ref"],
+        "primary_normalized_output": chain["primary_normalized_output_ref"],
+        "primary_validated_output": chain["primary_validated_output_ref"],
+        "final_reviewed_diff": chain["final_diff_ref"],
+        "review_chain_metadata": str(review_chain_path),
+    }
+    return {"artifact_refs": {key: value for key, value in refs.items() if value}, "review_chain": chain}
+
+
+def _reviewer_unavailable_attempt_result(
+    *,
+    failure_evidence: FailureEvidence,
+    context_pack: RepairContextPack,
+    output_dir: Path,
+    deterministic_path: Path,
+    deterministic_checksum: str,
+    primary_output: dict[str, Any],
+    primary_checksum: str,
+    primary_output_artifact_checksum: str,
+    primary_raw_checksum: str,
+    primary_normalized_checksum: str,
+    primary_paths: dict[str, Path],
+    reviewer_paths: dict[str, Path],
+    reviewer_raw_checksum: str,
+    reviewer_normalized_checksum: str,
+    proposer_invocation_id: str | None,
+    reviewer_invocation_id: str | None,
+    primary_provider_source: str,
+    reviewer_provider_source: str,
+    reviewer_fallback_used: bool,
+    failure_code: str,
+) -> dict[str, Any]:
+    proposed_diff = str(primary_output.get("proposed_diff") or "")
+    diff_checksum = sha256_unified_diff_text(proposed_diff)
+    reviewer_projection = _reviewer_projection(
+        None,
+        outcome=REVIEWER_OUTCOME_UNAVAILABLE,
+        available=False,
+        invocation_id=reviewer_invocation_id,
+        provider_source=reviewer_provider_source,
+        invocation_status="failed",
+    )
+    final_artifact = _build_final_reviewed_repair_artifact(
+        job_id=context_pack.job_id,
+        stage_index=context_pack.stage_index,
+        failure_evidence=failure_evidence,
+        context_pack=context_pack,
+        primary_output=primary_output,
+        primary_checksum=primary_checksum,
+        reviewer_output={"decision": "unavailable", "notes": [], "risks": [], "policy_concerns": []},
+        reviewer_checksum="",
+        deterministic_checksum=deterministic_checksum,
+    )
+    final_artifact.update(reviewer_projection)
+    final_artifact_checksum = _compute_final_repair_artifact_checksum(final_artifact)
+    final_artifact["artifact_checksum"] = final_artifact_checksum
+    final_artifact_path = output_dir / "final_reviewed_repair_artifact.json"
+    _write_json(final_artifact_path, final_artifact)
+    final_persisted_checksum = sha256_hex(final_artifact_path.read_bytes())
+    diff_path = output_dir / "final_reviewed_repair.diff"
+    diff_path.write_bytes(proposed_diff.encode("utf-8"))
+    chain = {
+        "schema_version": "1.0",
+        "proposal_kind": "llm_repair_review",
+        "job_id": context_pack.job_id,
+        "stage_index": context_pack.stage_index,
+        "attempt_number": max(1, int(getattr(context_pack, "cycle_number", 0)) + 1),
+        "attempt_source": "llm",
+        "proposal_valid": True,
+        "technical_applicability": "pending_hard_gate",
+        "repair_workflow_state": "reviewer_unavailable",
+        "operator_action_required": True,
+        "hard_gate_reason_codes": [],
+        "failure_evidence_checksum": failure_evidence.content_checksum,
+        "deterministic_artifact_checksum": deterministic_checksum,
+        "context_pack_checksum": context_pack.context_pack_checksum,
+        "base_repo_state_checksum": context_pack.base_repo_state_checksum,
+        "primary_output_checksum": primary_checksum,
+        "primary_output_artifact_checksum": primary_output_artifact_checksum,
+        "primary_raw_response_checksum": primary_raw_checksum,
+        "primary_normalized_output_checksum": primary_normalized_checksum,
+        "primary_validated_output_checksum": primary_checksum,
+        "reviewer_output_checksum": "",
+        "reviewer_raw_response_checksum": reviewer_raw_checksum,
+        "reviewer_normalized_output_checksum": reviewer_normalized_checksum,
+        "reviewer_validated_output_checksum": "",
+        "proposed_diff_checksum": diff_checksum,
+        "raw_diff_bytes_checksum": diff_checksum,
+        "final_reviewed_diff_checksum": diff_checksum,
+        "final_artifact_checksum": final_artifact_checksum,
+        "final_artifact_persisted_checksum": final_persisted_checksum,
+        "reviewer_decision": "unavailable",
+        **reviewer_projection,
+        "reviewer_failure_code": failure_code,
+        "proposer_invocation_id": proposer_invocation_id or "",
+        "reviewer_invocation_id": reviewer_invocation_id or "",
+        "primary_provider_source": primary_provider_source,
+        "reviewer_provider_source": reviewer_provider_source,
+        "primary_fallback_used": False,
+        "reviewer_fallback_used": reviewer_fallback_used,
+        "primary_deterministic_fallback_used": False,
+        "reviewer_deterministic_fallback_used": reviewer_fallback_used,
+        "deterministic_artifact_ref": str(deterministic_path),
+        "primary_output_ref": str(primary_paths["output"]),
+        "primary_raw_response_ref": str(primary_paths["raw"]),
+        "primary_normalized_output_ref": str(primary_paths["normalized"]),
+        "primary_validated_output_ref": str(primary_paths["validated"]),
+        "reviewer_output_ref": str(reviewer_paths["output"]) if reviewer_paths["output"].is_file() else "",
+        "reviewer_raw_response_ref": str(reviewer_paths["raw"]) if reviewer_paths["raw"].is_file() else "",
+        "reviewer_normalized_output_ref": str(reviewer_paths["normalized"]) if reviewer_paths["normalized"].is_file() else "",
+        "reviewer_validated_output_ref": str(reviewer_paths["validated"]) if reviewer_paths["validated"].is_file() else "",
+        "final_artifact_ref": str(final_artifact_path),
+        "final_diff_ref": str(diff_path),
+        "artifact_refs": {
+            "primary_prompt": str(primary_paths["prompt"]),
+            "primary_raw_response": str(primary_paths["raw"]),
+            "primary_normalized_output": str(primary_paths["normalized"]),
+            "primary_validated_output": str(primary_paths["validated"]),
+            "reviewer_prompt": str(reviewer_paths["prompt"]),
+            "reviewer_raw_response": str(reviewer_paths["raw"]) if reviewer_paths["raw"].is_file() else "",
+            "reviewer_normalized_output": str(reviewer_paths["normalized"]) if reviewer_paths["normalized"].is_file() else "",
+            "final_reviewed_diff": str(diff_path),
+        },
+    }
+    review_chain_path = output_dir / "review_chain.json"
+    _write_json(review_chain_path, chain)
+    return {
+        "artifact_refs": {
+            "deterministic_artifact": str(deterministic_path),
+            "primary_llm_output": str(primary_paths["output"]),
+            "primary_raw_response": str(primary_paths["raw"]),
+            "primary_normalized_output": str(primary_paths["normalized"]),
+            "primary_validated_output": str(primary_paths["validated"]),
+            "reviewer_prompt": str(reviewer_paths["prompt"]),
+            "reviewer_raw_response": str(reviewer_paths["raw"]) if reviewer_paths["raw"].is_file() else "",
+            "final_reviewed_artifact": str(final_artifact_path),
+            "final_reviewed_diff": str(diff_path),
+            "review_chain_metadata": str(review_chain_path),
+        },
+        "review_chain": chain,
+    }
+
+
 # ── F5: Main producer ─────────────────────────────────────────────
 
 
@@ -688,12 +967,15 @@ def produce_repair_review_chain(
     proposal_id: str | None = None,
     gate_id: str | None = None,
     attempt_number: int | None = None,
+    operator_guidance: str = "",
+    advisory_reviewer: bool = False,
 ) -> dict[str, Any]:
     """Produce the F5 model-reviewed repair chain.
 
     Deterministic repair artifact -> Primary Repair LLM -> Reviewer LLM -> Final reviewed diff.
 
-    Fails closed when any model call is unavailable, malformed, rejected, or misbound.
+    In advisory mode, preserves malformed/unavailable/rejected attempts for
+    deterministic policy evaluation and an explicit operator decision.
 
     Args:
         invocation_ledger: Required V2LLMInvocationLedger instance for capturing
@@ -711,6 +993,14 @@ def produce_repair_review_chain(
     deterministic_path = output_dir / "deterministic_repair_artifact.json"
     _write_json(deterministic_path, deterministic_payload)
 
+    primary_prompt_path = output_dir / "primary_prompt.txt"
+    primary_path = output_dir / "primary_repair_llm_output.json"
+    primary_raw_path = output_dir / "primary_raw_response.txt"
+    primary_normalized_path = output_dir / "primary_normalized_output.json"
+    primary_validated_path = output_dir / "primary_validated_output.json"
+    primary_prompt = _primary_repair_prompt(context_pack, deterministic_checksum, operator_guidance)
+    primary_prompt_path.write_text(primary_prompt, encoding="utf-8", newline="")
+
     client = model_client or V2AssistantModelClient()
 
     if invocation_ledger is None:
@@ -726,6 +1016,10 @@ def produce_repair_review_chain(
             effective_attempt_number = int(cycle_number)
     proposer_lifecycle: _LedgerInvocationLifecycle | None = None
     reviewer_lifecycle: _LedgerInvocationLifecycle | None = None
+    primary_raw_response = ""
+    primary_raw_checksum = ""
+    primary_normalized_checksum = ""
+    primary_provider_source = ""
     try:
         context_checksum_for_ledger = getattr(context_pack, "context_pack_checksum", "") or ""
         proposer_invocation_id = invocation_ledger.start_invocation(
@@ -748,7 +1042,7 @@ def produce_repair_review_chain(
         # Primary Repair LLM (PROPOSER)
         primary_result = client.answer_with_role(
             role=V2ModelRole.PROPOSER,
-            prompt=_primary_repair_prompt(context_pack, deterministic_checksum),
+            prompt=primary_prompt,
             fallback="Primary repair model unavailable; reviewed repair cannot be produced.",
             output_schema_name="RepairPrimaryOutput",
             require_schema=True,
@@ -757,6 +1051,10 @@ def produce_repair_review_chain(
         provider_fallback_used_primary = bool(getattr(primary_result, "fallback_used", False))
         deterministic_fallback_primary = _is_deterministic_fallback(primary_result)
         primary_provider_source = _safe_provider_source(primary_result)
+        primary_raw_response = _exact_provider_content(primary_result)
+        primary_raw_checksum = sha256_raw_model_response(primary_raw_response)
+        if primary_raw_response:
+            primary_raw_path.write_text(primary_raw_response, encoding="utf-8", newline="")
         if not primary_result.success:
             failure_code = _model_failure_code(primary_result, role_prefix="proposer")
             proposer_lifecycle.fail(
@@ -783,11 +1081,10 @@ def produce_repair_review_chain(
                 failure_code="proposer_provider_failed",
             )
 
-        primary_raw_response = _exact_provider_content(primary_result)
-        primary_raw_checksum = sha256_raw_model_response(primary_raw_response)
         primary_parsed_output = _parse_strict_json_object(primary_raw_response, label="primary repair")
         primary_normalized_text = normalized_json_output(primary_parsed_output)
         primary_normalized_checksum = sha256_raw_model_response(primary_normalized_text)
+        primary_normalized_path.write_text(primary_normalized_text, encoding="utf-8", newline="")
         validated_primary_output = _coerce_primary_repair_output(primary_raw_response)
 
         primary_checksum = _compute_primary_repair_checksum(validated_primary_output)
@@ -802,10 +1099,6 @@ def produce_repair_review_chain(
             "normalized_output_checksum_algorithm": SHA256_UTF8_BYTES_V1,
             "structured_output_checksum_algorithm": SHA256_CANONICAL_JSON_V1,
         }
-        primary_path = output_dir / "primary_repair_llm_output.json"
-        primary_raw_path = output_dir / "primary_raw_response.txt"
-        primary_normalized_path = output_dir / "primary_normalized_output.json"
-        primary_validated_path = output_dir / "primary_validated_output.json"
         primary_raw_path.write_text(primary_raw_response, encoding="utf-8", newline="")
         primary_normalized_path.write_text(primary_normalized_text, encoding="utf-8", newline="")
         primary_validated_path.write_text(primary_validated_text, encoding="utf-8", newline="")
@@ -835,6 +1128,23 @@ def produce_repair_review_chain(
     except Exception as exc:
         if proposer_lifecycle is not None and not proposer_lifecycle.terminal:
             proposer_lifecycle.fail(reason=f"repair_proposal_failure: {exc}")
+        if advisory_reviewer:
+            return _proposer_invalid_attempt_result(
+                failure_evidence=failure_evidence,
+                context_pack=context_pack,
+                output_dir=output_dir,
+                deterministic_path=deterministic_path,
+                deterministic_checksum=deterministic_checksum,
+                primary_prompt_path=primary_prompt_path,
+                primary_raw_path=primary_raw_path,
+                primary_normalized_path=primary_normalized_path,
+                primary_validated_path=primary_validated_path,
+                primary_raw_checksum=primary_raw_checksum,
+                primary_normalized_checksum=primary_normalized_checksum,
+                proposer_invocation_id=proposer_invocation_id,
+                proposer_provider_source=primary_provider_source,
+                failure_code=str(getattr(exc, "failure_code", "") or "proposer_schema_invalid"),
+            )
         if isinstance(exc, RepairReviewChainProductionError):
             raise
         raise RepairReviewChainProductionError(f"primary repair chain failed closed: {exc}") from exc
@@ -857,17 +1167,55 @@ def produce_repair_review_chain(
     except Exception as exc:
         raise RepairReviewChainProductionError("mandatory reviewer invocation ledger start failed") from exc
 
+    reviewer_prompt_path = output_dir / "reviewer_prompt.txt"
+    reviewer_path = output_dir / "reviewer_repair_llm_output.json"
+    reviewer_raw_path = output_dir / "reviewer_raw_response.txt"
+    reviewer_normalized_path = output_dir / "reviewer_normalized_output.json"
+    reviewer_validated_path = output_dir / "reviewer_validated_output.json"
+    reviewer_prompt = _reviewer_repair_prompt(
+        validated_primary_output,
+        deterministic_checksum,
+        context_checksum,
+        primary_checksum,
+        diff_checksum,
+    )
+    reviewer_prompt_path.write_text(reviewer_prompt, encoding="utf-8", newline="")
+    reviewer_raw_response = ""
+    reviewer_raw_checksum = ""
+    reviewer_normalized_checksum = ""
+    reviewer_provider_source = ""
+    provider_fallback_used_reviewer = False
+    deterministic_fallback_reviewer = False
+
+    def unavailable_result(failure_code: str) -> dict[str, Any]:
+        return _reviewer_unavailable_attempt_result(
+            failure_evidence=failure_evidence,
+            context_pack=context_pack,
+            output_dir=output_dir,
+            deterministic_path=deterministic_path,
+            deterministic_checksum=deterministic_checksum,
+            primary_output=validated_primary_output,
+            primary_checksum=primary_checksum,
+            primary_output_artifact_checksum=primary_output_artifact_checksum,
+            primary_raw_checksum=primary_raw_checksum,
+            primary_normalized_checksum=primary_normalized_checksum,
+            primary_paths={"prompt": primary_prompt_path, "output": primary_path, "raw": primary_raw_path, "normalized": primary_normalized_path, "validated": primary_validated_path},
+            reviewer_paths={"prompt": reviewer_prompt_path, "output": reviewer_path, "raw": reviewer_raw_path, "normalized": reviewer_normalized_path, "validated": reviewer_validated_path},
+            reviewer_raw_checksum=reviewer_raw_checksum,
+            reviewer_normalized_checksum=reviewer_normalized_checksum,
+            proposer_invocation_id=proposer_invocation_id,
+            reviewer_invocation_id=reviewer_invocation_id,
+            primary_provider_source=primary_provider_source,
+            reviewer_provider_source=reviewer_provider_source,
+            reviewer_fallback_used=provider_fallback_used_reviewer or deterministic_fallback_reviewer,
+            failure_code=failure_code,
+        )
+
     try:
         # Reviewer Repair LLM (REVIEWER)
         reviewer_result = client.answer_with_role(
             role=V2ModelRole.REVIEWER,
-            prompt=_reviewer_repair_prompt(
-                validated_primary_output,
-                deterministic_checksum,
-                context_checksum,
-                primary_checksum,
-                diff_checksum,
-            ),
+            prompt=reviewer_prompt,
             fallback="Reviewer repair model unavailable; reviewed repair cannot be produced.",
             output_schema_name="RepairReviewerOutput",
             require_schema=True,
@@ -876,6 +1224,10 @@ def produce_repair_review_chain(
         provider_fallback_used_reviewer = bool(getattr(reviewer_result, "fallback_used", False))
         deterministic_fallback_reviewer = _is_deterministic_fallback(reviewer_result)
         reviewer_provider_source = _safe_provider_source(reviewer_result)
+        reviewer_raw_response = _exact_provider_content(reviewer_result)
+        reviewer_raw_checksum = sha256_raw_model_response(reviewer_raw_response) if reviewer_raw_response else ""
+        if reviewer_raw_response:
+            reviewer_raw_path.write_text(reviewer_raw_response, encoding="utf-8", newline="")
         if not reviewer_result.success:
             failure_code = _model_failure_code(reviewer_result, role_prefix="reviewer")
             reviewer_lifecycle.fail(
@@ -885,6 +1237,8 @@ def produce_repair_review_chain(
                 accepted_provider_source=reviewer_provider_source,
                 deterministic_fallback_used=deterministic_fallback_reviewer,
             )
+            if advisory_reviewer:
+                return unavailable_result(failure_code)
             raise RepairReviewChainProductionError(
                 f"reviewer repair model failed closed: {reviewer_result.failure_reason or reviewer_result.model_status}",
                 failure_code=failure_code,
@@ -897,16 +1251,17 @@ def produce_repair_review_chain(
                 accepted_provider_source="deterministic",
                 deterministic_fallback_used=True,
             )
+            if advisory_reviewer:
+                return unavailable_result("reviewer_provider_failed")
             raise RepairReviewChainProductionError(
                 "reviewer deterministic fallback blocked; no actionable repair produced",
                 failure_code="reviewer_provider_failed",
             )
 
-        reviewer_raw_response = _exact_provider_content(reviewer_result)
-        reviewer_raw_checksum = sha256_raw_model_response(reviewer_raw_response)
         reviewer_parsed_output = _parse_strict_json_object(reviewer_raw_response, label="reviewer repair")
         reviewer_normalized_text = normalized_json_output(reviewer_parsed_output)
         reviewer_normalized_checksum = sha256_raw_model_response(reviewer_normalized_text)
+        reviewer_normalized_path.write_text(reviewer_normalized_text, encoding="utf-8", newline="")
         validated_reviewer_output = _coerce_reviewer_repair_output(
             reviewer_raw_response,
             deterministic_checksum,
@@ -931,7 +1286,7 @@ def produce_repair_review_chain(
                 failure_code="reviewer_schema_invalid",
             )
 
-        if validated_reviewer_output["decision"] != "accept":
+        if validated_reviewer_output["decision"] != "accept" and not advisory_reviewer:
             reviewer_lifecycle.fail(
                 reason=f"reviewer_{validated_reviewer_output['decision']}",
                 summary="reviewer failed closed",
@@ -943,7 +1298,7 @@ def produce_repair_review_chain(
             )
 
         semantic_failures = _reviewer_semantic_failures(validated_primary_output)
-        if semantic_failures:
+        if semantic_failures and not advisory_reviewer:
             reviewer_lifecycle.fail(
                 reason="reviewer_semantic_validation_failed: " + "; ".join(semantic_failures),
                 summary="reviewer failed deterministic semantic validation",
@@ -1014,6 +1369,26 @@ def produce_repair_review_chain(
             "final_artifact_checksum": final_artifact_checksum,
             "final_artifact_persisted_checksum": final_artifact_persisted_checksum,
             "reviewer_decision": validated_reviewer_output["decision"],
+            **_reviewer_projection(
+                validated_reviewer_output,
+                available=True,
+                invocation_id=reviewer_invocation_id,
+                provider_source=reviewer_provider_source,
+                invocation_status="completed",
+            ),
+            "proposal_valid": True,
+            "technical_applicability": "pending_hard_gate",
+            "repair_workflow_state": (
+                "reviewer_rejected"
+                if _reviewer_outcome(validated_reviewer_output) == REVIEWER_OUTCOME_REJECTED
+                else "reviewer_accepted_with_concerns"
+                if _reviewer_outcome(validated_reviewer_output) == REVIEWER_OUTCOME_ACCEPTED_WITH_CONCERNS
+                else "reviewer_accepted"
+            ),
+            "operator_action_required": True,
+            "hard_gate_reason_codes": [],
+            "attempt_number": max(1, int(effective_attempt_number or 1)),
+            "attempt_source": "llm",
             "schema_version": "1.0",
             "proposal_kind": "llm_repair_review",
             "job_id": context_pack.job_id,
@@ -1045,10 +1420,12 @@ def produce_repair_review_chain(
                 "final_artifact_persisted_checksum": "sha256_exact_bytes_v1",
             },
             "artifact_refs": {
+                "primary_prompt": str(primary_prompt_path),
                 "primary_raw_response": str(primary_raw_path),
                 "primary_normalized_output": str(primary_normalized_path),
                 "primary_validated_output": str(primary_validated_path),
                 "reviewer_raw_response": str(reviewer_raw_path),
+                "reviewer_prompt": str(reviewer_prompt_path),
                 "reviewer_normalized_output": str(reviewer_normalized_path),
                 "reviewer_validated_output": str(reviewer_validated_path),
                 "final_reviewed_diff": str(diff_path),
@@ -1085,6 +1462,8 @@ def produce_repair_review_chain(
     except Exception as exc:
         if reviewer_lifecycle is not None and not reviewer_lifecycle.terminal:
             reviewer_lifecycle.fail(reason=f"repair_review_failure: {exc}")
+        if advisory_reviewer:
+            return unavailable_result(str(getattr(exc, "failure_code", "") or "reviewer_schema_invalid"))
         if isinstance(exc, RepairReviewChainProductionError):
             raise
         raise RepairReviewChainProductionError(f"reviewer repair chain failed closed: {exc}") from exc
@@ -1092,10 +1471,12 @@ def produce_repair_review_chain(
     produced_refs = {
         "deterministic_artifact": str(deterministic_path),
         "primary_llm_output": str(primary_path),
+        "primary_prompt": str(primary_prompt_path),
         "primary_raw_response": str(primary_raw_path),
         "primary_normalized_output": str(primary_normalized_path),
         "primary_validated_output": str(primary_validated_path),
         "reviewer_llm_output": str(reviewer_path),
+        "reviewer_prompt": str(reviewer_prompt_path),
         "reviewer_raw_response": str(reviewer_raw_path),
         "reviewer_normalized_output": str(reviewer_normalized_path),
         "reviewer_validated_output": str(reviewer_validated_path),

@@ -32,6 +32,7 @@ import {
   v2EventStreamUrl,
   v2RootPomDownloadUrl,
   createIdempotencyKey,
+  executeV2RepairAttemptAction,
 } from "../../../lib/controlTowerApi";
 import {
   logApprovalEvent,
@@ -70,10 +71,13 @@ import type {
   GateEvidencePack,
   GateActionRequest,
   MigrationProfileId,
+  V2RepairApprovalInput,
+  V2RepairAttemptActionRequest,
 } from "../../../lib/contracts";
 import { MIGRATION_PROFILE_OPTIONS } from "../../../lib/contracts";
 import Stage3DependencyReview from "./Stage3DependencyReview";
 import { RepairProposalPanel } from "./RepairProposalPanel";
+import { RepairInvestigationPanel } from "./RepairInvestigationPanel";
 
 export function formatGateArtifactRefLabel(ref: string): string {
   const text = ref.trim();
@@ -1325,7 +1329,11 @@ export function RepairApplyCandidateDetails({
   const activeCandidate = candidate;
   const approveBusy = busyKey === `approve:${activeCandidate.repair_candidate_id}`;
   const applyBusy = busyKey === `apply:${activeCandidate.repair_candidate_id}`;
-  const pendingApproval = activeCandidate.status === "pending_human_approval" && activeCandidate.approval_enabled;
+  const requiresGovernedDecision = activeCandidate.approval_mode_required != null
+    && activeCandidate.approval_mode_required !== "normal_approval";
+  const pendingApproval = ["read_only", "pending_human_approval"].includes(activeCandidate.status)
+    && activeCandidate.approval_enabled
+    && !requiresGovernedDecision;
   const approved = activeCandidate.apply_enabled;
   const resolvedStageIndex = stageIndex ?? activeCandidate.stage_index ?? 1;
 
@@ -1367,6 +1375,8 @@ export function RepairApplyCandidateDetails({
       <p className="checksum">Review checksum: {candidate.review_checksum || "n/a"}</p>
       <p className="checksum">Candidate checksum: {candidate.candidate_checksum || "n/a"}</p>
       <p className="meta">Approval required: {candidate.approval_required ? "yes" : "no"}</p>
+      <p className="meta">Approval mode: {candidate.approval_mode_required || "normal_approval"}</p>
+      <p className="meta">Reviewer outcome: {candidate.reviewer_outcome || candidate.reviewer_decision || "unknown"}</p>
       <p className="meta">Apply: {candidate.apply_enabled ? "enabled" : "disabled until approval"}</p>
       <p className="meta">LLM advisory only: {candidate.llm_source === "advisory_only" ? "yes" : "no"}</p>
       <p className="meta">Browser can supply patch: {candidate.browser_can_supply_patch ? "yes" : "no"}</p>
@@ -1378,6 +1388,9 @@ export function RepairApplyCandidateDetails({
       <p className="meta">Rollback: {candidate.rollback_status || "not_started"}</p>
       <p className="meta">Proof artifact: {candidate.proof_artifact || "pending"}</p>
       <p className="meta">Downstream start: {candidate.downstream_start_allowed ? "enabled" : "disabled"}</p>
+      {requiresGovernedDecision && (
+        <p className="warning-text">Risk acknowledgment or reviewer override must be completed in the Repair Investigation panel.</p>
+      )}
       {pendingApproval && jobId && (
         <button type="button" disabled={approveBusy} onClick={() => approveFromDetails()}>
           {approveBusy ? "Approving..." : "Approve repair candidate"}
@@ -2781,12 +2794,12 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     }
   }
 
-  async function approveRepairCandidate(candidate: V2RepairApplyCandidateResponse) {
+  async function approveRepairCandidate(candidate: V2RepairApplyCandidateResponse, decision?: V2RepairApprovalInput) {
     if (!normalizedJobId) return;
     const stageIndex = candidate.stage_index ?? data?.pipeline.active_stage_index ?? 1;
     setRepairCandidateBusy(`approve:${candidate.repair_candidate_id}`);
     try {
-      await approveV2RepairCandidate(normalizedJobId, stageIndex, candidate);
+      await approveV2RepairCandidate(normalizedJobId, stageIndex, candidate, decision);
       await refreshLiveState();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Repair candidate approval failed");
@@ -2804,6 +2817,20 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       await refreshLiveState();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Repair candidate apply failed");
+    } finally {
+      setRepairCandidateBusy(null);
+    }
+  }
+
+  async function executeRepairAttemptAction(request: V2RepairAttemptActionRequest) {
+    const attempt = data?.failureSummary?.current_repair_attempt;
+    if (!normalizedJobId || !attempt) return;
+    setRepairCandidateBusy(`attempt:${attempt.attempt_id}`);
+    try {
+      await executeV2RepairAttemptAction(normalizedJobId, attempt.stage_index, attempt.attempt_id, request);
+      await refreshLiveState();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Repair remediation action failed");
     } finally {
       setRepairCandidateBusy(null);
     }
@@ -3210,7 +3237,18 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
               ))}
             </div>
           )}
-          {data.failureSummary.repair_apply_candidate && (
+          {data.failureSummary.current_repair_attempt && (
+            <RepairInvestigationPanel
+              attempt={data.failureSummary.current_repair_attempt}
+              attempts={data.failureSummary.repair_attempts ?? [data.failureSummary.current_repair_attempt]}
+              candidate={data.failureSummary.repair_apply_candidate}
+              busy={repairCandidateBusy !== null}
+              onApprove={approveRepairCandidate}
+              onApply={applyRepairCandidate}
+              onAction={executeRepairAttemptAction}
+            />
+          )}
+          {data.failureSummary.repair_apply_candidate && !data.failureSummary.current_repair_attempt && (
             <RepairApplyCandidateCard
               candidate={data.failureSummary.repair_apply_candidate}
               busyKey={repairCandidateBusy}
@@ -3463,7 +3501,11 @@ export function RepairApplyCandidateCard({
 }) {
   const approveBusy = busyKey === `approve:${candidate.repair_candidate_id}`;
   const applyBusy = busyKey === `apply:${candidate.repair_candidate_id}`;
-  const pendingApproval = candidate.status === "pending_human_approval" && candidate.approval_enabled;
+  const requiresGovernedDecision = candidate.approval_mode_required != null
+    && candidate.approval_mode_required !== "normal_approval";
+  const pendingApproval = ["read_only", "pending_human_approval"].includes(candidate.status)
+    && candidate.approval_enabled
+    && !requiresGovernedDecision;
   const approved = candidate.status === "approved" && candidate.apply_enabled;
   const proofAccepted =
     candidate.proof_accepted === true || candidate.proof_review_status === "accepted";
@@ -3494,6 +3536,9 @@ export function RepairApplyCandidateCard({
             ? "Repair proof ready for human review."
           : "Downstream remains blocked until backend proof is reviewed."}
       </p>
+      {requiresGovernedDecision && (
+        <p className="warning-text">Risk acknowledgment or reviewer override requires the Repair Investigation panel.</p>
+      )}
       {pendingApproval && (
         <button type="button" disabled={approveBusy} onClick={() => onApprove(candidate)}>
           {approveBusy ? "Approving..." : "Approve checksum-bound repair"}

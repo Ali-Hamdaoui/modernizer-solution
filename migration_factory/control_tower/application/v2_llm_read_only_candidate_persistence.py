@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from migration_factory.control_tower.application.redaction import project_public_diff, redact_public_api_value
 from migration_factory.control_tower.application.safe_diff_preview import build_safe_diff_preview
 from migration_factory.control_tower.application.v2_repair_route_decision import (
     ROUTE_LLM_REVIEWED_UNKNOWN,
@@ -15,13 +16,12 @@ from migration_factory.control_tower.application.v2_repair_route_decision import
 )
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json, sha256_hex, utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import V2RepairProposalRecord
-from migration_factory.repair_loop.failure_evidence import FailureEvidence
+from migration_factory.repair_loop.failure_evidence import FailureEvidence, failure_evidence_to_dict
 from migration_factory.repair_loop.patch_gate import (
     PATCH_SOURCE_LLM_REVIEWED,
     POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1,
     REASON_REVIEW_CHAIN_INVALID,
     REASON_REVIEWED_DIFF_CHECKSUM_MISMATCH,
-    REASON_REVIEWER_DECISION_NOT_ACCEPTED,
     REVIEWED_LLM_DECISION_ALLOWED,
     blocked_reviewed_llm_policy_result,
     evaluate_reviewed_llm_patch,
@@ -29,11 +29,14 @@ from migration_factory.repair_loop.patch_gate import (
     reviewed_llm_policy_payload,
     reviewed_llm_policy_checksum_input,
 )
-from migration_factory.repair_loop.repair_context import RepairContextPack
+from migration_factory.repair_loop.repair_context import RepairContextPack, context_pack_to_dict
 
 
 EVENT_LLM_READ_ONLY_CANDIDATE_PERSISTED = "llm_read_only_candidate_persisted"
 EVENT_LLM_READ_ONLY_CANDIDATE_BLOCKED = "llm_read_only_candidate_blocked"
+EVENT_LLM_BLOCKED_ATTEMPT_PERSISTED = "llm_blocked_attempt_persisted"
+EVENT_REPAIR_OPERATOR_ACTION_REQUIRED = "repair_operator_action_required"
+EVENT_REPAIR_ATTEMPT_STARTED = "repair_attempt_started"
 EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED = "llm_reviewed_patch_policy_evaluated"
 
 STATUS_PERSISTED = "persisted"
@@ -91,6 +94,9 @@ class LlmReadOnlyCandidatePersistenceResult:
     raw_reviewed_diff_checksum: str = ""
     source_proposal_id: str | None = None
     source_gate_id: str | None = None
+    attempt_id: str = ""
+    applicability_status: str = ""
+    repair_workflow_state: str = ""
 
     @property
     def persisted(self) -> bool:
@@ -98,10 +104,11 @@ class LlmReadOnlyCandidatePersistenceResult:
 
 
 class LlmReadOnlyCandidatePersistenceService:
-    def __init__(self, *, repair_repo: Any | None, candidate_repo: Any | None, event_repo: Any | None = None) -> None:
+    def __init__(self, *, repair_repo: Any | None, candidate_repo: Any | None, event_repo: Any | None = None, attempt_repo: Any | None = None) -> None:
         self._repair_repo = repair_repo
         self._candidate_repo = candidate_repo
         self._event_repo = event_repo
+        self._attempt_repo = attempt_repo
 
     def persist(
         self,
@@ -127,7 +134,12 @@ class LlmReadOnlyCandidatePersistenceService:
         if self._repair_repo is None or self._candidate_repo is None or self._event_repo is None:
             return LlmReadOnlyCandidatePersistenceResult(status=STATUS_BLOCKED, reason=REASON_CONFIGURATION_INCOMPLETE, **base)
 
-        connection = _shared_connection(self._repair_repo, self._candidate_repo, self._event_repo)
+        connection = _shared_connection(
+            self._repair_repo,
+            self._candidate_repo,
+            self._event_repo,
+            self._attempt_repo,
+        )
         if connection is None:
             return LlmReadOnlyCandidatePersistenceResult(status=STATUS_BLOCKED, reason=REASON_CONFIGURATION_MISMATCH, **base)
 
@@ -155,6 +167,18 @@ class LlmReadOnlyCandidatePersistenceService:
                         return existing
                 self._write_policy_event(prepared)
                 if prepared["policy_result"].decision != REVIEWED_LLM_DECISION_ALLOWED:
+                    attempt = self._write_attempt(
+                        prepared=prepared,
+                        chain_result=chain_result,
+                        failure_evidence=failure_evidence,
+                        context_pack=context_pack,
+                        output_dir=Path(output_dir),
+                        sandbox_path=sandbox_path,
+                        run_dir=run_dir,
+                        legacy_path=legacy_path,
+                        source_proposal_id=source_proposal_id,
+                        source_gate_id=source_gate_id,
+                    )
                     return LlmReadOnlyCandidatePersistenceResult(
                         status=STATUS_BLOCKED,
                         reason=REASON_POLICY_REJECTED,
@@ -163,10 +187,25 @@ class LlmReadOnlyCandidatePersistenceService:
                         candidate_checksum=prepared.get("candidate_checksum", ""),
                         review_chain_identity_checksum=prepared.get("review_chain_identity_checksum", ""),
                         raw_reviewed_diff_checksum=prepared.get("raw_reviewed_diff_checksum", ""),
+                        attempt_id=str(attempt.get("attempt_id") or ""),
+                        applicability_status=str(attempt.get("applicability_status") or "blocked"),
+                        repair_workflow_state=str(attempt.get("workflow_state") or "hard_gate_blocked"),
                         **base,
                     )
                 self._repair_repo.save_proposal(prepared["proposal_record"])
                 self._candidate_repo.save_candidate(prepared["candidate"])
+                attempt = self._write_attempt(
+                    prepared=prepared,
+                    chain_result=chain_result,
+                    failure_evidence=failure_evidence,
+                    context_pack=context_pack,
+                    output_dir=Path(output_dir),
+                    sandbox_path=sandbox_path,
+                    run_dir=run_dir,
+                    legacy_path=legacy_path,
+                    source_proposal_id=source_proposal_id,
+                    source_gate_id=source_gate_id,
+                )
                 self._write_persisted_event(prepared)
                 verified = self._existing_result(prepared)
                 if verified is None or not verified.persisted:
@@ -182,6 +221,9 @@ class LlmReadOnlyCandidatePersistenceService:
             candidate_checksum=prepared["candidate_checksum"],
             review_chain_identity_checksum=prepared["review_chain_identity_checksum"],
             raw_reviewed_diff_checksum=prepared["raw_reviewed_diff_checksum"],
+            attempt_id=str(attempt.get("attempt_id") or ""),
+            applicability_status="applicable",
+            repair_workflow_state="repair_candidate_ready",
             **base,
         )
 
@@ -343,7 +385,7 @@ class LlmReadOnlyCandidatePersistenceService:
             "raw_reviewed_diff_checksum": raw_diff_checksum,
             "final_artifact_checksum": str(chain.get("final_artifact_checksum") or ""),
             "final_artifact_persisted_checksum": str(chain.get("final_artifact_persisted_checksum") or ""),
-            "attempt_number": context_pack.cycle_number,
+            "attempt_number": max(1, int(chain.get("attempt_number") or context_pack.cycle_number + 1)),
             "review_chain_identity_checksum": review_chain_identity_checksum,
         }
         identity_payload = {
@@ -376,6 +418,7 @@ class LlmReadOnlyCandidatePersistenceService:
         now = utc_now_text()
         metadata = {
             "candidate_kind": "llm_unknown_family",
+            "llm_source": "advisory_only",
             "patch_source": PATCH_SOURCE_LLM_REVIEWED,
             "policy_id": POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1,
             "policy_validation": policy_payload,
@@ -386,7 +429,14 @@ class LlmReadOnlyCandidatePersistenceService:
             "source_proposal_id": source_proposal_id,
             "source_gate_id": source_gate_id,
             "proposal_kind": "llm_repair_review",
-            "reviewer_decision": "accept",
+            "reviewer_decision": str(chain.get("reviewer_decision") or "unavailable"),
+            "reviewer_outcome": _reviewer_outcome_from_chain(chain),
+            "reviewer_availability": bool(chain.get("reviewer_availability")),
+            "reviewer_invocation_id": str(chain.get("reviewer_invocation_id") or ""),
+            "reviewer_reason_codes": list(chain.get("reviewer_reason_codes") or ()),
+            "reviewer_risk_level": str(chain.get("reviewer_risk_level") or "UNKNOWN"),
+            "reviewer_summary": str(chain.get("reviewer_summary") or ""),
+            "reviewer_recommended_action": str(chain.get("reviewer_recommended_action") or "operator_review"),
             **bindings,
         }
         candidate = {
@@ -408,8 +458,17 @@ class LlmReadOnlyCandidatePersistenceService:
             "proposal_checksum": review_chain_identity_checksum,
             "candidate_checksum": candidate_checksum,
             **bindings,
-            "approval_required": False,
-            "approval_enabled": False,
+            "reviewer_decision": str(chain.get("reviewer_decision") or "unavailable"),
+            "reviewer_outcome": _reviewer_outcome_from_chain(chain),
+            "reviewer_availability": bool(chain.get("reviewer_availability")),
+            "reviewer_invocation_id": str(chain.get("reviewer_invocation_id") or ""),
+            "reviewer_reason_codes": list(chain.get("reviewer_reason_codes") or ()),
+            "reviewer_risk_level": str(chain.get("reviewer_risk_level") or "UNKNOWN"),
+            "reviewer_summary": str(chain.get("reviewer_summary") or ""),
+            "reviewer_recommended_action": str(chain.get("reviewer_recommended_action") or "operator_review"),
+            "approval_required": True,
+            "approval_mode_required": _approval_mode_for_outcome(_reviewer_outcome_from_chain(chain)),
+            "approval_enabled": True,
             "apply_enabled": False,
             "repair_enabled": False,
             "sandbox_only": True,
@@ -459,7 +518,7 @@ class LlmReadOnlyCandidatePersistenceService:
                 patch_package_json=json.dumps(metadata, sort_keys=True, separators=(",", ":")),
                 job_id=failure_evidence.job_id,
                 route_step_index=failure_evidence.stage_index,
-                attempt_number=context_pack.cycle_number,
+                attempt_number=max(1, int(chain.get("attempt_number") or context_pack.cycle_number + 1)),
                 diff_ref=str(diff_path),
                 diff_checksum=raw_diff_checksum.removeprefix("sha256:"),
                 reviewer_output_checksum=str(chain.get("reviewer_output_checksum") or ""),
@@ -469,10 +528,231 @@ class LlmReadOnlyCandidatePersistenceService:
                 apply_status="disabled",
                 rerun_status="disabled",
                 rollback_status="not_started",
-                remaining_attempts=0,
-                reviewer_decision="accept",
+                remaining_attempts=max(0, int(context_pack.max_cycles) - int(bindings["attempt_number"])),
+                reviewer_decision=str(chain.get("reviewer_decision") or "unavailable"),
             ),
         }
+
+    def _write_attempt(
+        self,
+        *,
+        prepared: dict[str, Any],
+        chain_result: dict[str, Any],
+        failure_evidence: FailureEvidence,
+        context_pack: RepairContextPack,
+        output_dir: Path,
+        sandbox_path: str | Path | None,
+        run_dir: str | Path | None,
+        legacy_path: str | Path | None,
+        source_proposal_id: str | None,
+        source_gate_id: str | None,
+    ) -> dict[str, Any]:
+        if self._attempt_repo is None:
+            return {}
+        chain = chain_result.get("review_chain") if isinstance(chain_result, dict) else {}
+        chain = chain if isinstance(chain, dict) else {}
+        policy = prepared["policy_result"]
+        applicable = policy.decision == REVIEWED_LLM_DECISION_ALLOWED
+        proposal_valid = chain.get("proposal_valid") is not False and bool(chain.get("primary_output_checksum"))
+        applicability = "applicable" if applicable else "blocked" if proposal_valid else "invalid"
+        workflow_state = "repair_candidate_ready" if applicable else "hard_gate_blocked" if proposal_valid else "repair_proposal_invalid"
+        attempt_number = max(1, int(chain.get("attempt_number") or context_pack.cycle_number + 1))
+        identity = {
+            "job_id": failure_evidence.job_id,
+            "stage_index": failure_evidence.stage_index,
+            "attempt_number": attempt_number,
+            "context_checksum": context_pack.context_pack_checksum,
+            "review_chain_identity_checksum": prepared.get("review_chain_identity_checksum", ""),
+            "diff_checksum": prepared.get("raw_reviewed_diff_checksum", ""),
+        }
+        attempt_id = "repair-attempt-" + sha256_canonical_json(identity)[:24]
+
+        def load_json_ref(key: str) -> dict[str, Any]:
+            ref = str(chain.get(key) or "")
+            if not ref:
+                return {}
+            try:
+                path, error = _contained_json_file(output_dir, ref)
+                if error:
+                    return {}
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+                return loaded if isinstance(loaded, dict) else {}
+            except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+                return {}
+
+        primary = load_json_ref("primary_output_ref")
+        if not primary:
+            primary = load_json_ref("primary_normalized_output_ref")
+        diff_text = ""
+        diff_ref = _producer_final_diff_ref(chain_result)
+        diff_path, _ = _contained_file(output_dir, diff_ref)
+        if diff_path is not None:
+            try:
+                diff_text = diff_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                diff_text = ""
+        artifact_refs = {
+            key: Path(str(value)).name
+            for key, value in (chain_result.get("artifact_refs") or {}).items()
+            if isinstance(value, str) and value
+        }
+        log_artifact_refs = {
+            str(key): Path(str(value)).name
+            for key, value in failure_evidence.artifact_refs.items()
+            if str(key).strip() and str(value).strip()
+        }
+        source_evidence = [
+            {key: entry.get(key) for key in ("path", "checksum", "byte_length") if entry.get(key) not in (None, "")}
+            for entry in context_pack.source_evidence
+            if isinstance(entry, dict)
+        ]
+        hard_gate_codes = list(policy.reason_codes)
+        reviewer_outcome = _reviewer_outcome_from_chain(chain)
+        candidate_id = str(prepared.get("llm_repair_candidate_id") or "")
+        diff_checksum = str(
+            prepared.get("raw_reviewed_diff_checksum")
+            or chain.get("final_reviewed_diff_checksum")
+            or ""
+        )
+        public_diff = project_public_diff(diff_text)
+        projection = {
+            "attempt_id": attempt_id,
+            "attempt_number": attempt_number,
+            "attempt_source": str(chain.get("attempt_source") or "llm"),
+            "candidate_kind": "llm_unknown_family" if candidate_id else "blocked_attempt",
+            "applicability_status": applicability,
+            "repair_workflow_state": workflow_state,
+            "failure_summary": failure_evidence.failure_summary,
+            "failing_command": failure_evidence.command_id,
+            "failing_test": failure_evidence.test_failures[0].test_name if failure_evidence.test_failures else "",
+            "exception": failure_evidence.compiler_errors[0].message if failure_evidence.compiler_errors else "",
+            "log_artifact_references": log_artifact_refs,
+            "stack_trace_preview": str(failure_evidence.safe_log_preview or "")[:4000],
+            "failure_evidence_checksum": failure_evidence.content_checksum,
+            "context_checksum": context_pack.context_pack_checksum,
+            "context_artifact_reference": artifact_refs.get("deterministic_artifact", ""),
+            "source_evidence": source_evidence,
+            "proposer_root_cause": str(primary.get("root_cause") or ""),
+            "proposer_strategy": str(primary.get("fix_strategy") or ""),
+            "proposer_confidence": primary.get("confidence"),
+            "proposer_risks": [str(primary.get("risk") or "")] if primary.get("risk") else [],
+            "exact_proposed_diff": public_diff["display_proposed_diff"],
+            "display_proposed_diff": public_diff["display_proposed_diff"],
+            "display_diff_redacted": public_diff["display_diff_redacted"],
+            "display_diff_status": public_diff["display_diff_status"],
+            "exact_diff_checksum": diff_checksum,
+            "diff_checksum": diff_checksum,
+            "changed_files": list(primary.get("changed_files") or ()),
+            "actual_touched_paths": list(policy.touched_paths),
+            "hard_gate_status": "passed" if applicable else "blocked",
+            "hard_gate_reason_codes": hard_gate_codes,
+            "hard_gate_report_reference": "llm_reviewed_patch_policy_evaluated",
+            "reviewer_outcome": reviewer_outcome,
+            "reviewer_availability": bool(chain.get("reviewer_availability")),
+            "reviewer_risk_level": str(chain.get("reviewer_risk_level") or "UNKNOWN"),
+            "reviewer_reason_codes": list(chain.get("reviewer_reason_codes") or ()),
+            "reviewer_summary": str(chain.get("reviewer_summary") or ""),
+            "reviewer_recommended_action": str(chain.get("reviewer_recommended_action") or "operator_review"),
+            "reviewed_context_checksum": str(chain.get("context_pack_checksum") or ""),
+            "reviewed_proposal_checksum": str(chain.get("primary_output_checksum") or ""),
+            "reviewed_diff_checksum": str(chain.get("final_reviewed_diff_checksum") or ""),
+            "reviewer_output_checksum": str(chain.get("reviewer_output_checksum") or ""),
+            "artifact_references": artifact_refs,
+            "advisory_warnings": list(dict.fromkeys([*(chain.get("reviewer_reason_codes") or ()), *policy.advisory_warnings])),
+            "approval_mode_required": _approval_mode_for_outcome(reviewer_outcome) if applicable else "",
+            "operator_actions_available": [
+                "request_corrected_proposal",
+                "provide_operator_guidance",
+                "request_additional_context",
+                "submit_manual_diff",
+                "reject_current_attempt",
+                "mark_manual_remediation_required",
+            ],
+            "apply_enabled": False,
+            "resume_enabled": False,
+            "next_operator_action": "approve_or_remediate" if applicable else "request_corrected_proposal",
+            "current_checkpoint": "repair",
+            "previous_attempt_id": str(chain.get("previous_attempt_id") or ""),
+            "repair_candidate_id": candidate_id,
+        }
+        projection = redact_public_api_value(projection)
+        internal = {
+            "failure_evidence": failure_evidence_to_dict(failure_evidence),
+            "context_pack": context_pack_to_dict(context_pack),
+            "review_chain": chain,
+            "exact_proposed_diff": diff_text,
+            "exact_diff_checksum": diff_checksum,
+            "output_dir": str(output_dir.resolve()),
+            "sandbox_path": str(Path(sandbox_path).resolve()) if sandbox_path else "",
+            "run_dir": str(Path(run_dir).resolve()) if run_dir else "",
+            "legacy_path": str(Path(legacy_path).resolve()) if legacy_path else "",
+            "source_proposal_id": source_proposal_id or "",
+            "source_gate_id": source_gate_id or "",
+        }
+        saved = self._attempt_repo.save_attempt({
+            "attempt_id": attempt_id,
+            "job_id": failure_evidence.job_id,
+            "stage_index": failure_evidence.stage_index,
+            "command_id": failure_evidence.command_id,
+            "attempt_number": attempt_number,
+            "attempt_source": str(chain.get("attempt_source") or "llm"),
+            "previous_attempt_id": str(chain.get("previous_attempt_id") or ""),
+            "repair_candidate_id": candidate_id,
+            "applicability_status": applicability,
+            "workflow_state": workflow_state,
+            "projection": projection,
+            "internal": internal,
+        })
+        self._event_repo.save(
+            job_id=failure_evidence.job_id,
+            stage=failure_evidence.stage_index,
+            event_type=EVENT_REPAIR_ATTEMPT_STARTED,
+            status="completed" if applicable else "action_required",
+            message="Repair attempt projection persisted.",
+            payload={
+                "job_id": failure_evidence.job_id,
+                "stage_index": failure_evidence.stage_index,
+                "command_id": failure_evidence.command_id,
+                "attempt_id": attempt_id,
+                "attempt_number": attempt_number,
+                "repair_workflow_state": workflow_state,
+                "applicability_status": applicability,
+                "repair_candidate_id": candidate_id,
+                "reviewer_outcome": reviewer_outcome,
+                "hard_gate_reason_codes": hard_gate_codes,
+                "approval_mode_required": projection["approval_mode_required"],
+                "next_action": projection["next_operator_action"],
+            },
+        )
+        if not applicable:
+            self._event_repo.save(
+                job_id=failure_evidence.job_id,
+                stage=failure_evidence.stage_index,
+                event_type=EVENT_LLM_BLOCKED_ATTEMPT_PERSISTED,
+                status="action_required",
+                message="Technically blocked repair attempt persisted for remediation.",
+                payload={
+                    "job_id": failure_evidence.job_id,
+                    "stage_index": failure_evidence.stage_index,
+                    "command_id": failure_evidence.command_id,
+                    "attempt_id": attempt_id,
+                    "attempt_number": attempt_number,
+                    "repair_workflow_state": workflow_state,
+                    "applicability_status": applicability,
+                    "reviewer_outcome": reviewer_outcome,
+                    "hard_gate_reason_codes": hard_gate_codes,
+                    "next_action": projection["next_operator_action"],
+                },
+            )
+        self._event_repo.save(
+            job_id=failure_evidence.job_id,
+            stage=failure_evidence.stage_index,
+            event_type=EVENT_REPAIR_OPERATOR_ACTION_REQUIRED,
+            status="action_required",
+            message="Operator repair decision or remediation is required.",
+            payload={"job_id": failure_evidence.job_id, "stage_index": failure_evidence.stage_index, "attempt_id": attempt_id, "attempt_number": attempt_number, "next_action": projection["next_operator_action"]},
+        )
+        return saved
 
     def _existing_result(self, prepared: dict[str, Any]) -> LlmReadOnlyCandidatePersistenceResult | None:
         candidate = prepared["candidate"]
@@ -626,6 +906,29 @@ def _safe_event_payload(result: LlmReadOnlyCandidatePersistenceResult) -> dict[s
     return {key: value for key, value in payload.items() if key in _SAFE_EVENT_KEYS and value not in ("", None)}
 
 
+def _approval_mode_for_outcome(outcome: str) -> str:
+    normalized = str(outcome or "").lower()
+    if normalized == "accepted":
+        return "normal_approval"
+    if normalized == "accepted_with_concerns":
+        return "acknowledged_risk_approval"
+    return "reviewer_override_approval"
+
+
+def _reviewer_outcome_from_chain(chain: dict[str, Any]) -> str:
+    outcome = str(chain.get("reviewer_outcome") or "").lower()
+    if outcome in {"accepted", "accepted_with_concerns", "rejected", "unavailable"}:
+        return outcome
+    decision = str(chain.get("reviewer_decision") or "").lower()
+    if decision == "accept":
+        return "accepted"
+    if decision == "revise":
+        return "accepted_with_concerns"
+    if decision == "reject":
+        return "rejected"
+    return "unavailable"
+
+
 def _chain_block_reason(
     decision: RepairRouteDecision,
     failure_evidence: FailureEvidence,
@@ -634,11 +937,8 @@ def _chain_block_reason(
 ) -> str:
     if decision.route != ROUTE_LLM_REVIEWED_UNKNOWN:
         return REASON_REVIEW_CHAIN_INVALID
-    if chain.get("reviewer_decision") != "accept":
-        return REASON_REVIEWER_DECISION_NOT_ACCEPTED
     required = (
         "primary_output_checksum",
-        "reviewer_output_checksum",
         "proposed_diff_checksum",
         "raw_diff_bytes_checksum",
         "final_reviewed_diff_checksum",
@@ -652,7 +952,10 @@ def _chain_block_reason(
         and chain.get("job_id") == context_pack.job_id == failure_evidence.job_id
         and chain.get("stage_index") == context_pack.stage_index == failure_evidence.stage_index
         and chain.get("primary_deterministic_fallback_used") is False
-        and chain.get("reviewer_deterministic_fallback_used") is False
+        and (
+            chain.get("reviewer_deterministic_fallback_used") is False
+            or str(chain.get("reviewer_outcome") or "") == "unavailable"
+        )
     )
     return "" if valid else REASON_REVIEW_CHAIN_INVALID
 
@@ -776,6 +1079,8 @@ def _review_chain_identity_checksum(chain: dict[str, Any]) -> str:
             "stage_index",
             "proposal_kind",
             "reviewer_decision",
+            "reviewer_outcome",
+            "reviewer_invocation_id",
             "context_pack_checksum",
             "primary_output_checksum",
             "primary_output_artifact_checksum",
@@ -802,11 +1107,17 @@ def _sha256_prefixed_text(value: Any) -> str:
     return f"sha256:{text}" if text else ""
 
 
-def _shared_connection(repair_repo: Any, candidate_repo: Any, event_repo: Any | None = None) -> sqlite3.Connection | None:
+def _shared_connection(
+    repair_repo: Any,
+    candidate_repo: Any,
+    event_repo: Any | None = None,
+    attempt_repo: Any | None = None,
+) -> sqlite3.Connection | None:
     repair_conn = getattr(repair_repo, "_connection", None)
     candidate_conn = getattr(candidate_repo, "_connection", None)
     event_conn = getattr(event_repo, "_connection", None) if event_repo is not None else repair_conn
-    if repair_conn is not None and repair_conn is candidate_conn and repair_conn is event_conn:
+    attempt_conn = getattr(attempt_repo, "_connection", None) if attempt_repo is not None else repair_conn
+    if repair_conn is not None and repair_conn is candidate_conn and repair_conn is event_conn and repair_conn is attempt_conn:
         return repair_conn
     return None
 

@@ -1649,6 +1649,14 @@ describe("V2 Migration Cockpit contract", () => {
       rollback_status: "not_needed",
       proof_artifact: "artifact:repair-proof",
     };
+    const reviewerOverride = {
+      ...pending,
+      candidate_kind: "llm_unknown_family",
+      patch_source: "llm_reviewed",
+      policy_id: "generic_reviewed_llm_patch_v1",
+      approval_mode_required: "reviewer_override_approval" as const,
+      reviewer_outcome: "rejected" as const,
+    };
 
     const pendingMarkup = renderToStaticMarkup(
       <RepairApplyCandidateDetails candidate={pending} jobId="job-123" stageIndex={1} busyKey={null} />
@@ -1665,6 +1673,9 @@ describe("V2 Migration Cockpit contract", () => {
     const verifiedMarkup = renderToStaticMarkup(
       <RepairApplyCandidateDetails candidate={verified} jobId="job-123" stageIndex={1} busyKey={null} />
     );
+    const overrideMarkup = renderToStaticMarkup(
+      <RepairApplyCandidateDetails candidate={reviewerOverride} jobId="job-123" stageIndex={1} busyKey={null} />
+    );
 
     expect(pendingMarkup).toContain("Approve repair candidate");
     expect(pendingMarkup).not.toContain("Apply approved repair");
@@ -1675,6 +1686,8 @@ describe("V2 Migration Cockpit contract", () => {
     expect(verifiedMarkup).toContain("Verification: passed");
     expect(verifiedMarkup).toContain("Proof artifact: artifact:repair-proof");
     expect(verifiedMarkup).not.toContain("Apply approved repair");
+    expect(overrideMarkup).toContain("must be completed in the Repair Investigation panel");
+    expect(overrideMarkup).not.toContain("Approve repair candidate");
     const combinedMarkup =
       pendingMarkup + approvedMarkup + applyFlagOnlyMarkup + approvedButApplyDisabledMarkup + verifiedMarkup;
     for (const forbiddenControl of [

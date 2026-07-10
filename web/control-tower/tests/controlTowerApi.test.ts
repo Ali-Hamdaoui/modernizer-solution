@@ -8,6 +8,7 @@ import {
   createDiagnosticJobPayload,
   createIdempotencyKey,
   createV2JobPayload,
+  executeV2RepairAttemptAction,
   eventStreamUrl,
   getV2AssistantMessages,
   getV2GateDetail,
@@ -54,6 +55,11 @@ function repairCandidateFixture(
     proposal_checksum: "sha256:proposal",
     candidate_checksum: "sha256:candidate",
     approval_required: true,
+    approval_mode_required: "normal_approval",
+    reviewer_decision: "accept",
+    reviewer_outcome: "accepted",
+    reviewer_invocation_id: "reviewer-invocation-1",
+    reviewer_output_checksum: "sha256:review",
     apply_enabled: false,
     approval_enabled: true,
     sandbox_only: true,
@@ -487,6 +493,12 @@ describe("M2-01 frontend diagnostic contracts", () => {
       policy_validation_checksum: "sha256:policy",
       review_chain_identity_checksum: "sha256:proposal",
       base_repository_state_checksum: "sha256:base-repo",
+      approval_mode: "normal_approval",
+      operator_justification: "",
+      acknowledged_risk_codes: [],
+      reviewer_outcome: "accepted",
+      reviewer_output_checksum: "sha256:review",
+      reviewer_invocation_id: "reviewer-invocation-1",
     });
     const serialized = JSON.stringify(body);
     for (const forbidden of [
@@ -568,6 +580,61 @@ describe("M2-01 frontend diagnostic contracts", () => {
 
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body ?? "{}"));
     expect(body).toEqual({ repair_candidate_id: "repair-candidate-1" });
+  });
+
+  it("submits reviewer override bindings without browser-owned actor identity", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({ approval: {}, candidate: repairCandidateFixture() }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await approveV2RepairCandidate(
+      "job-123",
+      1,
+      repairCandidateFixture({
+        candidate_kind: "llm_unknown_family",
+        patch_source: "llm_reviewed",
+        policy_id: "generic_reviewed_llm_patch_v1",
+        policy_validation_checksum: "sha256:policy",
+        base_repo_state_checksum: "sha256:base",
+        approval_mode_required: "reviewer_override_approval",
+        reviewer_decision: "reject",
+        reviewer_outcome: "rejected",
+      }),
+      {
+        approval_mode: "reviewer_override_approval",
+        operator_justification: "Bounded sandbox verification will determine correctness.",
+        acknowledged_risk_codes: ["reviewer_rejected"],
+      },
+    );
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body ?? "{}"));
+    expect(body.approval_mode).toBe("reviewer_override_approval");
+    expect(body.operator_justification).toContain("sandbox verification");
+    expect(body.acknowledged_risk_codes).toEqual(["reviewer_rejected"]);
+    expect(JSON.stringify(body)).not.toContain("actor_id");
+    expect(JSON.stringify(body)).not.toContain("approved_by");
+  });
+
+  it("sends manual/context remediation only through the explicit backend action API", async () => {
+    const fetchMock = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => ({
+      ok: true,
+      json: async () => ({ status: "persisted" }),
+    } as Response));
+    vi.stubGlobal("fetch", fetchMock);
+    const request = {
+      action: "submit_manual_diff" as const,
+      expected_attempt_checksum: "sha256:attempt",
+      manual_diff: "diff --git a/App.java b/App.java\n",
+      operator_justification: "Investigated correction",
+    };
+
+    await executeV2RepairAttemptAction("job-123", 1, "repair-attempt-1", request);
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/repair-attempts/repair-attempt-1/actions");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual(request);
+    expect(JSON.stringify(request)).not.toContain("actor_id");
   });
 
   // ── V1-18D model activity normalization ────────────────────────────

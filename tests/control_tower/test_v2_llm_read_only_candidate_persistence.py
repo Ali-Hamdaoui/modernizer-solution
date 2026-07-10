@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from migration_factory.control_tower.adapters.fastapi import create_app
@@ -25,6 +26,11 @@ from migration_factory.control_tower.application.v2_repair_apply_candidate impor
     apply_approved_repair_candidate,
     approve_repair_apply_candidate,
 )
+from migration_factory.control_tower.application.v2_repair_remediation import (
+    execute_remediation_attempt,
+    repair_remediation_intent_from_text,
+)
+from migration_factory.control_tower.application.v2_llm_invocation_ledger import V2LLMInvocationLedger
 from migration_factory.control_tower.application.v2_repair_projection import (
     build_reviewed_diff_proposal_from_record,
     reviewed_diff_proposal_to_safe_dict,
@@ -37,8 +43,12 @@ from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import S
 from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository import SqliteV2CommandRepository
 from migration_factory.control_tower.infrastructure.sqlite.v2_event_repository import SqliteV2JobEventRepository
 from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import SqliteV2JobRepository
+from migration_factory.control_tower.infrastructure.sqlite.v2_llm_invocation_repository import SqliteV2LLMInvocationRepository
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_candidate_repository import (
     SqliteV2RepairCandidateRepository,
+)
+from migration_factory.control_tower.infrastructure.sqlite.v2_repair_attempt_repository import (
+    SqliteV2RepairAttemptRepository,
 )
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import SqliteV2RepairRepository
 from migration_factory.control_tower.infrastructure.sqlite.v2_setup_repository import SqliteV2SetupRepository
@@ -54,7 +64,7 @@ from migration_factory.repair_loop.repair_context import build_repair_context_pa
 
 
 def _conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:", isolation_level=None)
+    conn = sqlite3.connect(":memory:", check_same_thread=False, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     apply_pending_migrations(conn)
@@ -144,6 +154,7 @@ def _chain(
         "primary_output_checksum": primary_checksum,
         "primary_output_artifact_checksum": primary_output_artifact_checksum,
         "reviewer_output_checksum": "sha256:" + "2" * 64,
+        "reviewer_invocation_id": "reviewer-invocation-1",
         "proposed_diff_checksum": checksum,
         "raw_diff_bytes_checksum": checksum,
         "final_reviewed_diff_checksum": checksum,
@@ -290,6 +301,7 @@ def _persist(conn: sqlite3.Connection, tmp_path: Path, **overrides: Any) -> tupl
         repair_repo=repair_repo,
         candidate_repo=candidate_repo,
         event_repo=event_repo,
+        attempt_repo=SqliteV2RepairAttemptRepository(conn),
     )
     result = service.persist(
         decision=_decision(evidence, context),
@@ -1209,7 +1221,7 @@ def test_m1_unknown_runtime_sentinel_test_masking_is_policy_blocked(tmp_path: Pa
     assert not any("approval" in event.type or "apply" in event.type or "downstream" in event.type for event in events)
 
 
-def test_reviewer_decision_other_than_accept_is_audited_and_blocks_candidate(tmp_path: Path) -> None:
+def test_reviewer_rejection_is_audited_and_persists_override_candidate(tmp_path: Path) -> None:
     conn = _conn()
     repair_repo, candidate_repo = _repos(conn)
     evidence = _evidence()
@@ -1233,11 +1245,13 @@ def test_reviewer_decision_other_than_accept_is_audited_and_blocks_candidate(tmp
     )
     payload = json.loads([event for event in SqliteV2JobEventRepository(conn).list_by_job("job-wf04a") if event.type == EVENT_LLM_REVIEWED_PATCH_POLICY_EVALUATED][-1].payload_json)
 
-    assert result.status == "blocked"
-    assert payload["decision"] == "BLOCKED"
-    assert payload["reason_codes"] == ["reviewer_decision_not_accepted"]
-    assert repair_repo.list_proposals_by_job("job-wf04a") == ()
-    assert candidate_repo.latest_public_for_job("job-wf04a") is None
+    assert result.status == "persisted"
+    assert payload["decision"] == "ALLOWED"
+    assert payload["reason_codes"] == []
+    candidate = candidate_repo.latest_public_for_job("job-wf04a")
+    assert candidate["reviewer_outcome"] == "rejected"
+    assert candidate["approval_mode_required"] == "reviewer_override_approval"
+    assert candidate["apply_enabled"] is False
 
 
 def test_invalid_diff_encoding_is_audited_and_blocks_candidate(tmp_path: Path) -> None:
@@ -1352,6 +1366,14 @@ def test_exact_diff_bytes_projection_and_bindings_preserved(tmp_path: Path) -> N
 
 
 def _llm_approval_request(candidate: dict[str, Any]) -> dict[str, Any]:
+    outcome = str(candidate.get("reviewer_outcome") or "accepted")
+    mode = (
+        "normal_approval"
+        if outcome == "accepted"
+        else "acknowledged_risk_approval"
+        if outcome == "accepted_with_concerns"
+        else "reviewer_override_approval"
+    )
     return {
         "repair_candidate_id": candidate["repair_candidate_id"],
         "candidate_checksum": candidate["candidate_checksum"],
@@ -1359,6 +1381,12 @@ def _llm_approval_request(candidate: dict[str, Any]) -> dict[str, Any]:
         "policy_validation_checksum": candidate["policy_validation_checksum"],
         "review_chain_identity_checksum": candidate["review_chain_identity_checksum"],
         "base_repository_state_checksum": candidate["base_repo_state_checksum"],
+        "approval_mode": mode,
+        "reviewer_outcome": outcome,
+        "reviewer_output_checksum": candidate.get("reviewer_output_checksum", ""),
+        "reviewer_invocation_id": candidate.get("reviewer_invocation_id", ""),
+        "operator_justification": "Bounded sandbox repair with governed verification." if mode != "normal_approval" else "",
+        "acknowledged_risk_codes": ["reviewer_advisory_risk"] if mode != "normal_approval" else [],
     }
 
 
@@ -1486,43 +1514,24 @@ def test_reviewed_llm_policy_bindings_all_equal_pass(tmp_path: Path) -> None:
     assert candidate["_persisted_policy_event_checksum"] == candidate["policy_validation_checksum"]
 
 
-@pytest.mark.parametrize(
-    ("decision", "reason"),
-    [
-        ("", "reviewer_not_accepted"),
-        ("reject", "reviewer_not_accepted"),
-    ],
-)
-def test_reviewed_llm_reviewer_decision_is_explicitly_required(
-    tmp_path: Path,
-    decision: str,
-    reason: str,
-) -> None:
+def test_reviewed_llm_reviewer_rejection_requires_override_bindings(tmp_path: Path) -> None:
     conn = _conn()
     result, _, candidate_repo, _ = _persist(conn, tmp_path)
     candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
     mutated = dict(candidate)
     mutated["_llm_candidate_metadata"] = dict(candidate["_llm_candidate_metadata"])
-    if decision:
-        mutated["_llm_candidate_metadata"]["reviewer_decision"] = decision
-    else:
-        mutated["_llm_candidate_metadata"].pop("reviewer_decision", None)
-
-    with pytest.raises(ValueError, match=reason):
-        approve_repair_apply_candidate(mutated, _llm_approval_request(mutated), actor_identity=_backend_actor())
-
-    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
-    _rewrite_internal_candidate(
-        conn,
-        result.llm_repair_candidate_id,
-        lambda stored: (
-            stored["_llm_candidate_metadata"].pop("reviewer_decision", None)
-            if not decision
-            else stored["_llm_candidate_metadata"].update({"reviewer_decision": decision})
-        ),
-    )
-    with pytest.raises(ValueError, match="llm_approval_reviewer_not_accepted"):
-        candidate_repo.save_approval("job-wf04a", 1, result.llm_repair_candidate_id, approval)
+    mutated["reviewer_decision"] = "reject"
+    mutated["reviewer_outcome"] = "rejected"
+    request = _llm_approval_request(mutated)
+    request.update({
+        "approval_mode": "reviewer_override_approval",
+        "reviewer_outcome": "rejected",
+        "operator_justification": "Production change is bounded and will be verified.",
+        "acknowledged_risk_codes": ["reviewer_rejected"],
+    })
+    approval = approve_repair_apply_candidate(mutated, request, actor_identity=_backend_actor())
+    assert approval["approval_mode"] == "reviewer_override_approval"
+    assert approval["reviewer_decision"] == "reject"
 
 
 def test_reviewed_llm_reviewer_decision_is_approval_checksum_bound(tmp_path: Path) -> None:
@@ -1534,7 +1543,7 @@ def test_reviewed_llm_reviewer_decision_is_approval_checksum_bound(tmp_path: Pat
     changed["reviewer_decision"] = "reject"
 
     assert repair_apply_module._reviewed_llm_approval_checksum(changed) != approval["approval_checksum"]
-    with pytest.raises(ValueError, match="reviewer_not_accepted"):
+    with pytest.raises(ValueError, match="approval_checksum_mismatch"):
         apply_approved_repair_candidate({**candidate, "status": "approved"}, changed)
 
 
@@ -1705,6 +1714,50 @@ def test_reviewed_llm_apply_preserves_exact_diff_bytes_without_final_newline(
     assert "sha256:" + sha256_hex(patch_bytes) == candidate["patch_checksum"]
 
 
+def test_public_display_diff_redaction_does_not_change_internal_apply_diff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MAVEN_CMD", "mvn")
+    diff_text = (
+        "diff --git a/src/main/java/App.java b/src/main/java/App.java\n"
+        "--- a/src/main/java/App.java\n"
+        "+++ b/src/main/java/App.java\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-old\n"
+        "+new // diagnostic C:\\Users\\operator\\private\\repair.log\n"
+    )
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(conn, tmp_path, diff_text=diff_text)
+    attempts = SqliteV2RepairAttemptRepository(conn)
+    public_attempt = attempts.get_public("job-wf04a", 1, result.attempt_id)
+    internal_attempt = attempts.get_internal("job-wf04a", 1, result.attempt_id)
+
+    assert public_attempt["display_diff_redacted"] is True
+    assert public_attempt["display_diff_status"] == "redacted"
+    assert "C:\\Users\\operator" not in public_attempt["display_proposed_diff"]
+    assert "C:\\Users\\operator" not in public_attempt["exact_proposed_diff"]
+    assert public_attempt["exact_diff_checksum"] == "sha256:" + sha256_hex(diff_text.encode("utf-8"))
+    assert internal_attempt["internal"]["exact_proposed_diff"] == diff_text
+
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+    candidate_repo.save_approval("job-wf04a", 1, candidate["repair_candidate_id"], approval)
+    approved = candidate_repo.get_internal("job-wf04a", 1, candidate["repair_candidate_id"])
+    execution = apply_approved_repair_candidate(
+        approved,
+        approval,
+        post_repair_verification_runner=_ReviewedLlmPostRepairRunner(pass_tests=True),
+        downstream_resume=_downstream_resume_callback(conn, tmp_path),
+    )
+
+    sandbox_app = Path(candidate["_sandbox_root"]) / "src/main/java/App.java"
+    patch_bytes = (Path(candidate["_run_dir"]) / "repairs" / "patch_attempt_1.diff").read_bytes()
+    assert execution["execution_status"] == "verified"
+    assert "C:\\Users\\operator\\private\\repair.log" in sandbox_app.read_text(encoding="utf-8")
+    assert patch_bytes == diff_text.encode("utf-8")
+
+
 @pytest.mark.parametrize(
     ("proof_mode", "reason"),
     [
@@ -1777,7 +1830,7 @@ def test_reviewed_llm_post_repair_proof_must_validate_before_downstream(
     [
         (lambda candidate: candidate.update({"policy_validation_checksum": "sha256:" + "0" * 64}), "policy_validation_checksum_mismatch"),
         (lambda candidate: candidate["_llm_candidate_metadata"]["policy_validation"].update({"decision": "BLOCKED"}), "policy_not_allowed"),
-        (lambda candidate: candidate["_llm_candidate_metadata"].update({"reviewer_decision": "reject"}), "reviewer_not_accepted"),
+        (lambda candidate: candidate.update({"reviewer_decision": "reject", "reviewer_outcome": "rejected"}), "approval_mode_mismatch"),
         (lambda candidate: candidate.update({"review_chain_identity_checksum": "sha256:" + "1" * 64}), "review_chain_identity_checksum_mismatch"),
         (lambda candidate: candidate.update({"base_repo_state_checksum": "sha256:" + "2" * 64}), "base_repository_state_checksum_mismatch"),
     ],
@@ -2031,7 +2084,7 @@ def test_app_runner_dispatch_uses_authoritative_diagnosis_and_persists_once(tmp_
     assert [row["status"] for row in invocation_rows] == ["completed", "completed"]
     assert [row["schema_name"] for row in invocation_rows] == ["RepairPrimaryOutput", "RepairReviewerOutput"]
     assert all(row["stage_index"] == 1 for row in invocation_rows)
-    assert all(row["attempt_number"] == 0 for row in invocation_rows)
+    assert all(row["attempt_number"] == 1 for row in invocation_rows)
     assert all(row["context_checksum"] for row in invocation_rows)
     assert all(row["input_checksum"] for row in invocation_rows)
     assert all(row["output_checksum"] for row in invocation_rows)
@@ -2239,3 +2292,474 @@ def test_transform_only_failure_gets_governed_route_event(tmp_path: Path) -> Non
     event_types = [event.type for event in SqliteV2JobEventRepository(conn).list_by_job("job-wf04a")]
     assert "repair_route_blocked" in event_types
     assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    ("reviewer_decision", "reviewer_outcome", "reviewer_checksum", "approval_mode"),
+    [
+        ("accept", "accepted", "sha256:" + "2" * 64, "normal_approval"),
+        ("revise", "accepted_with_concerns", "sha256:" + "2" * 64, "acknowledged_risk_approval"),
+        ("reject", "rejected", "sha256:" + "2" * 64, "reviewer_override_approval"),
+        ("unavailable", "unavailable", "", "reviewer_override_approval"),
+    ],
+)
+def test_operator_governed_attempt_persists_every_advisory_outcome(
+    tmp_path: Path,
+    reviewer_decision: str,
+    reviewer_outcome: str,
+    reviewer_checksum: str,
+    approval_mode: str,
+) -> None:
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(
+        conn,
+        tmp_path,
+        reviewer_decision=reviewer_decision,
+        reviewer_outcome=reviewer_outcome,
+        reviewer_output_checksum=reviewer_checksum,
+        reviewer_availability=reviewer_outcome != "unavailable",
+    )
+
+    assert result.status == "persisted"
+    candidate = candidate_repo.get_public("job-wf04a", 1, result.llm_repair_candidate_id)
+    attempt = SqliteV2RepairAttemptRepository(conn).get_public("job-wf04a", 1, result.attempt_id)
+    assert candidate["reviewer_outcome"] == reviewer_outcome
+    assert candidate["approval_mode_required"] == approval_mode
+    assert candidate["apply_enabled"] is False
+    assert attempt["reviewer_outcome"] == reviewer_outcome
+    assert attempt["applicability_status"] == "applicable"
+    assert attempt["exact_proposed_diff"].startswith("diff --git ")
+
+
+@pytest.mark.parametrize(
+    ("missing_field", "reason"),
+    [
+        ("operator_justification", "operator_justification_required"),
+        ("acknowledged_risk_codes", "acknowledged_risk_codes_required"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("reviewer_decision", "reviewer_outcome"),
+    [
+        ("revise", "accepted_with_concerns"),
+        ("reject", "rejected"),
+    ],
+)
+def test_risk_or_override_approval_requires_justification_and_acknowledged_risks(
+    tmp_path: Path,
+    missing_field: str,
+    reason: str,
+    reviewer_decision: str,
+    reviewer_outcome: str,
+) -> None:
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(
+        conn,
+        tmp_path,
+        reviewer_decision=reviewer_decision,
+        reviewer_outcome=reviewer_outcome,
+    )
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    request = _llm_approval_request(candidate)
+    request[missing_field] = "" if missing_field == "operator_justification" else []
+
+    with pytest.raises(ValueError, match=reason):
+        approve_repair_apply_candidate(candidate, request, actor_identity=_backend_actor())
+
+
+@pytest.mark.parametrize(
+    ("reviewer_decision", "reviewer_outcome", "reviewer_checksum"),
+    [
+        ("reject", "rejected", "sha256:" + "2" * 64),
+        ("unavailable", "unavailable", ""),
+    ],
+)
+def test_valid_reviewer_override_is_append_only_and_keeps_advisory_visible(
+    tmp_path: Path,
+    reviewer_decision: str,
+    reviewer_outcome: str,
+    reviewer_checksum: str,
+) -> None:
+    conn = _conn()
+    result, _, candidate_repo, _ = _persist(
+        conn,
+        tmp_path,
+        reviewer_decision=reviewer_decision,
+        reviewer_outcome=reviewer_outcome,
+        reviewer_output_checksum=reviewer_checksum,
+    )
+    attempts = SqliteV2RepairAttemptRepository(conn)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+    candidate_repo.save_approval("job-wf04a", 1, result.llm_repair_candidate_id, approval)
+    attempts.save_decision({
+        "decision_id": "repair-decision-override-1",
+        "attempt_id": result.attempt_id,
+        "repair_candidate_id": result.llm_repair_candidate_id,
+        "job_id": "job-wf04a",
+        "stage_index": 1,
+        "approval_mode": approval["approval_mode"],
+        "decision_status": "approved",
+        "operator_justification": approval["operator_justification"],
+        "acknowledged_risk_codes": approval["acknowledged_risk_codes"],
+        "reviewer_outcome": approval["reviewer_outcome"],
+        "reviewer_output_checksum": approval["reviewer_output_checksum"],
+        "reviewer_invocation_id": approval["reviewer_invocation_id"],
+        "candidate_checksum": approval["candidate_checksum"],
+        "actor_type": approval["backend_actor_type"],
+        "actor_id": approval["backend_actor_id"],
+    })
+
+    projected = attempts.get_public("job-wf04a", 1, result.attempt_id)
+    assert projected["reviewer_outcome"] == reviewer_outcome
+    assert projected["repair_workflow_state"] == "repair_reviewer_override_approved"
+    assert projected["apply_enabled"] is True
+    assert conn.execute("SELECT COUNT(*) FROM v2_repair_operator_decisions").fetchone()[0] == 1
+
+
+def test_hard_gate_blocked_attempt_is_preserved_and_never_applicable(tmp_path: Path) -> None:
+    conn = _conn()
+    unsafe_diff = (
+        "diff --git a/.env b/.env\n"
+        "--- a/.env\n"
+        "+++ b/.env\n"
+        "@@ -1 +1 @@\n"
+        "-SECRET=old\n"
+        "+SECRET=new\n"
+    )
+    result, _, candidate_repo, _ = _persist(
+        conn,
+        tmp_path,
+        diff_text=unsafe_diff,
+        changed_files=[".env"],
+    )
+    attempt = SqliteV2RepairAttemptRepository(conn).get_public("job-wf04a", 1, result.attempt_id)
+
+    assert result.status == "blocked"
+    assert candidate_repo.latest_public_for_job("job-wf04a") is None
+    assert attempt["applicability_status"] == "blocked"
+    assert attempt["apply_enabled"] is False
+    assert attempt["display_diff_redacted"] is True
+    assert "SECRET=new" not in attempt["exact_proposed_diff"]
+    internal = SqliteV2RepairAttemptRepository(conn).get_internal("job-wf04a", 1, result.attempt_id)
+    assert internal["internal"]["exact_proposed_diff"] == unsafe_diff
+    assert attempt["exact_diff_checksum"] == "sha256:" + sha256_hex(unsafe_diff.encode("utf-8"))
+    assert "request_corrected_proposal" in attempt["operator_actions_available"]
+    assert attempt["hard_gate_reason_codes"]
+
+
+def test_manual_diff_creates_append_only_second_attempt_through_same_pipeline(tmp_path: Path) -> None:
+    conn = _conn()
+    first, repair_repo, candidate_repo, _ = _persist(conn, tmp_path)
+    attempts = SqliteV2RepairAttemptRepository(conn)
+    prior = attempts.get_internal("job-wf04a", 1, first.attempt_id)
+    manual_diff = (
+        "diff --git a/src/main/java/App.java b/src/main/java/App.java\n"
+        "--- a/src/main/java/App.java\n"
+        "+++ b/src/main/java/App.java\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+manual\n"
+    )
+
+    result = execute_remediation_attempt(
+        prior_attempt=prior,
+        action="submit_manual_diff",
+        model_client=_TxAssertingRepairClient(conn, reviewer_decision="reject"),
+        invocation_ledger=V2LLMInvocationLedger(SqliteV2LLMInvocationRepository(conn)),
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        attempt_repo=attempts,
+        event_repo=SqliteV2JobEventRepository(conn),
+        manual_diff=manual_diff,
+        operator_justification="Operator-investigated production-only correction.",
+    )
+
+    assert result["status"] == "persisted"
+    assert result["attempt"]["attempt_number"] == 2
+    assert result["attempt"]["attempt_source"] == "manual"
+    assert result["attempt"]["previous_attempt_id"] == first.attempt_id
+    assert result["attempt"]["reviewer_outcome"] == "rejected"
+    assert result["attempt"]["approval_mode_required"] == "reviewer_override_approval"
+    assert [item["attempt_number"] for item in attempts.list_public("job-wf04a", 1)] == [1, 2]
+
+
+def test_invalid_manual_diff_is_preserved_as_actionable_invalid_attempt(tmp_path: Path) -> None:
+    conn = _conn()
+    first, repair_repo, candidate_repo, _ = _persist(conn, tmp_path)
+    attempts = SqliteV2RepairAttemptRepository(conn)
+    prior = attempts.get_internal("job-wf04a", 1, first.attempt_id)
+
+    result = execute_remediation_attempt(
+        prior_attempt=prior,
+        action="submit_manual_diff",
+        model_client=_TxAssertingRepairClient(conn),
+        invocation_ledger=V2LLMInvocationLedger(SqliteV2LLMInvocationRepository(conn)),
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        attempt_repo=attempts,
+        event_repo=SqliteV2JobEventRepository(conn),
+        manual_diff="this is not a canonical Git diff",
+        operator_justification="Preserve this rejected operator submission for audit.",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["attempt"]["attempt_number"] == 2
+    assert result["attempt"]["attempt_source"] == "manual"
+    assert result["attempt"]["applicability_status"] == "invalid"
+    assert result["attempt"]["exact_proposed_diff"] == "this is not a canonical Git diff"
+    assert result["attempt"]["apply_enabled"] is False
+    assert "request_corrected_proposal" in result["attempt"]["operator_actions_available"]
+    assert len(attempts.list_public("job-wf04a", 1)) == 2
+
+
+def test_corrected_proposal_preserves_guidance_and_prior_attempt(tmp_path: Path) -> None:
+    conn = _conn()
+    first, repair_repo, candidate_repo, _ = _persist(conn, tmp_path)
+    attempts = SqliteV2RepairAttemptRepository(conn)
+    prior = attempts.get_internal("job-wf04a", 1, first.attempt_id)
+    sandbox_app = Path(prior["internal"]["sandbox_path"]) / "src" / "main" / "java" / "App.java"
+    sandbox_app.write_text("old line\nunchanged\n", encoding="utf-8")
+    guidance = "Do not modify tests. Inspect production code and propose a smaller repair."
+
+    result = execute_remediation_attempt(
+        prior_attempt=prior,
+        action="request_corrected_proposal",
+        model_client=_TxAssertingRepairClient(conn),
+        invocation_ledger=V2LLMInvocationLedger(SqliteV2LLMInvocationRepository(conn)),
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        attempt_repo=attempts,
+        event_repo=SqliteV2JobEventRepository(conn),
+        operator_guidance=guidance,
+    )
+    internal = attempts.get_internal("job-wf04a", 1, result["attempt"]["attempt_id"])
+
+    assert result["attempt"]["attempt_number"] == 2
+    assert result["attempt"]["previous_attempt_id"] == first.attempt_id
+    assert internal["internal"]["review_chain"]["operator_guidance"] == guidance
+    assert len(attempts.list_public("job-wf04a", 1)) == 2
+    superseded = candidate_repo.get_public("job-wf04a", 1, first.llm_repair_candidate_id)
+    assert superseded["status"] == "superseded"
+    assert superseded["approval_enabled"] is False
+    assert superseded["apply_enabled"] is False
+    with pytest.raises(ValueError, match="repair_attempt_superseded"):
+        execute_remediation_attempt(
+            prior_attempt=prior,
+            action="request_corrected_proposal",
+            model_client=_TxAssertingRepairClient(conn),
+            invocation_ledger=V2LLMInvocationLedger(SqliteV2LLMInvocationRepository(conn)),
+            repair_repo=repair_repo,
+            candidate_repo=candidate_repo,
+            attempt_repo=attempts,
+            event_repo=SqliteV2JobEventRepository(conn),
+            operator_guidance="stale branch",
+        )
+
+
+def test_additional_context_is_contained_checksummed_and_creates_attempt(tmp_path: Path) -> None:
+    conn = _conn()
+    first, repair_repo, candidate_repo, _ = _persist(conn, tmp_path)
+    attempts = SqliteV2RepairAttemptRepository(conn)
+    prior = attempts.get_internal("job-wf04a", 1, first.attempt_id)
+    sandbox = Path(prior["internal"]["sandbox_path"])
+    sandbox_app = sandbox / "src" / "main" / "java" / "App.java"
+    sandbox_app.write_text("old line\nunchanged\n", encoding="utf-8")
+    added = sandbox / "src" / "main" / "java" / "com" / "example" / "PaymentService.java"
+    added.parent.mkdir(parents=True, exist_ok=True)
+    added.write_text("package com.example; class PaymentService { void pay() {} }\n", encoding="utf-8")
+
+    result = execute_remediation_attempt(
+        prior_attempt=prior,
+        action="request_additional_context",
+        model_client=_TxAssertingRepairClient(conn),
+        invocation_ledger=V2LLMInvocationLedger(SqliteV2LLMInvocationRepository(conn)),
+        repair_repo=repair_repo,
+        candidate_repo=candidate_repo,
+        attempt_repo=attempts,
+        event_repo=SqliteV2JobEventRepository(conn),
+        requested_context=("com.example.PaymentService",),
+    )
+    internal = attempts.get_internal("job-wf04a", 1, result["attempt"]["attempt_id"])
+    evidence = internal["internal"]["context_pack"]["source_evidence"]
+
+    assert result["attempt"]["attempt_number"] == 2
+    assert any(item["path"] == "src/main/java/com/example/PaymentService.java" for item in evidence)
+    assert all(str(item["checksum"]).startswith("sha256:") for item in evidence)
+    assert internal["context_checksum"] != prior["context_checksum"]
+
+
+def test_unsafe_additional_context_and_attempt_overflow_create_no_attempt(tmp_path: Path) -> None:
+    conn = _conn()
+    first, repair_repo, candidate_repo, _ = _persist(conn, tmp_path)
+    attempts = SqliteV2RepairAttemptRepository(conn)
+    prior = attempts.get_internal("job-wf04a", 1, first.attempt_id)
+    common = {
+        "prior_attempt": prior,
+        "action": "request_additional_context",
+        "model_client": _TxAssertingRepairClient(conn),
+        "invocation_ledger": V2LLMInvocationLedger(SqliteV2LLMInvocationRepository(conn)),
+        "repair_repo": repair_repo,
+        "candidate_repo": candidate_repo,
+        "attempt_repo": attempts,
+        "event_repo": SqliteV2JobEventRepository(conn),
+    }
+
+    with pytest.raises(ValueError, match="additional_context_not_found"):
+        execute_remediation_attempt(**common, requested_context=("../outside.txt",))
+    assert len(attempts.list_public("job-wf04a", 1)) == 1
+
+    exhausted = {**prior, "internal": {**prior["internal"], "context_pack": {**prior["internal"]["context_pack"], "max_cycles": 1}}}
+    with pytest.raises(ValueError, match="maximum_repair_attempts_reached"):
+        execute_remediation_attempt(**{**common, "prior_attempt": exhausted}, requested_context=())
+    assert "mark_manual_remediation_required" in prior["operator_actions_available"]
+    assert len(attempts.list_public("job-wf04a", 1)) == 1
+
+
+def test_chatbot_translation_only_previews_bounded_backend_action() -> None:
+    command = repair_remediation_intent_from_text(
+        "Do not modify tests. Inspect production code and propose another solution.",
+        job_id="job-wf04a",
+        stage_index=1,
+        attempt_id="repair-attempt-1",
+    )
+
+    assert command == {
+        "action": "request_corrected_proposal",
+        "job_id": "job-wf04a",
+        "stage_index": 1,
+        "previous_attempt_id": "repair-attempt-1",
+        "operator_guidance": "Do not modify tests. Inspect production code and propose another solution.",
+        "confirmation_required": True,
+        "authority": "backend_governed",
+    }
+    assert "actor_id" not in command
+    assert "expected_attempt_checksum" not in command
+
+
+def test_repair_attempt_routes_reject_stale_state_and_project_recorded_action(tmp_path: Path) -> None:
+    from migration_factory.control_tower.adapters.fastapi.security import DEFAULT_FRONTEND_CLIENT_ID
+
+    conn = _conn()
+    _seed_downstream_context(conn, tmp_path)
+    result, _, _, _ = _persist(conn, tmp_path)
+    attempts = SqliteV2RepairAttemptRepository(conn)
+    current = attempts.get_public("job-wf04a", 1, result.attempt_id)
+    client = TestClient(
+        create_app(lambda: SqliteControlTowerUnitOfWork(conn)),
+        base_url="http://127.0.0.1:8000",
+    )
+    headers = {
+        "Content-Type": "application/json",
+        "Origin": "http://127.0.0.1:3000",
+        "X-Control-Tower-Client": DEFAULT_FRONTEND_CLIENT_ID,
+    }
+    url = f"/v1/v2/jobs/job-wf04a/stages/1/repair-attempts/{result.attempt_id}/actions"
+
+    listing = client.get("/v1/v2/jobs/job-wf04a/stages/1/repair-attempts")
+    assert listing.status_code == 200
+    assert listing.json()["attempts"][0]["attempt_checksum"] == current["attempt_checksum"]
+
+    stale = client.post(url, headers=headers, json={
+        "action": "reject_current_attempt",
+        "expected_attempt_checksum": "sha256:stale",
+    })
+    assert stale.status_code == 409
+    assert conn.execute("SELECT COUNT(*) FROM v2_repair_operator_actions").fetchone()[0] == 0
+
+    recorded = client.post(url, headers=headers, json={
+        "action": "reject_current_attempt",
+        "expected_attempt_checksum": current["attempt_checksum"],
+    })
+    assert recorded.status_code == 200, recorded.text
+    assert recorded.json()["attempt"]["repair_workflow_state"] == "repair_rejected"
+    rejected_candidate = SqliteV2RepairCandidateRepository(conn).get_public(
+        "job-wf04a",
+        1,
+        result.llm_repair_candidate_id,
+    )
+    assert rejected_candidate["status"] == "rejected"
+    assert rejected_candidate["approval_enabled"] is False
+    assert rejected_candidate["apply_enabled"] is False
+    row = conn.execute("SELECT actor_type, actor_id, action_type FROM v2_repair_operator_actions").fetchone()
+    assert row["action_type"] == "reject_current_attempt"
+    assert row["actor_type"]
+    assert row["actor_id"]
+
+
+def test_resume_action_retries_blocked_route_continuation_from_verified_checkpoint(tmp_path: Path) -> None:
+    from migration_factory.control_tower.adapters.fastapi.security import DEFAULT_FRONTEND_CLIENT_ID
+
+    conn = _conn()
+    _seed_downstream_context(conn, tmp_path)
+    result, _, candidate_repo, _ = _persist(conn, tmp_path)
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    approval = approve_repair_apply_candidate(candidate, _llm_approval_request(candidate), actor_identity=_backend_actor())
+    candidate_repo.save_approval("job-wf04a", 1, result.llm_repair_candidate_id, approval)
+    execution = apply_approved_repair_candidate(
+        candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id),
+        approval,
+        post_repair_verification_runner=_ReviewedLlmPostRepairRunner(pass_tests=True),
+        downstream_resume=lambda *_: {"downstream_resume_status": "blocked", "reason": "transient_queue_failure"},
+    )
+    candidate_repo.save_execution("job-wf04a", 1, result.llm_repair_candidate_id, execution)
+    attempts = SqliteV2RepairAttemptRepository(conn)
+    current = attempts.get_public("job-wf04a", 1, result.attempt_id)
+    assert current["resume_enabled"] is True
+
+    client = TestClient(
+        create_app(lambda: SqliteControlTowerUnitOfWork(conn)),
+        base_url="http://127.0.0.1:8000",
+    )
+    response = client.post(
+        f"/v1/v2/jobs/job-wf04a/stages/1/repair-attempts/{result.attempt_id}/actions",
+        headers={
+            "Content-Type": "application/json",
+            "Origin": "http://127.0.0.1:3000",
+            "X-Control-Tower-Client": DEFAULT_FRONTEND_CLIENT_ID,
+        },
+        json={
+            "action": "resume_from_repair_checkpoint",
+            "expected_attempt_checksum": current["attempt_checksum"],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] in {"queued", "route_complete"}
+    assert response.json()["attempt"]["resume_enabled"] is False
+    assert response.json()["route_continuation"]["downstream_resume_status"] in {"queued", "route_complete"}
+    assert conn.execute("SELECT COUNT(*) FROM v2_repair_operator_actions WHERE action_type = 'resume_from_repair_checkpoint'").fetchone()[0] == 1
+
+
+def test_fastapi_reviewer_override_requires_risks_and_records_decision(tmp_path: Path) -> None:
+    from migration_factory.control_tower.adapters.fastapi.security import DEFAULT_FRONTEND_CLIENT_ID
+
+    conn = _conn()
+    _seed_downstream_context(conn, tmp_path)
+    result, _, candidate_repo, _ = _persist(
+        conn,
+        tmp_path,
+        reviewer_decision="reject",
+        reviewer_outcome="rejected",
+    )
+    candidate = candidate_repo.get_internal("job-wf04a", 1, result.llm_repair_candidate_id)
+    request = _llm_approval_request(candidate)
+    client = TestClient(
+        create_app(lambda: SqliteControlTowerUnitOfWork(conn)),
+        base_url="http://127.0.0.1:8000",
+    )
+    headers = {
+        "Content-Type": "application/json",
+        "Origin": "http://127.0.0.1:3000",
+        "X-Control-Tower-Client": DEFAULT_FRONTEND_CLIENT_ID,
+    }
+    url = f"/v1/v2/jobs/job-wf04a/stages/1/repair-candidates/{result.llm_repair_candidate_id}/approve"
+
+    missing = client.post(url, headers=headers, json={**request, "operator_justification": ""})
+    assert missing.status_code == 409
+    approved = client.post(url, headers=headers, json=request)
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["approval"]["approval_mode"] == "reviewer_override_approval"
+    assert approved.json()["candidate"]["reviewer_outcome"] == "rejected"
+    assert approved.json()["candidate"]["apply_enabled"] is True
+    assert conn.execute("SELECT COUNT(*) FROM v2_repair_operator_decisions").fetchone()[0] == 1

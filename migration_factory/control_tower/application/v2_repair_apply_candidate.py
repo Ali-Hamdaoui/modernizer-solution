@@ -227,7 +227,23 @@ def _approve_reviewed_llm_candidate(
     _must(str(candidate.get("patch_source") or "") == PATCH_SOURCE_LLM_REVIEWED, "patch_source_mismatch")
     _must(str(candidate.get("policy_id") or "") == POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1, "policy_id_mismatch")
     _must(str(policy.get("decision") or "") == REVIEWED_LLM_DECISION_ALLOWED, "policy_not_allowed")
-    _must(_candidate_reviewer_decision(candidate) == "accept", "reviewer_not_accepted")
+    reviewer_outcome = _candidate_reviewer_outcome(candidate)
+    approval_mode = _required_approval_mode(reviewer_outcome)
+    normal = approval_mode == "normal_approval"
+    _must(str(request.get("approval_mode") or (approval_mode if normal else "")) == approval_mode, "approval_mode_mismatch")
+    _must(str(request.get("reviewer_outcome") or (reviewer_outcome if normal else "")) == reviewer_outcome, "reviewer_outcome_mismatch")
+    expected_reviewer_checksum = str(candidate.get("reviewer_output_checksum") or candidate.get("review_checksum") or "")
+    expected_reviewer_invocation = str(candidate.get("reviewer_invocation_id") or "")
+    _must(bool(expected_reviewer_invocation), "reviewer_invocation_id_required")
+    if reviewer_outcome != "unavailable":
+        _must(bool(expected_reviewer_checksum), "reviewer_output_checksum_required")
+    _must(str(request.get("reviewer_output_checksum") or (expected_reviewer_checksum if normal else "")) == expected_reviewer_checksum, "reviewer_output_checksum_mismatch")
+    _must(str(request.get("reviewer_invocation_id") or (expected_reviewer_invocation if normal else "")) == expected_reviewer_invocation, "reviewer_invocation_id_mismatch")
+    justification = str(request.get("operator_justification") or "").strip()
+    acknowledged_risks = tuple(sorted(dict.fromkeys(str(code).strip() for code in request.get("acknowledged_risk_codes") or () if str(code).strip())))
+    if approval_mode != "normal_approval":
+        _must(bool(justification), "operator_justification_required")
+        _must(bool(acknowledged_risks), "acknowledged_risk_codes_required")
     _must(not isinstance(candidate.get("approval"), dict), "candidate_already_approved")
     _must(not isinstance(candidate.get("execution"), dict), "terminal_execution_exists")
     _must(not bool(candidate.get("superseded_by_repair_candidate_id") or candidate.get("superseded_by_candidate_id")), "candidate_superseded")
@@ -262,7 +278,13 @@ def _approve_reviewed_llm_candidate(
         "review_chain_identity_checksum": candidate.get("review_chain_identity_checksum") or candidate.get("proposal_checksum") or "",
         "base_repository_state_checksum": candidate.get("base_repo_state_checksum") or "",
         "approval_scope": "sandbox_only",
-        "reviewer_decision": "accept",
+        "approval_mode": approval_mode,
+        "operator_justification": justification,
+        "acknowledged_risk_codes": list(acknowledged_risks),
+        "reviewer_decision": _candidate_reviewer_decision(candidate),
+        "reviewer_outcome": reviewer_outcome,
+        "reviewer_output_checksum": str(candidate.get("reviewer_output_checksum") or candidate.get("review_checksum") or ""),
+        "reviewer_invocation_id": str(candidate.get("reviewer_invocation_id") or ""),
         "backend_actor_type": actor["actor_type"],
         "backend_actor_id": actor["actor_id"],
     }
@@ -303,8 +325,11 @@ def _apply_reviewed_llm_candidate(
         "approval_base_repository_state_checksum_mismatch",
     )
     _must(str(approval.get("approval_scope") or "") == "sandbox_only", "approval_scope_mismatch")
-    _must(_candidate_reviewer_decision(candidate) == "accept", "reviewer_not_accepted")
-    _must(str(approval.get("reviewer_decision") or "") == "accept", "reviewer_not_accepted")
+    reviewer_outcome = _candidate_reviewer_outcome(candidate)
+    _must(str(approval.get("reviewer_outcome") or "") == reviewer_outcome, "approval_reviewer_outcome_mismatch")
+    _must(str(approval.get("approval_mode") or "") == _required_approval_mode(reviewer_outcome), "approval_mode_mismatch")
+    _must(str(approval.get("reviewer_output_checksum") or "") == str(candidate.get("reviewer_output_checksum") or candidate.get("review_checksum") or ""), "approval_reviewer_checksum_mismatch")
+    _must(str(approval.get("reviewer_invocation_id") or "") == str(candidate.get("reviewer_invocation_id") or ""), "approval_reviewer_invocation_mismatch")
     _must(_reviewed_llm_approval_checksum(_approval_checksum_payload(approval)) == str(approval.get("approval_checksum") or ""), "approval_checksum_mismatch")
     _must(not bool(candidate.get("superseded_by_repair_candidate_id") or candidate.get("superseded_by_candidate_id")), "candidate_superseded")
     _must(str(candidate.get("rejection_status") or candidate.get("reviewer_rejection_status") or "") not in {"rejected", "reject"}, "conflicting_rejection_exists")
@@ -592,6 +617,25 @@ def _candidate_reviewer_decision(candidate: dict[str, Any]) -> str:
     return str(metadata.get("reviewer_decision") or "")
 
 
+def _candidate_reviewer_outcome(candidate: dict[str, Any]) -> str:
+    if str(candidate.get("reviewer_outcome") or ""):
+        return str(candidate["reviewer_outcome"])
+    metadata = candidate.get("_llm_candidate_metadata") if isinstance(candidate.get("_llm_candidate_metadata"), dict) else {}
+    outcome = str(metadata.get("reviewer_outcome") or "")
+    if outcome:
+        return outcome
+    decision = _candidate_reviewer_decision(candidate)
+    return "accepted" if decision == "accept" else "accepted_with_concerns" if decision == "revise" else "rejected" if decision == "reject" else "unavailable"
+
+
+def _required_approval_mode(reviewer_outcome: str) -> str:
+    if reviewer_outcome == "accepted":
+        return "normal_approval"
+    if reviewer_outcome == "accepted_with_concerns":
+        return "acknowledged_risk_approval"
+    return "reviewer_override_approval"
+
+
 def _approval_checksum_payload(approval: dict[str, Any]) -> dict[str, Any]:
     return {
         "repair_candidate_id": str(approval.get("repair_candidate_id") or ""),
@@ -601,7 +645,13 @@ def _approval_checksum_payload(approval: dict[str, Any]) -> dict[str, Any]:
         "review_chain_identity_checksum": str(approval.get("review_chain_identity_checksum") or ""),
         "base_repository_state_checksum": str(approval.get("base_repository_state_checksum") or ""),
         "approval_scope": str(approval.get("approval_scope") or ""),
+        "approval_mode": str(approval.get("approval_mode") or ""),
+        "operator_justification": str(approval.get("operator_justification") or ""),
+        "acknowledged_risk_codes": sorted(str(code) for code in approval.get("acknowledged_risk_codes") or ()),
         "reviewer_decision": str(approval.get("reviewer_decision") or ""),
+        "reviewer_outcome": str(approval.get("reviewer_outcome") or ""),
+        "reviewer_output_checksum": str(approval.get("reviewer_output_checksum") or ""),
+        "reviewer_invocation_id": str(approval.get("reviewer_invocation_id") or ""),
         "backend_actor_type": str(approval.get("backend_actor_type") or ""),
         "backend_actor_id": str(approval.get("backend_actor_id") or ""),
     }
@@ -855,6 +905,12 @@ def _reviewed_llm_proof_bindings(
         "candidate_checksum": str(candidate.get("candidate_checksum") or ""),
         "approval_id": str(approval.get("approval_id") or ""),
         "approval_checksum": str(approval.get("approval_checksum") or ""),
+        "approval_mode": str(approval.get("approval_mode") or ""),
+        "operator_justification": str(approval.get("operator_justification") or ""),
+        "acknowledged_risk_codes": list(approval.get("acknowledged_risk_codes") or ()),
+        "reviewer_outcome": str(approval.get("reviewer_outcome") or ""),
+        "reviewer_output_checksum": str(approval.get("reviewer_output_checksum") or ""),
+        "reviewer_invocation_id": str(approval.get("reviewer_invocation_id") or ""),
         "reviewed_diff_checksum": str(candidate.get("patch_checksum") or ""),
         "policy_validation_checksum": str(candidate.get("policy_validation_checksum") or ""),
         "review_chain_identity_checksum": str(candidate.get("review_chain_identity_checksum") or candidate.get("proposal_checksum") or ""),

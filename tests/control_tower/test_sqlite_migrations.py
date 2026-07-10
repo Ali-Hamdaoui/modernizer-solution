@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import sqlite3
 
 import pytest
@@ -64,6 +65,173 @@ def test_migrations_are_discovered_and_ordered_correctly(tmp_path: Path) -> None
 
     assert [migration.version for migration in migrations] == [1, 2]
     assert [migration.name for migration in migrations] == ["first", "second"]
+
+
+def test_operator_governed_repair_migration_0058_is_discovered_and_applied() -> None:
+    migrations = discover_migrations()
+    migration = next(item for item in migrations if item.version == 58)
+    connection = sqlite3.connect(":memory:", isolation_level=None)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+
+    apply_pending_migrations(connection)
+
+    assert migration.name == "v2_operator_governed_repair_attempts"
+    tables = {
+        row["name"]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    assert {
+        "v2_repair_attempts",
+        "v2_repair_operator_actions",
+        "v2_repair_operator_decisions",
+    }.issubset(tables)
+    applied = connection.execute(
+        "SELECT name FROM schema_migrations WHERE version = 58"
+    ).fetchone()
+    assert applied["name"] == migration.name
+
+
+def test_operator_governed_repair_migration_0059_is_discovered_and_applied() -> None:
+    migrations = discover_migrations()
+    migration = next(item for item in migrations if item.version == 59)
+    connection = sqlite3.connect(":memory:", isolation_level=None)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+
+    apply_pending_migrations(connection)
+
+    assert migration.name == "v2_operator_governed_repair_append_only_guards"
+    trigger_names = _all_trigger_names(connection)
+    assert {
+        "trg_v2_repair_attempts_no_update",
+        "trg_v2_repair_attempts_no_delete",
+        "trg_v2_repair_operator_actions_no_update",
+        "trg_v2_repair_operator_actions_no_delete",
+        "trg_v2_repair_operator_decisions_no_update",
+        "trg_v2_repair_operator_decisions_no_delete",
+    }.issubset(trigger_names)
+    applied = connection.execute(
+        "SELECT name FROM schema_migrations WHERE version = 59"
+    ).fetchone()
+    assert applied["name"] == migration.name
+
+
+def test_operator_governed_repair_ledgers_are_append_only_at_sqlite_boundary(tmp_path: Path) -> None:
+    connection = _migrated_connection(tmp_path)
+    try:
+        _seed_operator_governed_repair_ledgers(connection)
+
+        for table, update_sql, delete_sql in (
+            (
+                "v2_repair_attempts",
+                "UPDATE v2_repair_attempts SET workflow_state = 'tampered' WHERE attempt_id = 'attempt-1'",
+                "DELETE FROM v2_repair_attempts WHERE attempt_id = 'attempt-1'",
+            ),
+            (
+                "v2_repair_operator_actions",
+                "UPDATE v2_repair_operator_actions SET actor_id = 'tampered' WHERE action_id = 'action-1'",
+                "DELETE FROM v2_repair_operator_actions WHERE action_id = 'action-1'",
+            ),
+            (
+                "v2_repair_operator_decisions",
+                "UPDATE v2_repair_operator_decisions SET actor_id = 'tampered' WHERE decision_id = 'decision-1'",
+                "DELETE FROM v2_repair_operator_decisions WHERE decision_id = 'decision-1'",
+            ),
+        ):
+            with pytest.raises(sqlite3.IntegrityError, match=f"{table} is append-only"):
+                connection.execute(update_sql)
+            with pytest.raises(sqlite3.IntegrityError, match=f"{table} is append-only"):
+                connection.execute(delete_sql)
+
+        assert connection.execute("SELECT COUNT(*) FROM v2_repair_attempts").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM v2_repair_operator_actions").fetchone()[0] == 1
+        assert connection.execute("SELECT COUNT(*) FROM v2_repair_operator_decisions").fetchone()[0] == 1
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO v2_repair_attempts (
+                    attempt_id, job_id, stage_index, command_id, attempt_number,
+                    attempt_source, previous_attempt_id, repair_candidate_id,
+                    applicability_status, workflow_state, projection_json,
+                    internal_json, attempt_checksum, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "attempt-duplicate",
+                    "job-append-only",
+                    1,
+                    "command-1",
+                    1,
+                    "llm",
+                    None,
+                    "candidate-duplicate",
+                    "applicable",
+                    "operator_review",
+                    "{}",
+                    "{}",
+                    "sha256:duplicate",
+                    "2026-01-01T00:00:03Z",
+                ),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO v2_repair_operator_actions (
+                    action_id, attempt_id, job_id, stage_index, action_type,
+                    payload_json, payload_checksum, actor_type, actor_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "action-orphan",
+                    "missing-attempt",
+                    "job-append-only",
+                    1,
+                    "request_corrected_proposal",
+                    "{}",
+                    "sha256:action-orphan",
+                    "local_operator",
+                    "operator-1",
+                    "2026-01-01T00:00:04Z",
+                ),
+            )
+    finally:
+        connection.close()
+
+
+def test_migration_0059_upgrades_existing_0058_database_and_is_idempotent(tmp_path: Path) -> None:
+    source_migrations = discover_migrations()
+    migrations_dir = tmp_path / "migrations"
+    migrations_dir.mkdir()
+    for migration in source_migrations:
+        if migration.version <= 58:
+            shutil.copy2(migration.path, migrations_dir / migration.path.name)
+
+    connection = connect_control_tower(tmp_path / "control_tower.sqlite3")
+    try:
+        applied_through_0058 = apply_pending_migrations(connection, migrations_dir=migrations_dir)
+        assert applied_through_0058[-1].version == 58
+        assert "trg_v2_repair_attempts_no_update" not in _all_trigger_names(connection)
+
+        migration_0059 = next(item for item in source_migrations if item.version == 59)
+        shutil.copy2(migration_0059.path, migrations_dir / migration_0059.path.name)
+        applied_0059 = apply_pending_migrations(connection, migrations_dir=migrations_dir)
+        assert [migration.version for migration in applied_0059] == [59]
+        assert {
+            "trg_v2_repair_attempts_no_update",
+            "trg_v2_repair_operator_actions_no_update",
+            "trg_v2_repair_operator_decisions_no_update",
+        }.issubset(_all_trigger_names(connection))
+
+        _seed_operator_governed_repair_ledgers(connection)
+        with pytest.raises(sqlite3.IntegrityError, match="v2_repair_attempts is append-only"):
+            connection.execute("UPDATE v2_repair_attempts SET workflow_state = 'tampered'")
+        assert apply_pending_migrations(connection, migrations_dir=migrations_dir) == []
+    finally:
+        connection.close()
 
 
 def test_duplicate_migration_versions_are_rejected(tmp_path: Path) -> None:
@@ -936,6 +1104,96 @@ def _all_index_names(connection: sqlite3.Connection) -> set[str]:
         """
     ).fetchall()
     return {str(row["name"]) for row in rows}
+
+
+def _all_trigger_names(connection: sqlite3.Connection) -> set[str]:
+    rows = connection.execute(
+        """
+        SELECT name
+        FROM sqlite_master
+        WHERE type = 'trigger'
+        """
+    ).fetchall()
+    return {str(row["name"]) for row in rows}
+
+
+def _seed_operator_governed_repair_ledgers(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        INSERT INTO v2_repair_attempts (
+            attempt_id, job_id, stage_index, command_id, attempt_number,
+            attempt_source, previous_attempt_id, repair_candidate_id,
+            applicability_status, workflow_state, projection_json,
+            internal_json, attempt_checksum, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "attempt-1",
+            "job-append-only",
+            1,
+            "command-1",
+            1,
+            "llm",
+            None,
+            "candidate-1",
+            "applicable",
+            "operator_review",
+            "{}",
+            "{}",
+            "sha256:attempt-1",
+            "2026-01-01T00:00:00Z",
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO v2_repair_operator_actions (
+            action_id, attempt_id, job_id, stage_index, action_type,
+            payload_json, payload_checksum, actor_type, actor_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "action-1",
+            "attempt-1",
+            "job-append-only",
+            1,
+            "request_corrected_proposal",
+            "{}",
+            "sha256:action-1",
+            "local_operator",
+            "operator-1",
+            "2026-01-01T00:00:01Z",
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO v2_repair_operator_decisions (
+            decision_id, attempt_id, repair_candidate_id, job_id, stage_index,
+            approval_mode, decision_status, operator_justification,
+            acknowledged_risk_codes_json, reviewer_outcome,
+            reviewer_output_checksum, reviewer_invocation_id,
+            candidate_checksum, decision_checksum, actor_type, actor_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "decision-1",
+            "attempt-1",
+            "candidate-1",
+            "job-append-only",
+            1,
+            "normal_approval",
+            "approved",
+            "Operator approved exact reviewed diff.",
+            "[]",
+            "accepted",
+            "sha256:reviewer-1",
+            "invocation-1",
+            "sha256:candidate-1",
+            "sha256:decision-1",
+            "local_operator",
+            "operator-1",
+            "2026-01-01T00:00:02Z",
+        ),
+    )
 
 
 def _seed_runner_profile(connection: sqlite3.Connection) -> None:

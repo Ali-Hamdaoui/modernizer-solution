@@ -136,6 +136,7 @@ class ReviewedLlmPatchPolicyResult:
     evidence_changed_files: tuple[str, ...] = ()
     declared_changed_files: tuple[str, ...] = ()
     allowed_route_scope: tuple[str, ...] = ()
+    advisory_warnings: tuple[str, ...] = ()
 
 
 def evaluate_reviewed_llm_patch(
@@ -175,6 +176,7 @@ def evaluate_reviewed_llm_patch(
         "allowed_route_scope": tuple(sorted(dict.fromkeys(allowed_route_scope))),
     }
     reason_codes: list[str] = []
+    advisory_warnings: list[str] = []
     details: list[dict[str, Any]] = []
     computed_reviewed_diff_checksum = base["reviewed_diff_checksum"]
     if computed_reviewed_diff_checksum != _sha256_prefixed_text(reviewed_diff_checksum):
@@ -278,6 +280,16 @@ def evaluate_reviewed_llm_patch(
         stored_diff_checksum=reviewed_diff_checksum.removeprefix("sha256:"),
     )
     structural_codes, structural_details = _reviewed_llm_structural_controls(preview, diff_text)
+    explicit_bypass_codes = {
+        REASON_TEST_DISABLED_OR_SKIPPED,
+        REASON_TRIVIALLY_PASSING_ASSERTION,
+        REASON_EXPECTED_EXCEPTION_MASKING,
+        REASON_DIRECT_TEST_FAILURE_MASKING,
+    }
+    if REASON_ASSERTION_WEAKENING in structural_codes and not explicit_bypass_codes.intersection(structural_codes):
+        structural_codes = [code for code in structural_codes if code != REASON_ASSERTION_WEAKENING]
+        structural_details = [detail for detail in structural_details if detail.get("code") != REASON_ASSERTION_WEAKENING]
+        advisory_warnings.append(REASON_ASSERTION_WEAKENING)
     reason_codes.extend(structural_codes)
     details.extend(structural_details)
     if preview.checksum_mismatch:
@@ -296,6 +308,7 @@ def evaluate_reviewed_llm_patch(
         reason_codes=deduped_codes,
         details=_bounded_details(details),
         touched_paths=tuple(paths),
+        advisory_warnings=tuple(dict.fromkeys(advisory_warnings)),
         **base,
     )
 
@@ -350,6 +363,7 @@ def reviewed_llm_policy_payload(
         "policy_id": POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1,
         "decision": result.decision,
         "reason_codes": list(result.reason_codes),
+        "advisory_warnings": list(result.advisory_warnings),
         "details": list(_redacted_bounded_details(result.details)),
         "touched_paths": sorted(result.touched_paths),
         "reviewed_diff_checksum": result.reviewed_diff_checksum,
@@ -494,6 +508,7 @@ def reviewed_llm_policy_checksum_input(result: ReviewedLlmPatchPolicyResult) -> 
         "policy_id": POLICY_ID_GENERIC_REVIEWED_LLM_PATCH_V1,
         "decision": result.decision,
         "reason_codes": sorted(result.reason_codes),
+        "advisory_warnings": sorted(result.advisory_warnings),
         "touched_paths": sorted(_normalize_rel_path(path) for path in result.touched_paths if path),
         "reviewed_diff_checksum": result.reviewed_diff_checksum,
         "failure_evidence_checksum": result.failure_evidence_checksum,

@@ -9,7 +9,8 @@ from typing import Any
 
 from migration_factory.control_tower.application.v2_repair_apply_candidate import (
     _approval_checksum_payload,
-    _candidate_reviewer_decision,
+    _candidate_reviewer_outcome,
+    _required_approval_mode,
     _reviewed_llm_approval_checksum,
     public_repair_apply_candidate,
 )
@@ -64,10 +65,12 @@ class SqliteV2RepairCandidateRepository:
         candidate["status"] = str(row["status"])
         if str(candidate.get("candidate_kind") or "") == "llm_unknown_family":
             candidate = _attach_llm_persistence_bindings(self._connection, candidate)
+            candidate = _attach_terminal_operator_action(self._connection, candidate)
         if row["approval_json"]:
             candidate["approval"] = json.loads(str(row["approval_json"]))
         if row["execution_json"]:
             candidate["execution"] = json.loads(str(row["execution_json"]))
+        candidate = _attach_current_attempt_state(self._connection, candidate)
         return candidate
 
     def get_public(self, job_id: str, stage_index: int, repair_candidate_id: str) -> dict[str, Any] | None:
@@ -107,6 +110,8 @@ class SqliteV2RepairCandidateRepository:
                 "apply_enabled": False,
                 "approval_enabled": False,
             })
+        public = _attach_terminal_operator_action(self._connection, public)
+        public = _attach_current_attempt_state(self._connection, public)
         return _safe_llm_candidate_state(public) if public.get("candidate_kind") == "llm_unknown_family" else public
 
     def latest_public_for_job(self, job_id: str) -> dict[str, Any] | None:
@@ -148,6 +153,8 @@ class SqliteV2RepairCandidateRepository:
                 "apply_enabled": False,
                 "approval_enabled": False,
             })
+        public = _attach_terminal_operator_action(self._connection, public)
+        public = _attach_current_attempt_state(self._connection, public)
         return _safe_llm_candidate_state(public) if public.get("candidate_kind") == "llm_unknown_family" else public
 
     def save_approval(self, job_id: str, stage_index: int, repair_candidate_id: str, approval: dict[str, Any]) -> None:
@@ -206,6 +213,82 @@ def _attach_llm_persistence_bindings(connection: sqlite3.Connection, candidate: 
     return candidate
 
 
+def _terminal_operator_action(connection: sqlite3.Connection, repair_candidate_id: str) -> str:
+    row = connection.execute(
+        """SELECT action.action_type
+           FROM v2_repair_operator_actions AS action
+           JOIN v2_repair_attempts AS attempt ON attempt.attempt_id = action.attempt_id
+           WHERE attempt.repair_candidate_id = ?
+             AND action.action_type IN ('reject_current_attempt', 'mark_manual_remediation_required')
+           ORDER BY action.created_at DESC, action.rowid DESC
+           LIMIT 1""",
+        (repair_candidate_id,),
+    ).fetchone()
+    return str(row["action_type"] or "") if row is not None else ""
+
+
+def _attach_terminal_operator_action(
+    connection: sqlite3.Connection,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    if str(candidate.get("candidate_kind") or "") != "llm_unknown_family":
+        return candidate
+    action = _terminal_operator_action(connection, str(candidate.get("repair_candidate_id") or ""))
+    if not action:
+        return candidate
+    candidate["status"] = (
+        "rejected" if action == "reject_current_attempt" else "manual_remediation_required"
+    )
+    candidate["approval_enabled"] = False
+    candidate["apply_enabled"] = False
+    candidate["terminal_operator_action"] = action
+    return candidate
+
+
+def _attach_current_attempt_state(
+    connection: sqlite3.Connection,
+    candidate: dict[str, Any],
+) -> dict[str, Any]:
+    if str(candidate.get("candidate_kind") or "") != "llm_unknown_family":
+        return candidate
+    repair_candidate_id = str(candidate.get("repair_candidate_id") or "")
+    attempt = connection.execute(
+        "SELECT attempt_id FROM v2_repair_attempts WHERE repair_candidate_id = ? ORDER BY attempt_number DESC LIMIT 1",
+        (repair_candidate_id,),
+    ).fetchone()
+    if attempt is None:
+        return candidate
+    latest = connection.execute(
+        "SELECT attempt_id FROM v2_repair_attempts WHERE job_id = ? AND stage_index = ? ORDER BY attempt_number DESC, created_at DESC LIMIT 1",
+        (candidate.get("job_id"), int(candidate.get("stage_index") or 0)),
+    ).fetchone()
+    if latest is None or str(latest["attempt_id"]) == str(attempt["attempt_id"]):
+        return candidate
+    candidate["status"] = "superseded"
+    candidate["approval_enabled"] = False
+    candidate["apply_enabled"] = False
+    candidate["superseded_by_attempt_id"] = str(latest["attempt_id"])
+    return candidate
+
+
+def _repair_candidate_is_current(connection: sqlite3.Connection, repair_candidate_id: str) -> bool:
+    row = connection.execute(
+        """SELECT job_id, stage_index, attempt_id
+           FROM v2_repair_attempts
+           WHERE repair_candidate_id = ?
+           ORDER BY attempt_number DESC
+           LIMIT 1""",
+        (repair_candidate_id,),
+    ).fetchone()
+    if row is None:
+        return True
+    latest = connection.execute(
+        "SELECT attempt_id FROM v2_repair_attempts WHERE job_id = ? AND stage_index = ? ORDER BY attempt_number DESC, created_at DESC LIMIT 1",
+        (row["job_id"], int(row["stage_index"])),
+    ).fetchone()
+    return latest is not None and str(latest["attempt_id"]) == str(row["attempt_id"])
+
+
 def _validate_llm_approval(
     connection: sqlite3.Connection,
     job_id: str,
@@ -232,14 +315,35 @@ def _validate_llm_approval(
         raise ValueError("llm_candidate_not_approval_eligible")
     if row["execution_json"]:
         raise ValueError("llm_candidate_execution_exists")
+    if not _repair_candidate_is_current(connection, repair_candidate_id):
+        raise ValueError("llm_candidate_superseded")
+    terminal_action = _terminal_operator_action(connection, repair_candidate_id)
+    if terminal_action:
+        raise ValueError(f"llm_candidate_{terminal_action}")
     if str(approval.get("approval_status") or "") != "approved":
         raise ValueError("llm_approval_not_approved")
     if str(approval.get("approval_scope") or "") != "sandbox_only":
         raise ValueError("llm_approval_scope_mismatch")
-    if _candidate_reviewer_decision(candidate) != "accept":
-        raise ValueError("llm_approval_reviewer_not_accepted")
-    if str(approval.get("reviewer_decision") or "") != "accept":
-        raise ValueError("llm_approval_reviewer_not_accepted")
+    reviewer_outcome = _candidate_reviewer_outcome(candidate)
+    if str(approval.get("reviewer_outcome") or "") != reviewer_outcome:
+        raise ValueError("llm_approval_reviewer_outcome_mismatch")
+    if str(approval.get("reviewer_decision") or "") != str(candidate.get("reviewer_decision") or ""):
+        raise ValueError("llm_approval_reviewer_decision_mismatch")
+    if str(approval.get("approval_mode") or "") != _required_approval_mode(reviewer_outcome):
+        raise ValueError("llm_approval_mode_mismatch")
+    if str(approval.get("reviewer_output_checksum") or "") != str(candidate.get("reviewer_output_checksum") or candidate.get("review_checksum") or ""):
+        raise ValueError("llm_approval_reviewer_checksum_mismatch")
+    if str(approval.get("reviewer_invocation_id") or "") != str(candidate.get("reviewer_invocation_id") or ""):
+        raise ValueError("llm_approval_reviewer_invocation_mismatch")
+    if not str(candidate.get("reviewer_invocation_id") or ""):
+        raise ValueError("llm_approval_reviewer_invocation_required")
+    if reviewer_outcome != "unavailable" and not str(candidate.get("reviewer_output_checksum") or candidate.get("review_checksum") or ""):
+        raise ValueError("llm_approval_reviewer_checksum_required")
+    if _required_approval_mode(reviewer_outcome) != "normal_approval":
+        if not str(approval.get("operator_justification") or "").strip():
+            raise ValueError("llm_approval_operator_justification_required")
+        if not tuple(approval.get("acknowledged_risk_codes") or ()):
+            raise ValueError("llm_approval_acknowledged_risks_required")
     if not str(approval.get("backend_actor_id") or "").strip():
         raise ValueError("llm_approval_actor_required")
     if not str(approval.get("backend_actor_type") or "").strip():
@@ -278,6 +382,11 @@ def _validate_llm_execution(
     candidate = _attach_llm_persistence_bindings(connection, json.loads(str(row["internal_json"])))
     if not row["approval_json"]:
         raise ValueError("llm_execution_approval_required")
+    if not _repair_candidate_is_current(connection, repair_candidate_id):
+        raise ValueError("llm_execution_candidate_superseded")
+    terminal_action = _terminal_operator_action(connection, repair_candidate_id)
+    if terminal_action:
+        raise ValueError(f"llm_execution_{terminal_action}")
     approval = json.loads(str(row["approval_json"]))
     existing_json = str(row["execution_json"] or "")
     if existing_json:
@@ -288,10 +397,11 @@ def _validate_llm_execution(
     status = str(execution.get("status") or execution.get("execution_status") or "")
     if status not in {"verified", "rolled_back", "failed"}:
         raise ValueError("llm_execution_status_invalid")
-    if _candidate_reviewer_decision(candidate) != "accept":
-        raise ValueError("llm_execution_reviewer_not_accepted")
-    if str(approval.get("reviewer_decision") or "") != "accept":
-        raise ValueError("llm_execution_reviewer_not_accepted")
+    reviewer_outcome = _candidate_reviewer_outcome(candidate)
+    if str(approval.get("reviewer_outcome") or "") != reviewer_outcome:
+        raise ValueError("llm_execution_reviewer_outcome_mismatch")
+    if str(approval.get("approval_mode") or "") != _required_approval_mode(reviewer_outcome):
+        raise ValueError("llm_execution_approval_mode_mismatch")
     if _reviewed_llm_approval_checksum(_approval_checksum_payload(approval)) != str(approval.get("approval_checksum") or ""):
         raise ValueError("llm_execution_approval_checksum_mismatch")
     if str(execution.get("repair_candidate_id") or "") != repair_candidate_id:

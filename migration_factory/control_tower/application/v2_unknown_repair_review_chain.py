@@ -28,6 +28,8 @@ from migration_factory.repair_loop.repair_context import RepairContextPack
 EVENT_LLM_REVIEW_CHAIN_STARTED = "llm_review_chain_started"
 EVENT_LLM_REVIEW_CHAIN_COMPLETED = "llm_review_chain_completed"
 EVENT_LLM_REVIEW_CHAIN_BLOCKED = "llm_review_chain_blocked"
+EVENT_LLM_REVIEW_ADVISORY_RECORDED = "llm_review_advisory_recorded"
+EVENT_REPAIR_OPERATOR_ACTION_REQUIRED = "repair_operator_action_required"
 
 STATUS_STARTED = "started"
 STATUS_COMPLETED = "completed"
@@ -95,6 +97,10 @@ _ALLOWED_EVENT_PAYLOAD_KEYS = (
     "reviewed_diff_checksum",
     "final_artifact_checksum",
     "failure_kind",
+    "reviewer_outcome",
+    "applicability_status",
+    "repair_workflow_state",
+    "operator_action_required",
 )
 
 
@@ -117,7 +123,11 @@ class UnknownRepairReviewChainResult:
     reviewed_diff_checksum: str = ""
     final_artifact_checksum: str = ""
     failure_kind: str = ""
-    non_actionable: bool = True
+    reviewer_outcome: str = ""
+    applicability_status: str = ""
+    repair_workflow_state: str = ""
+    operator_action_required: bool = False
+    non_actionable: bool = False
 
 
 def run_unknown_repair_review_chain(
@@ -134,6 +144,7 @@ def run_unknown_repair_review_chain(
     chain_result_sink: Callable[[dict[str, Any]], None] | None = None,
     proposal_id: str | None = None,
     gate_id: str | None = None,
+    operator_guidance: str = "",
 ) -> UnknownRepairReviewChainResult:
     """Authorize and run the unknown-family reviewed repair chain."""
 
@@ -190,17 +201,20 @@ def run_unknown_repair_review_chain(
         )
 
     try:
+        attempt_number = int(context_pack.cycle_number) + 1
         chain_result = produce_repair_review_chain(
             failure_evidence=failure_evidence,
             context_pack=context_pack,
-            output_dir=Path(output_dir),
+            output_dir=Path(output_dir) / f"attempt-{attempt_number:02d}",
             source_profile=source_profile,
             target_profile=target_profile,
             model_client=model_client,
             invocation_ledger=invocation_ledger,
             proposal_id=proposal_id,
             gate_id=gate_id,
-            attempt_number=context_pack.cycle_number,
+            attempt_number=attempt_number,
+            operator_guidance=operator_guidance,
+            advisory_reviewer=True,
         )
     except Exception as exc:
         return _blocked_result(
@@ -234,6 +248,38 @@ def run_unknown_repair_review_chain(
         )
     if chain_result_sink is not None:
         chain_result_sink(chain_result)
+
+    advisory_emit = _emit_event(
+        event_sink=event_sink,
+        event_type=EVENT_LLM_REVIEW_ADVISORY_RECORDED,
+        result=completed,
+    )
+    if advisory_emit:
+        return _base_result(
+            status=STATUS_BLOCKED,
+            reason=advisory_emit,
+            decision=decision,
+            failure_evidence=failure_evidence,
+            context_pack=context_pack,
+            proposal_id=proposal_id,
+            gate_id=gate_id,
+        )
+    if completed.operator_action_required:
+        action_emit = _emit_event(
+            event_sink=event_sink,
+            event_type=EVENT_REPAIR_OPERATOR_ACTION_REQUIRED,
+            result=completed,
+        )
+        if action_emit:
+            return _base_result(
+                status=STATUS_BLOCKED,
+                reason=action_emit,
+                decision=decision,
+                failure_evidence=failure_evidence,
+                context_pack=context_pack,
+                proposal_id=proposal_id,
+                gate_id=gate_id,
+            )
 
     complete_emit = _emit_event(
         event_sink=event_sink,
@@ -332,9 +378,7 @@ def _completed_result_from_chain(
     chain = chain_result.get("review_chain")
     if not isinstance(chain, dict):
         return None
-    if chain.get("reviewer_decision") != "accept":
-        return None
-    if chain.get("proposal_kind") != "llm_repair_review":
+    if chain.get("proposal_kind") not in {"llm_repair_review", "llm_repair_attempt"}:
         return None
     if chain.get("context_pack_checksum") != context_pack.context_pack_checksum:
         return None
@@ -348,23 +392,19 @@ def _completed_result_from_chain(
     raw_diff_bytes_checksum = str(chain.get("raw_diff_bytes_checksum") or "")
     final_reviewed_diff_checksum = str(chain.get("final_reviewed_diff_checksum") or "")
     final_artifact_checksum = str(chain.get("final_artifact_checksum") or "")
-    if not all(
-        (
-            primary_output_checksum,
-            reviewer_output_checksum,
-            proposed_diff_checksum,
-            raw_diff_bytes_checksum,
-            final_reviewed_diff_checksum,
-            final_artifact_checksum,
-        )
-    ):
-        return None
-    if proposed_diff_checksum != raw_diff_bytes_checksum or proposed_diff_checksum != final_reviewed_diff_checksum:
-        return None
-    if chain.get("primary_deterministic_fallback_used") is not False:
-        return None
-    if chain.get("reviewer_deterministic_fallback_used") is not False:
-        return None
+    proposal_valid = chain.get("proposal_valid") is not False
+    reviewer_outcome = str(chain.get("reviewer_outcome") or _outcome_from_decision(chain.get("reviewer_decision")))
+    if proposal_valid:
+        if not all((primary_output_checksum, proposed_diff_checksum, raw_diff_bytes_checksum, final_reviewed_diff_checksum, final_artifact_checksum)):
+            return None
+        if reviewer_outcome != "unavailable" and not reviewer_output_checksum:
+            return None
+        if proposed_diff_checksum != raw_diff_bytes_checksum or proposed_diff_checksum != final_reviewed_diff_checksum:
+            return None
+        if chain.get("primary_deterministic_fallback_used") is not False:
+            return None
+        if reviewer_outcome != "unavailable" and chain.get("reviewer_deterministic_fallback_used") is not False:
+            return None
     return UnknownRepairReviewChainResult(
         status=STATUS_COMPLETED,
         reason=REASON_AUTHORIZED,
@@ -375,14 +415,29 @@ def _completed_result_from_chain(
         failure_evidence_checksum=failure_evidence.content_checksum,
         context_checksum=context_pack.context_pack_checksum,
         base_repo_state_checksum=context_pack.base_repo_state_checksum,
-        attempt_number=context_pack.cycle_number,
+        attempt_number=int(chain.get("attempt_number") or context_pack.cycle_number + 1),
         proposal_id=proposal_id,
         gate_id=gate_id,
         primary_output_checksum=primary_output_checksum,
         reviewer_output_checksum=reviewer_output_checksum,
         reviewed_diff_checksum=final_reviewed_diff_checksum,
         final_artifact_checksum=final_artifact_checksum,
+        reviewer_outcome=reviewer_outcome,
+        applicability_status=str(chain.get("technical_applicability") or ("pending_hard_gate" if proposal_valid else "invalid")),
+        repair_workflow_state=str(chain.get("repair_workflow_state") or "operator_action_required"),
+        operator_action_required=bool(chain.get("operator_action_required", True)),
     )
+
+
+def _outcome_from_decision(value: Any) -> str:
+    decision = str(value or "").lower()
+    if decision == "accept":
+        return "accepted"
+    if decision == "revise":
+        return "accepted_with_concerns"
+    if decision == "reject":
+        return "rejected"
+    return "unavailable"
 
 
 def _blocked_result(
@@ -438,6 +493,10 @@ def _base_result(
     reviewed_diff_checksum: str = "",
     final_artifact_checksum: str = "",
     failure_kind: str = "",
+    reviewer_outcome: str = "",
+    applicability_status: str = "",
+    repair_workflow_state: str = "",
+    operator_action_required: bool | None = None,
 ) -> UnknownRepairReviewChainResult:
     return UnknownRepairReviewChainResult(
         status=status,
@@ -457,6 +516,10 @@ def _base_result(
         reviewed_diff_checksum=reviewed_diff_checksum,
         final_artifact_checksum=final_artifact_checksum,
         failure_kind=failure_kind,
+        reviewer_outcome=reviewer_outcome,
+        applicability_status=applicability_status or ("blocked" if status == STATUS_BLOCKED else ""),
+        repair_workflow_state=repair_workflow_state or ("operator_action_required" if status == STATUS_BLOCKED else ""),
+        operator_action_required=(status == STATUS_BLOCKED if operator_action_required is None else operator_action_required),
     )
 
 
@@ -504,6 +567,10 @@ def _public_payload(result: UnknownRepairReviewChainResult) -> dict[str, Any] | 
         "reviewed_diff_checksum": result.reviewed_diff_checksum,
         "final_artifact_checksum": result.final_artifact_checksum,
         "failure_kind": result.failure_kind,
+        "reviewer_outcome": result.reviewer_outcome,
+        "applicability_status": result.applicability_status,
+        "repair_workflow_state": result.repair_workflow_state,
+        "operator_action_required": result.operator_action_required,
     }
     try:
         redacted = redact_public_value(payload)

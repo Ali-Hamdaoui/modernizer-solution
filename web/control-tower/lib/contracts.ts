@@ -1112,6 +1112,16 @@ export type V2RepairApplyCandidateResponse = {
   base_repo_state_checksum?: string;
   base_repository_state_checksum?: string;
   approval_required: boolean;
+  approval_mode_required?: "normal_approval" | "acknowledged_risk_approval" | "reviewer_override_approval";
+  reviewer_decision?: string;
+  reviewer_outcome?: "accepted" | "accepted_with_concerns" | "rejected" | "unavailable";
+  reviewer_availability?: boolean;
+  reviewer_invocation_id?: string;
+  reviewer_output_checksum?: string;
+  reviewer_reason_codes?: string[];
+  reviewer_risk_level?: string;
+  reviewer_summary?: string;
+  reviewer_recommended_action?: string;
   apply_enabled: boolean;
   approval_enabled: boolean;
   sandbox_only: boolean;
@@ -1478,6 +1488,89 @@ export type V2FailureSummaryResponse = {
   repair_events: { type: string; message: string }[];
   artifact_kinds: string[];
   repair_apply_candidate?: V2RepairApplyCandidateResponse | null;
+  current_repair_attempt?: V2RepairAttemptResponse | null;
+  repair_attempts?: V2RepairAttemptResponse[];
+};
+
+export type V2RepairAttemptResponse = {
+  attempt_id: string;
+  attempt_number: number;
+  attempt_source: "llm" | "manual";
+  attempt_checksum: string;
+  job_id: string;
+  stage_index: number;
+  command_id: string;
+  previous_attempt_id?: string;
+  repair_candidate_id?: string;
+  candidate_kind: string;
+  applicability_status: "applicable" | "blocked" | "invalid";
+  repair_workflow_state: string;
+  failure_summary: string;
+  failing_command: string;
+  failing_test: string;
+  exception: string;
+  stack_trace_preview: string;
+  log_artifact_references: Record<string, string>;
+  failure_evidence_checksum: string;
+  context_checksum: string;
+  source_evidence: { path?: string; checksum?: string; byte_length?: number }[];
+  proposer_root_cause: string;
+  proposer_strategy: string;
+  proposer_confidence: number | null;
+  proposer_risks: string[];
+  exact_proposed_diff: string;
+  display_proposed_diff?: string;
+  display_diff_redacted?: boolean;
+  display_diff_status?: "clean" | "redacted" | "truncated" | "redacted_and_truncated";
+  exact_diff_checksum?: string;
+  diff_checksum: string;
+  changed_files: string[];
+  actual_touched_paths: string[];
+  hard_gate_status: "passed" | "blocked";
+  hard_gate_reason_codes: string[];
+  reviewer_outcome: "accepted" | "accepted_with_concerns" | "rejected" | "unavailable";
+  reviewer_availability: boolean;
+  reviewer_risk_level: string;
+  reviewer_reason_codes: string[];
+  reviewer_summary: string;
+  reviewer_recommended_action: string;
+  reviewer_output_checksum: string;
+  reviewed_context_checksum: string;
+  reviewed_proposal_checksum: string;
+  reviewed_diff_checksum: string;
+  artifact_references: Record<string, string>;
+  advisory_warnings: string[];
+  approval_mode_required: "" | "normal_approval" | "acknowledged_risk_approval" | "reviewer_override_approval";
+  operator_actions_available: string[];
+  apply_enabled: boolean;
+  resume_enabled: boolean;
+  next_operator_action: string;
+  current_checkpoint: string;
+  created_at: string;
+  latest_operator_action?: string;
+  latest_operator_action_at?: string;
+};
+
+export type V2RepairApprovalInput = {
+  approval_mode: "normal_approval" | "acknowledged_risk_approval" | "reviewer_override_approval";
+  operator_justification?: string;
+  acknowledged_risk_codes?: string[];
+};
+
+export type V2RepairAttemptActionRequest = {
+  action:
+    | "request_corrected_proposal"
+    | "provide_operator_guidance"
+    | "request_additional_context"
+    | "submit_manual_diff"
+    | "reject_current_attempt"
+    | "mark_manual_remediation_required"
+    | "resume_from_repair_checkpoint";
+  expected_attempt_checksum: string;
+  operator_guidance?: string;
+  requested_context?: string[];
+  manual_diff?: string;
+  operator_justification?: string;
 };
 
 export type V2RepairCandidateApprovalResponse = {

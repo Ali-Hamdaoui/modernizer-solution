@@ -13,6 +13,8 @@ from migration_factory.control_tower.adapters.fastapi.security import (
     ActorIdentity,
     DEFAULT_FRONTEND_CLIENT_ID,
     LocalApiSecuritySettings,
+    public_error_payload,
+    redact_public_data,
 )
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
@@ -240,6 +242,62 @@ def test_public_payloads_and_errors_are_redacted(tmp_path: Path) -> None:
     assert error["code"] == "INTERNAL_SERVER_ERROR"
     assert "C:\\" not in error["message"]
     assert "SECRET" not in error["message"]
+
+
+def test_public_projection_redacts_secret_assignments_prompts_errors_and_paths() -> None:
+    payload = {
+        "lines": [
+            "password=value PASSWORD=value passwd=value secret=value token=value api_key=value api-key=value",
+            "Authorization: Bearer bearer-token-value",
+            "postgresql://user:pass@db.internal/app",
+            "C:\\Users\\operator\\secrets\\.env and /home/operator/.ssh/id_rsa",
+            "raw_prompt=system instructions that must not leave the backend",
+        ],
+        "nested": {
+            "system_prompt": "You are the hidden system prompt.",
+            "raw_internal_exception": "sqlite3.OperationalError: no such table secret_table",
+            "provider_error": "openai.APIError: token invalid",
+            "artifact_ref": "\\\\server\\share\\private\\artifact.log",
+        },
+    }
+
+    redacted = redact_public_data(payload)
+    snapshot = str(redacted)
+
+    for forbidden in (
+        "password=value",
+        "PASSWORD=value",
+        "passwd=value",
+        "secret=value",
+        "token=value",
+        "api_key=value",
+        "api-key=value",
+        "bearer-token-value",
+        "user:pass",
+        "C:\\Users\\operator",
+        "/home/operator",
+        "\\\\server\\share",
+        "system instructions",
+        "hidden system prompt",
+        "sqlite3.OperationalError",
+        "openai.APIError",
+        "secret_table",
+    ):
+        assert forbidden not in snapshot
+    assert "[redacted]" in snapshot or "[redacted-path]" in snapshot
+
+
+def test_public_error_payload_maps_internal_details_to_safe_message() -> None:
+    payload = public_error_payload(
+        "REPAIR_CANDIDATE_PRE_APPLY_REJECTED",
+        "Traceback (most recent call last): sqlite3.OperationalError: near password=value in C:/private/db.sqlite3",
+        "corr-1",
+    )
+
+    error = payload["error"]
+    assert error["code"] == "REPAIR_CANDIDATE_PRE_APPLY_REJECTED"
+    assert error["correlation_id"] == "corr-1"
+    assert error["message"] == "Internal details redacted."
 
 
 def test_azure_smoke_response_omits_deployment_and_redacts_snippets(tmp_path: Path) -> None:

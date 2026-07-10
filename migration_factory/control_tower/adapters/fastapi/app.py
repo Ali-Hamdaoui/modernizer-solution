@@ -11,7 +11,7 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 import hashlib
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from contextlib import asynccontextmanager, contextmanager
 
@@ -182,6 +182,10 @@ from migration_factory.control_tower.application.v2_repair_strategy_packet impor
 from migration_factory.control_tower.application.v2_repair_gate_service import (
     V2RepairGateService,
     _build_failure_summary_from_payload,
+)
+from migration_factory.control_tower.application.v2_repair_remediation import (
+    execute_remediation_attempt,
+    repair_remediation_intent_from_text,
 )
 from migration_factory.control_tower.application.v2_llm_read_only_candidate_persistence import (
     LlmReadOnlyCandidatePersistenceService,
@@ -874,11 +878,44 @@ class ApproveRepairCandidateRequest(BaseModel):
     policy_validation_checksum: str | None = None
     review_chain_identity_checksum: str | None = None
     base_repository_state_checksum: str | None = None
+    approval_mode: Literal[
+        "normal_approval",
+        "acknowledged_risk_approval",
+        "reviewer_override_approval",
+    ] | None = None
+    operator_justification: str = Field(default="", max_length=4000)
+    acknowledged_risk_codes: tuple[str, ...] = ()
+    reviewer_outcome: Literal[
+        "accepted",
+        "accepted_with_concerns",
+        "rejected",
+        "unavailable",
+    ] | None = None
+    reviewer_output_checksum: str | None = None
+    reviewer_invocation_id: str | None = None
 
 
 class ApplyRepairCandidateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     repair_candidate_id: str
+
+
+class RepairAttemptActionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal[
+        "request_corrected_proposal",
+        "provide_operator_guidance",
+        "request_additional_context",
+        "submit_manual_diff",
+        "reject_current_attempt",
+        "mark_manual_remediation_required",
+        "resume_from_repair_checkpoint",
+    ]
+    expected_attempt_checksum: str
+    operator_guidance: str = Field(default="", max_length=4000)
+    requested_context: tuple[str, ...] = Field(default=(), max_length=8)
+    manual_diff: str = Field(default="", max_length=200_000)
+    operator_justification: str = Field(default="", max_length=4000)
 
 
 @asynccontextmanager
@@ -1242,6 +1279,7 @@ def create_app(
                         repair_repo=uow.v2_repairs,
                         candidate_repo=uow.v2_repair_candidates,
                         event_repo=uow.v2_events,
+                        attempt_repo=uow.v2_repair_attempts,
                     ).persist(
                         decision=decision,
                         failure_evidence=evidence,
@@ -1254,7 +1292,7 @@ def create_app(
                         source_proposal_id=None,
                         source_gate_id=None,
                     )
-                events_written["value"] = events_written["value"] or persistence.status == "persisted"
+                events_written["value"] = events_written["value"] or persistence.status == "persisted" or bool(persistence.attempt_id)
                 if not persistence.persisted:
                     emit_llm_read_only_candidate_event(event_sink=event_sink, result=persistence)
         except Exception:
@@ -1893,6 +1931,11 @@ def create_app(
             _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
             summary = _v2_failure_summary(job_id, events)
+            attempt_repo = getattr(uow, "v2_repair_attempts", None)
+            governed_attempts = attempt_repo.list_public(job_id) if attempt_repo is not None else []
+            if governed_attempts:
+                summary["repair_attempts"] = governed_attempts
+                summary["current_repair_attempt"] = governed_attempts[-1]
             candidate_repo = getattr(uow, "v2_repair_candidates", None)
             candidate = candidate_repo.latest_public_for_job(job_id) if candidate_repo is not None else None
             if candidate:
@@ -1960,6 +2003,140 @@ def create_app(
             raise _error(status.HTTP_404_NOT_FOUND, "REPAIR_CANDIDATE_NOT_FOUND", "Repair candidate not found.")
         return {"candidate": redact_public_data(candidate)}
 
+    @app.get("/v1/v2/jobs/{job_id}/stages/{stage_index}/repair-attempts")
+    def list_stage_repair_attempts(job_id: str, stage_index: int) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            attempts = uow.v2_repair_attempts.list_public(job_id, stage_index)
+        return {"job_id": job_id, "stage_index": stage_index, "attempts": redact_public_data(attempts)}
+
+    @app.get("/v1/v2/jobs/{job_id}/stages/{stage_index}/repair-attempts/{attempt_id}")
+    def get_stage_repair_attempt(job_id: str, stage_index: int, attempt_id: str) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            attempt = uow.v2_repair_attempts.get_public(job_id, stage_index, attempt_id)
+        if attempt is None:
+            raise _error(status.HTTP_404_NOT_FOUND, "REPAIR_ATTEMPT_NOT_FOUND", "Repair attempt not found.")
+        return {"attempt": redact_public_data(attempt)}
+
+    @app.post("/v1/v2/jobs/{job_id}/stages/{stage_index}/repair-attempts/{attempt_id}/actions")
+    def execute_repair_attempt_action(
+        job_id: str,
+        stage_index: int,
+        attempt_id: str,
+        payload: RepairAttemptActionRequest,
+    ) -> dict[str, Any]:
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            attempt = uow.v2_repair_attempts.get_internal(job_id, stage_index, attempt_id)
+            if attempt is None:
+                raise _error(status.HTTP_404_NOT_FOUND, "REPAIR_ATTEMPT_NOT_FOUND", "Repair attempt not found.")
+            if payload.expected_attempt_checksum != attempt.get("attempt_checksum"):
+                raise _error(status.HTTP_409_CONFLICT, "STALE_REPAIR_ATTEMPT", "Repair attempt checksum is stale.")
+            latest_attempt = uow.v2_repair_attempts.latest_internal(job_id, stage_index)
+            if latest_attempt is None or latest_attempt.get("attempt_id") != attempt_id:
+                raise _error(status.HTTP_409_CONFLICT, "REPAIR_ATTEMPT_SUPERSEDED", "Only the current repair attempt is actionable.")
+            if payload.action in {"reject_current_attempt", "mark_manual_remediation_required"} and isinstance(attempt.get("apply_result"), dict):
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "REPAIR_ATTEMPT_ALREADY_EXECUTED",
+                    "An executed repair attempt cannot be rejected or moved to manual remediation.",
+                )
+            resume_result: dict[str, Any] | None = None
+            if payload.action == "resume_from_repair_checkpoint":
+                if not bool(attempt.get("resume_enabled")):
+                    raise _error(status.HTTP_409_CONFLICT, "REPAIR_RESUME_NOT_ENABLED", "Repair checkpoint resume is not enabled.")
+                candidate_id = str(attempt.get("repair_candidate_id") or "")
+                candidate = uow.v2_repair_candidates.get_internal(job_id, stage_index, candidate_id)
+                execution = candidate.get("execution") if isinstance(candidate, dict) and isinstance(candidate.get("execution"), dict) else {}
+                post_repair = execution.get("post_repair_verification") if isinstance(execution.get("post_repair_verification"), dict) else {}
+                resume_result = _queue_downstream_after_reviewed_llm_repair(
+                    uow,
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    repair_candidate=candidate or {},
+                    post_repair=post_repair,
+                )
+            actor = resolved_actor_provider.current_actor()
+            action_payload = {
+                "expected_attempt_checksum": payload.expected_attempt_checksum,
+                "operator_guidance": payload.operator_guidance.strip(),
+                "requested_context": list(payload.requested_context),
+                "manual_diff": payload.manual_diff,
+                "operator_justification": payload.operator_justification.strip(),
+            }
+            if resume_result is not None:
+                action_payload["resume_result"] = resume_result
+            action_record = uow.v2_repair_attempts.save_action({
+                "action_id": f"repair-action-{uuid4().hex}",
+                "attempt_id": attempt_id,
+                "job_id": job_id,
+                "stage_index": stage_index,
+                "action_type": payload.action,
+                "payload": action_payload,
+                "actor_type": actor.actor_type,
+                "actor_id": actor.actor_id,
+            })
+            event_type = {
+                "request_corrected_proposal": "repair_revision_requested",
+                "provide_operator_guidance": "repair_revision_requested",
+                "request_additional_context": "repair_additional_context_requested",
+                "submit_manual_diff": "repair_manual_diff_submitted",
+                "reject_current_attempt": "repair_operator_decision_recorded",
+                "mark_manual_remediation_required": "repair_manual_remediation_required",
+                "resume_from_repair_checkpoint": "repair_checkpoint_resume_started",
+            }[payload.action]
+            _append_v2_event(
+                uow,
+                job_id=job_id,
+                stage=stage_index,
+                event_type=event_type,
+                status="requested",
+                message="Governed repair operator action recorded.",
+                payload={"job_id": job_id, "stage_index": stage_index, "attempt_id": attempt_id, "action": payload.action, "action_id": action_record["action_id"]},
+            )
+            if payload.action in {"reject_current_attempt", "mark_manual_remediation_required"}:
+                return {"action": redact_public_data({key: value for key, value in action_record.items() if key != "payload"}), "attempt": redact_public_data(uow.v2_repair_attempts.get_public(job_id, stage_index, attempt_id)), "status": "recorded"}
+            if payload.action == "resume_from_repair_checkpoint":
+                resume_status = str((resume_result or {}).get("downstream_resume_status") or "blocked")
+                _append_v2_event(
+                    uow,
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="repair_checkpoint_resume_completed",
+                    status="completed" if resume_status in {"queued", "route_complete"} else "blocked",
+                    message="Repair checkpoint route continuation retry completed.",
+                    payload={"job_id": job_id, "stage_index": stage_index, "attempt_id": attempt_id, **(resume_result or {})},
+                )
+                return {
+                    "action": redact_public_data({key: value for key, value in action_record.items() if key != "payload"}),
+                    "attempt": redact_public_data(uow.v2_repair_attempts.get_public(job_id, stage_index, attempt_id)),
+                    "status": resume_status,
+                    "route_continuation": redact_public_data(resume_result or {}),
+                }
+            try:
+                result = execute_remediation_attempt(
+                    prior_attempt=attempt,
+                    action=payload.action,
+                    model_client=app.state.v2_assistant_model_client,
+                    invocation_ledger=V2LLMInvocationLedger(uow.v2_llm_invocations),
+                    repair_repo=uow.v2_repairs,
+                    candidate_repo=uow.v2_repair_candidates,
+                    attempt_repo=uow.v2_repair_attempts,
+                    event_repo=uow.v2_events,
+                    operator_guidance=payload.operator_guidance,
+                    requested_context=payload.requested_context,
+                    manual_diff=payload.manual_diff,
+                    operator_justification=payload.operator_justification,
+                )
+            except ValueError as exc:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "REPAIR_REMEDIATION_REJECTED",
+                    "Repair remediation request was rejected.",
+                ) from exc
+        return {"action": redact_public_data({key: value for key, value in action_record.items() if key != "payload"}), **redact_public_data(result)}
+
     @app.post("/v1/v2/jobs/{job_id}/stages/{stage_index}/repair-candidates/{repair_candidate_id}/approve")
     def approve_repair_candidate_endpoint(
         job_id: str,
@@ -1972,6 +2149,12 @@ def create_app(
             candidate = uow.v2_repair_candidates.get_internal(job_id, stage_index, repair_candidate_id)
             if candidate is None:
                 raise _error(status.HTTP_404_NOT_FOUND, "REPAIR_CANDIDATE_NOT_FOUND", "Repair candidate not found.")
+            governed_attempt = uow.v2_repair_attempts.for_candidate(job_id, stage_index, repair_candidate_id)
+            latest_attempt = uow.v2_repair_attempts.latest_internal(job_id, stage_index)
+            if governed_attempt is not None and (
+                latest_attempt is None or governed_attempt.get("attempt_id") != latest_attempt.get("attempt_id")
+            ):
+                raise _error(status.HTTP_409_CONFLICT, "REPAIR_CANDIDATE_SUPERSEDED", "Only the current repair candidate can be approved.")
             try:
                 actor = resolved_actor_provider.current_actor()
                 approval = approve_repair_apply_candidate(
@@ -1980,8 +2163,31 @@ def create_app(
                     actor_identity={"actor_type": actor.actor_type, "actor_id": actor.actor_id},
                 )
                 uow.v2_repair_candidates.save_approval(job_id, stage_index, repair_candidate_id, approval)
+                attempt = uow.v2_repair_attempts.for_candidate(job_id, stage_index, repair_candidate_id)
+                if attempt is not None:
+                    uow.v2_repair_attempts.save_decision({
+                        "decision_id": str(approval["approval_id"]).replace("repair-approval-", "repair-decision-"),
+                        "attempt_id": attempt["attempt_id"],
+                        "repair_candidate_id": repair_candidate_id,
+                        "job_id": job_id,
+                        "stage_index": stage_index,
+                        "approval_mode": approval["approval_mode"],
+                        "decision_status": "approved",
+                        "operator_justification": approval.get("operator_justification", ""),
+                        "acknowledged_risk_codes": approval.get("acknowledged_risk_codes", ()),
+                        "reviewer_outcome": approval["reviewer_outcome"],
+                        "reviewer_output_checksum": approval.get("reviewer_output_checksum", ""),
+                        "reviewer_invocation_id": approval.get("reviewer_invocation_id", ""),
+                        "candidate_checksum": approval["candidate_checksum"],
+                        "actor_type": approval["backend_actor_type"],
+                        "actor_id": approval["backend_actor_id"],
+                    })
             except ValueError as exc:
-                raise _error(status.HTTP_409_CONFLICT, "REPAIR_CANDIDATE_CHECKSUM_MISMATCH", str(exc)) from exc
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "REPAIR_CANDIDATE_CHECKSUM_MISMATCH",
+                    "Repair candidate approval was rejected.",
+                ) from exc
             public = uow.v2_repair_candidates.get_public(job_id, stage_index, repair_candidate_id)
         return {"approval": redact_public_data(approval), "candidate": redact_public_data(public or {})}
 
@@ -1999,11 +2205,35 @@ def create_app(
             candidate = uow.v2_repair_candidates.get_internal(job_id, stage_index, repair_candidate_id)
             if candidate is None:
                 raise _error(status.HTTP_404_NOT_FOUND, "REPAIR_CANDIDATE_NOT_FOUND", "Repair candidate not found.")
+            governed_attempt = uow.v2_repair_attempts.for_candidate(job_id, stage_index, repair_candidate_id)
+            latest_attempt = uow.v2_repair_attempts.latest_internal(job_id, stage_index)
+            if governed_attempt is not None and (
+                latest_attempt is None or governed_attempt.get("attempt_id") != latest_attempt.get("attempt_id")
+            ):
+                raise _error(status.HTTP_409_CONFLICT, "REPAIR_CANDIDATE_SUPERSEDED", "Only the current repair candidate can be applied.")
             approval = candidate.get("approval") if isinstance(candidate.get("approval"), dict) else None
             if approval is None:
                 raise _error(status.HTTP_409_CONFLICT, "REPAIR_CANDIDATE_NOT_APPROVED", "Repair candidate approval required.")
             _bind_post_repair_runtime_env(candidate, uow, job_id)
             try:
+                _append_v2_event(
+                    uow,
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="repair_apply_started",
+                    status="running",
+                    message="Approved repair sandbox application started.",
+                    payload={"job_id": job_id, "stage_index": stage_index, "repair_candidate_id": repair_candidate_id, "approval_mode": approval.get("approval_mode", "")},
+                )
+                _append_v2_event(
+                    uow,
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="repair_verification_started",
+                    status="pending",
+                    message="Sandbox verification is governed by the existing repair execution path.",
+                    payload={"job_id": job_id, "stage_index": stage_index, "repair_candidate_id": repair_candidate_id},
+                )
                 execution = apply_approved_repair_candidate(
                     candidate,
                     approval,
@@ -2016,8 +2246,59 @@ def create_app(
                     ),
                 )
                 uow.v2_repair_candidates.save_execution(job_id, stage_index, repair_candidate_id, execution)
+                _append_v2_event(
+                    uow,
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="repair_apply_completed",
+                    status=str(execution.get("status") or "failed"),
+                    message="Approved repair sandbox application completed.",
+                    payload={"job_id": job_id, "stage_index": stage_index, "repair_candidate_id": repair_candidate_id, "apply_status": execution.get("apply_status", ""), "rollback_status": execution.get("rollback_status", "")},
+                )
+                _append_v2_event(
+                    uow,
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="repair_verification_completed",
+                    status=str(execution.get("verification_status") or "failed"),
+                    message="Post-repair sandbox verification completed.",
+                    payload={"job_id": job_id, "stage_index": stage_index, "repair_candidate_id": repair_candidate_id, "verification_status": execution.get("verification_status", ""), "proof_checksum": execution.get("proof_checksum", "")},
+                )
+                if execution.get("rollback_status") == "succeeded":
+                    _append_v2_event(
+                        uow,
+                        job_id=job_id,
+                        stage=stage_index,
+                        event_type="repair_rollback_completed",
+                        status="completed",
+                        message="Repair rollback restored the sandbox checkpoint.",
+                        payload={"job_id": job_id, "stage_index": stage_index, "repair_candidate_id": repair_candidate_id, "rollback_status": "succeeded"},
+                    )
+                if execution.get("downstream_resume_status") in {"queued", "route_complete"}:
+                    _append_v2_event(
+                        uow,
+                        job_id=job_id,
+                        stage=stage_index,
+                        event_type="repair_checkpoint_resume_started",
+                        status="running",
+                        message="Verified repair route continuation was started from the repair checkpoint.",
+                        payload={"job_id": job_id, "stage_index": stage_index, "repair_candidate_id": repair_candidate_id},
+                    )
+                    _append_v2_event(
+                        uow,
+                        job_id=job_id,
+                        stage=stage_index,
+                        event_type="repair_checkpoint_resume_completed",
+                        status="completed",
+                        message="Verified repair resumed route progression from the repair checkpoint.",
+                        payload={"job_id": job_id, "stage_index": stage_index, "repair_candidate_id": repair_candidate_id, "downstream_resume_status": execution.get("downstream_resume_status", ""), "downstream_command_id": execution.get("downstream_command_id", "")},
+                    )
             except ValueError as exc:
-                raise _error(status.HTTP_409_CONFLICT, "REPAIR_CANDIDATE_PRE_APPLY_REJECTED", str(exc)) from exc
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "REPAIR_CANDIDATE_PRE_APPLY_REJECTED",
+                    "Repair candidate pre-apply checks rejected the request.",
+                ) from exc
             next_candidate = execution.get("_next_repair_candidate") if isinstance(execution.get("_next_repair_candidate"), dict) else None
             if next_candidate is not None:
                 uow.v2_repair_candidates.save_candidate(next_candidate)
@@ -4761,6 +5042,20 @@ def create_app(
         """
         with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
+            governed_attempts = uow.v2_repair_attempts.list_public(job_id)
+            if governed_attempts:
+                summary_keys = {
+                    "attempt_id", "attempt_number", "attempt_source", "stage_index",
+                    "candidate_kind", "applicability_status", "repair_workflow_state",
+                    "reviewer_outcome", "hard_gate_status", "hard_gate_reason_codes",
+                    "approval_mode_required", "apply_enabled", "resume_enabled",
+                    "previous_attempt_id", "created_at",
+                }
+                summaries = [
+                    {key: value for key, value in attempt.items() if key in summary_keys}
+                    for attempt in governed_attempts
+                ]
+                return {"attempts": redact_public_data(summaries), "job_id": job_id}
             records = uow.v2_repairs.list_attempts_by_job(job_id)
             return {
                 "attempts": [record_to_attempt_summary(r) for r in records],
@@ -9914,6 +10209,16 @@ def _handle_v2_assistant_read_only_ask(
             )
             candidate_repo = getattr(uow, "v2_repair_candidates", None)
             repair_candidate = candidate_repo.latest_public_for_job(job_id) if candidate_repo is not None else None
+            attempt_repo = getattr(uow, "v2_repair_attempts", None)
+            latest_attempt = attempt_repo.latest_internal(job_id) if attempt_repo is not None else None
+            remediation_command = None
+            if latest_attempt is not None:
+                remediation_command = repair_remediation_intent_from_text(
+                    question,
+                    job_id=job_id,
+                    stage_index=int(latest_attempt["stage_index"]),
+                    attempt_id=str(latest_attempt["attempt_id"]),
+                )
             strategy_repo = getattr(uow, "v2_repair_strategies", None)
             latest_strategy = strategy_repo.latest_for_job(job_id) if strategy_repo is not None else None
             if latest_strategy is None:
@@ -9925,7 +10230,23 @@ def _handle_v2_assistant_read_only_ask(
                     latest_strategy = safe_latest
             repair_question_terms = ("repair", "fix", "apply", "approval", "approve")
             is_repair_question = any(term in question.strip().lower() for term in repair_question_terms)
-            if is_repair_question:
+            if remediation_command is not None:
+                fallback_answer = (
+                    f"I mapped that request to the governed action '{remediation_command['action']}'. "
+                    "Review and confirm the explicit action in the Repair Investigation panel. "
+                    "I have not approved, applied, changed files, changed the route, or claimed verification."
+                )
+                model_result = V2AssistantModelResult(
+                    content=fallback_answer,
+                    source="backend_controlled",
+                    model_status="not_used",
+                    provider="backend",
+                    role="assistant",
+                    success=True,
+                    redacted_summary="Backend-governed repair action preview.",
+                    failure_reason="",
+                )
+            elif is_repair_question:
                 latest_failure = next(
                     (
                         event
@@ -10050,6 +10371,8 @@ def _handle_v2_assistant_read_only_ask(
                     "cannot_override_proof": True,
                 },
             }
+            if remediation_command is not None:
+                response["repair_remediation_command"] = remediation_command
             return response
     except sqlite3.OperationalError as exc:
         if _is_sqlite_locked_error(exc):

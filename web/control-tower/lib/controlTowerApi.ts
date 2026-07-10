@@ -16,6 +16,9 @@ import type {
   V2RepairApplyCandidateResponse,
   V2RepairCandidateApprovalResponse,
   V2RepairCandidateApplyResponse,
+  V2RepairApprovalInput,
+  V2RepairAttemptActionRequest,
+  V2RepairAttemptResponse,
   V2StageEntry,
   V2StageCommandResponse,
   V2ApprovalResponse,
@@ -407,10 +410,11 @@ export async function getV2RepairCandidate(
 export async function approveV2RepairCandidate(
   jobId: string,
   stageIndex: number,
-  candidate: V2RepairApplyCandidateResponse
+  candidate: V2RepairApplyCandidateResponse,
+  decision?: V2RepairApprovalInput
 ): Promise<V2RepairCandidateApprovalResponse> {
   const safeJobId = requireJobId(jobId);
-  const requestBody = approvalPayloadForRepairCandidate(candidate);
+  const requestBody = approvalPayloadForRepairCandidate(candidate, decision);
   return postJson<V2RepairCandidateApprovalResponse>(
     `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/stages/${stageIndex}/repair-candidates/${encodeURIComponent(candidate.repair_candidate_id)}/approve`,
     requestBody
@@ -418,8 +422,9 @@ export async function approveV2RepairCandidate(
 }
 
 function approvalPayloadForRepairCandidate(
-  candidate: V2RepairApplyCandidateResponse
-): Record<string, string> {
+  candidate: V2RepairApplyCandidateResponse,
+  decision?: V2RepairApprovalInput
+): Record<string, unknown> {
   if (!isReviewedLlmRepairCandidate(candidate)) {
     return {
       repair_candidate_id: candidate.repair_candidate_id,
@@ -438,8 +443,20 @@ function approvalPayloadForRepairCandidate(
       candidate.review_chain_identity_checksum ?? candidate.proposal_checksum,
     base_repository_state_checksum:
       candidate.base_repository_state_checksum ?? candidate.base_repo_state_checksum,
+    approval_mode: decision?.approval_mode ?? candidate.approval_mode_required ?? "normal_approval",
+    operator_justification: decision?.operator_justification ?? "",
+    acknowledged_risk_codes: decision?.acknowledged_risk_codes ?? [],
+    reviewer_outcome: candidate.reviewer_outcome ?? "accepted",
+    reviewer_output_checksum: candidate.reviewer_output_checksum ?? candidate.review_checksum ?? "",
+    reviewer_invocation_id: candidate.reviewer_invocation_id ?? "",
   };
-  const missingFields = Object.entries(requestBody)
+  const requiredBindings = Object.entries(requestBody).filter(([field]) =>
+    !["operator_justification", "acknowledged_risk_codes", "reviewer_output_checksum"].includes(field)
+  );
+  if (requestBody.reviewer_outcome !== "unavailable") {
+    requiredBindings.push(["reviewer_output_checksum", requestBody.reviewer_output_checksum]);
+  }
+  const missingFields = requiredBindings
     .filter(([, value]) => !hasValue(value))
     .map(([field]) => field);
   if (missingFields.length > 0) {
@@ -447,7 +464,7 @@ function approvalPayloadForRepairCandidate(
       `Reviewed LLM repair candidate is missing backend-derived checksum bindings: ${missingFields.join(", ")}.`
     );
   }
-  return requestBody as Record<string, string>;
+  return requestBody;
 }
 
 function isReviewedLlmRepairCandidate(candidate: V2RepairApplyCandidateResponse): boolean {
@@ -471,6 +488,27 @@ export async function applyV2RepairCandidate(
   return postJson<V2RepairCandidateApplyResponse>(
     `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/stages/${stageIndex}/repair-candidates/${encodeURIComponent(repairCandidateId)}/apply`,
     { repair_candidate_id: repairCandidateId }
+  );
+}
+
+export async function getV2RepairAttempts(
+  jobId: string,
+  stageIndex: number
+): Promise<{ job_id: string; stage_index: number; attempts: V2RepairAttemptResponse[] }> {
+  const safeJobId = requireJobId(jobId);
+  return getJson(`/v1/v2/jobs/${encodeURIComponent(safeJobId)}/stages/${stageIndex}/repair-attempts`);
+}
+
+export async function executeV2RepairAttemptAction(
+  jobId: string,
+  stageIndex: number,
+  attemptId: string,
+  request: V2RepairAttemptActionRequest
+): Promise<{ attempt?: V2RepairAttemptResponse; candidate?: V2RepairApplyCandidateResponse | null; status: string }> {
+  const safeJobId = requireJobId(jobId);
+  return postJson(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/stages/${stageIndex}/repair-attempts/${encodeURIComponent(attemptId)}/actions`,
+    request
   );
 }
 
