@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import json
+from pathlib import Path
 from typing import Any
 
 from migration_factory.control_tower.domain.checksums import (
@@ -40,6 +42,7 @@ class NormalizedTestFailure:
     test_name: str = ""
     test_class: str = ""
     message: str = ""
+    root_exception: str = ""
     file_path: str = ""
 
 
@@ -102,6 +105,7 @@ def compute_failure_content_checksum(evidence: FailureEvidence) -> str:
                 "test_name": t.test_name,
                 "test_class": t.test_class,
                 "message": t.message,
+                "root_exception": t.root_exception,
                 "file_path": t.file_path,
             }
             for t in sorted(evidence.test_failures, key=lambda x: (x.test_class, x.test_name))
@@ -230,6 +234,7 @@ def failure_evidence_to_dict(evidence: FailureEvidence) -> dict[str, Any]:
                 "test_name": t.test_name,
                 "test_class": t.test_class,
                 "message": t.message,
+                "root_exception": t.root_exception,
                 "file_path": t.file_path,
             }
             for t in sorted(evidence.test_failures, key=lambda x: (x.test_class, x.test_name))
@@ -247,3 +252,26 @@ def failure_evidence_to_dict(evidence: FailureEvidence) -> dict[str, Any]:
         "created_at": evidence.created_at,
         "schema_version": evidence.schema_version,
     }
+
+
+def normalize_test_failures_from_test_report(test_report_path: str | Path) -> tuple[NormalizedTestFailure, ...]:
+    report = Path(test_report_path)
+    if not report.is_file():
+        return ()
+    try:
+        data = json.loads(report.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ()
+    failure_details = data.get("test_failure_details", [])
+    if not failure_details:
+        return ()
+    result: list[NormalizedTestFailure] = []
+    for entry in failure_details[:100]:
+        result.append(NormalizedTestFailure(
+            test_name=entry.get("name", ""),
+            test_class=entry.get("classname", ""),
+            message=entry.get("message", ""),
+            root_exception=entry.get("type", ""),
+            file_path="",
+        ))
+    return tuple(result)

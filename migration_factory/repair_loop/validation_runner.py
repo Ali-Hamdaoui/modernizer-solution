@@ -7,7 +7,7 @@ from typing import Any
 
 from migration_factory.agents.build_agent import run_build_agent
 from migration_factory.agents.h2_runtime_startup_agent import build_h2_startup_report, write_h2_startup_report
-from migration_factory.agents.test_agent import run_test_agent
+from migration_factory.agents.test_agent.agent import capture_surefire_report_index, run_test_agent
 
 
 BUILD_PASSED = "BUILD_PASSED_IN_SANDBOX"
@@ -123,6 +123,7 @@ def run_validation_after_patch(
             ],
         )
     output_dir = run_path / "build" / f"repair_attempt_{attempt}"
+    pre_surefire_snapshot = capture_surefire_report_index(sandbox / "target" / "surefire-reports")
     build_result = run_build_agent(
         sandbox,
         output_dir=output_dir,
@@ -157,6 +158,7 @@ def run_validation_after_patch(
         build_status=build_status,
         build_exit_code=build_result.exit_code,
         require_test_reports=context.require_test_reports,
+        pre_snapshot=pre_surefire_snapshot,
     )
     test_status = test_result.test_status
     artifact_refs.update(
@@ -166,9 +168,6 @@ def run_validation_after_patch(
             "repair_test_log": str(test_result.log_path),
         }
     )
-
-    test_reports_observed = bool(test_result.report_paths) or any((test_result.totals or {}).get(key, 0) > 0 for key in ("tests", "failures", "errors", "skipped", "passed"))
-    build_status = BUILD_PASSED if (build_result.succeeded or test_reports_observed) else BUILD_FAILED
 
     h2_status = H2_SKIPPED
     if h2_required or h2_enabled:

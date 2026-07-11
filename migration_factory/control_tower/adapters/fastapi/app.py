@@ -211,8 +211,10 @@ from migration_factory.control_tower.domain.checksums import sha256_canonical_js
 from migration_factory.repair_loop.failure_evidence import (
     FailureSource,
     NormalizedCompilerError,
+    NormalizedTestFailure,
     build_failure_evidence,
     failure_evidence_to_dict,
+    normalize_test_failures_from_test_report,
 )
 from migration_factory.repair_loop.repair_context import (
     build_repair_context_pack,
@@ -4545,7 +4547,7 @@ def create_app(
                     remaining_attempts=0,
                     completed_at=completed_at,
                 )
-                stage_index = getattr(record, "route_step_index", None)
+                stage_index = (apply_context.get("validation_execution_context") or {}).get("stage_index") or getattr(record, "route_step_index", None)
                 _persist_apply_event(
                     job_id=job_id,
                     stage=stage_index,
@@ -4564,7 +4566,7 @@ def create_app(
             # â”€â”€ Rerun validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             _persist_apply_event(
                 job_id=job_id,
-                stage=int(getattr(record, "route_step_index", 0) or 0),
+                stage=int((apply_context.get("validation_execution_context") or {}).get("stage_index") or getattr(record, "route_step_index", 0) or 0),
                 event_type="repair_validation_started",
                 status="started",
                 message=f"Repair validation started for proposal {proposal_id}",
@@ -4636,7 +4638,7 @@ def create_app(
             allowed_next_actions: tuple[str, ...] = ()
 
             if validation.passed:
-                stage_index_val = getattr(record, "route_step_index", 0) or 0
+                stage_index_val = validation_context.stage_index if validation_context.stage_index else (getattr(record, "route_step_index", 0) or 0)
                 try:
                     with unit_of_work_factory() as transition_uow:
                         job = transition_uow.v2_jobs.get(job_id)
@@ -4656,16 +4658,35 @@ def create_app(
                             stage_continuation_policy=StageContinuationPolicy.AUTO_ON_GREEN,
                             current_stage_result={
                                 "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
-                                "build_status": "BUILD_PASSED_IN_SANDBOX",
-                                "test_status": "TEST_PASSED"
-                                if _validation_proof_status(validation).startswith("BUILD_AND_TEST_VERIFIED")
-                                else "TESTS_NOT_FOUND",
+                                "build_status": validation.build_status,
+                                "test_status": validation.test_status,
                                 "sandbox_path": sandbox_path,
                             },
-                            current_route_step_index=getattr(record, "route_step_index", None),
+                            current_route_step_index=validation_context.route_step_index or getattr(record, "route_step_index", None),
                         )
                 except Exception as exc:
-                    _mark_apply_failed(f"migration continuation failed: {type(exc).__name__}")
+                    continuation_error = f"migration continuation failed: {type(exc).__name__}"
+                    _persist_apply_fields(
+                        status="approved_applied",
+                        status_reason=f"Patch applied to sandbox and validation passed. Continuation failed: {continuation_error}",
+                        apply_status=apply_status,
+                        rerun_status=rerun_status,
+                        apply_claim_status="completed",
+                        validation_proof_status=_validation_proof_status(validation),
+                        remaining_attempts=0,
+                        completed_at=utc_now_text(),
+                        next_gate_id=None,
+                        next_gate_status="continuation_failed",
+                        continuation_command_id=None,
+                    )
+                    _persist_apply_event(
+                        job_id=job_id,
+                        stage=int(stage_index_val),
+                        event_type="migration_continuation_failed",
+                        status="failed",
+                        message=f"Migration continuation failed for proposal {proposal_id}: {type(exc).__name__}",
+                        payload={"proposal_id": proposal_id, "error": str(exc)},
+                    )
                     raise _error(
                         status.HTTP_500_INTERNAL_SERVER_ERROR,
                         "MIGRATION_CONTINUATION_FAILED",
@@ -4712,7 +4733,7 @@ def create_app(
             else:
                 # Validation failed
                 proposal_post_status = "approve_failed"
-                stage_index_val = getattr(record, "route_step_index", 0) or 0
+                stage_index_val = validation_context.stage_index if validation_context.stage_index else (getattr(record, "route_step_index", 0) or 0)
                 rollback_status = ""
                 remaining_attempts_after = getattr(record, "remaining_attempts", 0) or 0
                 prior_status_reason = getattr(record, "status_reason", None)
@@ -13177,7 +13198,8 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
     unit_of_work_factory: Any | None = None,
 ) -> Any:
     """Create the next Option A proposal from post-apply validation evidence."""
-    stage_index = int(getattr(record, "route_step_index", 0) or 0)
+    validation_exec_ctx = apply_context.get("validation_execution_context") or {}
+    stage_index = int(validation_exec_ctx.get("stage_index", 0) or 0)
     command_id = str(getattr(record, "command_id", "") or "")
     attempt_number = int(getattr(record, "attempt_number", 0) or 0) + 1
     run_path = Path(run_dir)
@@ -13215,6 +13237,13 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
     matched_line = str(build_contract.get("matched_line") or "").strip()
     if matched_line and not any(error.message == matched_line for error in compiler_errors):
         compiler_errors.append(NormalizedCompilerError(message=matched_line))
+    test_failures: tuple[NormalizedTestFailure, ...] = ()
+    repair_test_report_ref = artifact_refs.get("repair_test_report", "")
+    if repair_test_report_ref:
+        try:
+            test_failures = normalize_test_failures_from_test_report(repair_test_report_ref)
+        except Exception:
+            pass
     exit_code = build_contract.get("exit_code")
     build_command = build_contract.get("command") or build_contract.get("resolved_command") or ()
     validation_context = apply_context.get("validation_execution_context")
@@ -13232,6 +13261,19 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
         evidence_details.append(f"Working directory: {build_cwd}")
     if build_unit_id:
         evidence_details.append(f"Validation unit: {build_unit_id}")
+    if repair_test_report_ref:
+        try:
+            test_report_data = json.loads(Path(repair_test_report_ref).read_text(encoding="utf-8"))
+            totals = test_report_data.get("totals", {})
+            if totals:
+                evidence_details.append(f"Test totals: {totals.get('tests', 0)} tests, {totals.get('failures', 0)} failures, {totals.get('errors', 0)} errors, {totals.get('skipped', 0)} skipped")
+            report_paths_list = test_report_data.get("report_paths", [])
+            if report_paths_list:
+                evidence_details.append(f"Surefire report paths: {', '.join(report_paths_list[:10])}")
+            for tf in test_failures[:5]:
+                evidence_details.append(f"Test failure: {tf.test_class}.{tf.test_name}: {tf.root_exception}: {tf.message[:200]}")
+        except Exception:
+            pass
     if build_stdout_text:
         evidence_details.append(f"stdout:\n{build_stdout_text}")
     if build_stderr_text:
@@ -13267,6 +13309,7 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
         accepted_artifact_checksums=accepted_checksums,
         artifact_refs=artifact_refs,
         compiler_errors=tuple(compiler_errors),
+        test_failures=test_failures,
         stdout_tail=build_stdout_text,
         stderr_tail=build_stderr_text,
         safe_log_preview=validation_summary,

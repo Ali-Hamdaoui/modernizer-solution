@@ -572,7 +572,7 @@ def _finalize_with_test_validation(
         duration_seconds=test_result.parse_duration_seconds,
     )
 
-    if test_result.test_status in {STATUS_TEST_PASSED, STATUS_TEST_PASS_WITH_WARNINGS, STATUS_TESTS_NOT_FOUND}:
+    if test_result.test_status in {STATUS_TEST_PASSED, STATUS_TEST_PASS_WITH_WARNINGS}:
         _write_partial_timing_artifacts(run_dir)
         status_writer(STATUS_APPLIED)
         status_writer("Sandbox migration candidate ready.")

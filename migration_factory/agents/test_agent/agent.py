@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -43,6 +44,7 @@ def run_test_agent(
     build_status: str | None = None,
     build_exit_code: int | None = None,
     require_test_reports: bool = False,
+    pre_snapshot: dict[str, Any] | None = None,
 ) -> TestAgentResult:
     resolved_sandbox = Path(sandbox_path).expanduser().resolve()
     resolved_run_dir = Path(run_dir).expanduser().resolve()
@@ -78,12 +80,16 @@ def run_test_agent(
             _relative_or_name(path, resolved_sandbox) for path in test_sources if path not in set(runnable_paths)
         ]
 
-        candidates = sorted(resolved_sandbox.glob("**/target/surefire-reports/TEST-*.xml"))
+        if pre_snapshot is not None:
+            candidates = filter_current_reports(pre_snapshot, surefire_report_dir)
+        else:
+            candidates = sorted(resolved_sandbox.glob("**/target/surefire-reports/TEST-*.xml"))
         report_paths = [str(path) for path in candidates]
         discovered_report_dirs = sorted({path.parent for path in candidates})
         if discovered_report_dirs:
             surefire_report_dir = discovered_report_dirs[0]
             surefire_report_dir_exists = True
+        failure_details: list[dict[str, str]] = []
         if candidates:
             parse_error: str | None = None
             for report in candidates:
@@ -108,6 +114,31 @@ def run_test_agent(
                 totals["errors"] += errors
                 totals["skipped"] += skipped
                 totals["passed"] += passed
+                for testcase in root.findall("testcase"):
+                    classname = testcase.attrib.get("classname", "")
+                    name = testcase.attrib.get("name", "")
+                    failure_el = testcase.find("failure")
+                    error_el = testcase.find("error")
+                    if failure_el is not None:
+                        msg = failure_el.attrib.get("message", "")
+                        ftype = failure_el.attrib.get("type", "")
+                        failure_details.append({
+                            "classname": classname,
+                            "name": name,
+                            "message": msg,
+                            "type": ftype,
+                            "kind": "failure",
+                        })
+                    elif error_el is not None:
+                        msg = error_el.attrib.get("message", "")
+                        ftype = error_el.attrib.get("type", "")
+                        failure_details.append({
+                            "classname": classname,
+                            "name": name,
+                            "message": msg,
+                            "type": ftype,
+                            "kind": "error",
+                        })
 
             if parse_error:
                 log_lines.append(parse_error)
@@ -160,6 +191,7 @@ def run_test_agent(
         "detected_test_sources": detected_test_sources,
         "runnable_test_candidates": runnable_test_candidates,
         "non_runnable_test_sources": non_runnable_test_sources,
+        "test_failure_details": failure_details[:200],
         "reason": reason,
         "test_log_path": str(log_path),
         "source_log_path": source_log,
@@ -244,5 +276,48 @@ def _summary_markdown(payload: dict[str, Any]) -> str:
         lines.extend([f"  - {warning}" for warning in payload["warnings"]])
     lines.append("")
     return "\n".join(lines)
+
+
+def capture_surefire_report_index(reports_dir: Path) -> dict[str, dict[str, Any]]:
+    snapshot: dict[str, dict[str, Any]] = {}
+    if not reports_dir.is_dir():
+        return snapshot
+    for path in sorted(reports_dir.glob("TEST-*.xml")):
+        try:
+            stat = path.stat()
+            snapshot[path.name] = {
+                "size": stat.st_size,
+                "st_mtime_ns": stat.st_mtime_ns,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        except OSError:
+            continue
+    return snapshot
+
+
+def filter_current_reports(
+    pre_snapshot: dict[str, dict[str, Any]],
+    reports_dir: Path,
+) -> list[Path]:
+    current: list[Path] = []
+    if not reports_dir.is_dir():
+        return current
+    for path in sorted(reports_dir.glob("TEST-*.xml")):
+        key = path.name
+        if key not in pre_snapshot:
+            current.append(path)
+            continue
+        try:
+            stat = path.stat()
+            prev = pre_snapshot[key]
+            if (
+                stat.st_size != prev["size"]
+                or stat.st_mtime_ns != prev["st_mtime_ns"]
+                or hashlib.sha256(path.read_bytes()).hexdigest() != prev["sha256"]
+            ):
+                current.append(path)
+        except OSError:
+            continue
+    return current
 
 
