@@ -1306,6 +1306,9 @@ class V2OrchestratorRunner:
         evidence_path = repair_dir / "repair_failure_evidence.json"
         context_path = repair_dir / "repair_context_pack.json"
         validation_context = dict(result.get("validation_execution_context") or {})
+        build_validation = result.get("build_validation")
+        build_validation = build_validation if isinstance(build_validation, dict) else {}
+        build_command = build_validation.get("command") or build_validation.get("resolved_command")
         validation_context.update({
             "job_id": job_id,
             "command_id": command_id,
@@ -1313,11 +1316,43 @@ class V2OrchestratorRunner:
             "stage_index": stage_index,
             "route_step_index": result.get("route_step_index", stage_index),
             "sandbox_path": str(result.get("sandbox_path") or result.get("sandbox_root") or sandbox_root),
-            "validation_command": validation_context.get("validation_command") or result.get("validation_command") or result.get("command") or (),
+            "validation_command": (
+                validation_context.get("validation_command")
+                or result.get("validation_command")
+                or result.get("command")
+                or build_command
+                or ()
+            ),
+            "validation_unit_id": (
+                validation_context.get("validation_unit_id")
+                or result.get("validation_unit_id")
+                or build_validation.get("unit_id")
+                or result.get("unit_id")
+                or ""
+            ),
+            "module": validation_context.get("module") or build_validation.get("module") or result.get("module"),
+            "main_class": validation_context.get("main_class") or build_validation.get("main_class") or result.get("main_class"),
+            "tool": validation_context.get("tool") or build_validation.get("build_tool") or result.get("build_tool") or "",
+            "wrapper": validation_context.get("wrapper") or build_validation.get("wrapper") or result.get("wrapper") or "",
             "source_profile": str(result.get("source_profile") or validation_context.get("source_profile") or ""),
             "target_profile": str(result.get("target_profile") or validation_context.get("target_profile") or ""),
             "runtime_profile": str(result.get("runtime_profile") or validation_context.get("runtime_profile") or ""),
             "working_directory": str(result.get("working_directory") or validation_context.get("working_directory") or result.get("sandbox_path") or sandbox_root),
+            "source_jdk_home_env": (
+                validation_context.get("source_jdk_home_env")
+                or result.get("source_jdk_home_env")
+                or build_validation.get("source_jdk_home_env")
+            ),
+            "target_jdk_home_env": (
+                validation_context.get("target_jdk_home_env")
+                or result.get("target_jdk_home_env")
+                or build_validation.get("target_jdk_home_env")
+            ),
+            "build_timeout_seconds": (
+                validation_context.get("build_timeout_seconds")
+                if validation_context.get("build_timeout_seconds") is not None
+                else result.get("build_timeout_seconds")
+            ),
         })
         validation_context_path = repair_dir / "validation_execution_context.json"
         validation_context_path.write_text(

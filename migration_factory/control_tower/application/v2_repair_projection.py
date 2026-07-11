@@ -6,6 +6,7 @@ or execution details. Full diff loaded by backend artifact ref endpoint only.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -548,10 +549,23 @@ def build_reviewed_diff_proposal_from_record(
         diff_ref=diff_ref,
         diff_text=final_diff_text,
     )
+    persisted_reviewer_reasoning = reviewer_reasoning
+    artifact_path = Path(diff_ref).with_name("final_reviewed_repair_artifact.json")
+    try:
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        reviewer_notes = artifact.get("reviewer_notes") if isinstance(artifact, dict) else None
+        if isinstance(reviewer_notes, list) and reviewer_notes:
+            persisted_reviewer_reasoning = "\n".join(str(note) for note in reviewer_notes if str(note).strip())
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
     verdict = ReviewerVerdictProjection(
         reviewer_verdict_id=reviewer_verdict_id,
         decision=reviewer_decision or "unknown",
-        reasoning=_bounded_redacted_text(reviewer_reasoning) if reviewer_reasoning else None,
+        reasoning=(
+            _bounded_redacted_text(persisted_reviewer_reasoning)
+            if persisted_reviewer_reasoning
+            else None
+        ),
         output_checksum=reviewer_output_checksum,
     )
     files_changed = [

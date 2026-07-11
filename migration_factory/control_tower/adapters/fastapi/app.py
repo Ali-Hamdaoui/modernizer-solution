@@ -206,12 +206,15 @@ from migration_factory.repair_loop.validation_runner import (
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json
 from migration_factory.repair_loop.failure_evidence import (
     FailureSource,
+    NormalizedCompilerError,
     build_failure_evidence,
     failure_evidence_to_dict,
 )
 from migration_factory.repair_loop.repair_context import (
     build_repair_context_pack,
+    build_bounded_source_context,
     context_pack_to_dict,
+    find_relevant_build_context_files,
 )
 from migration_factory.control_tower.application.v2_evidence_pack_builder import (
     EvidencePackBuilder,
@@ -232,6 +235,7 @@ from migration_factory.control_tower.application.v2_orchestrator_runner import (
     V2OrchestratorRunner,
     V2OrchestratorStart,
     _bounded,
+    _normalize_compiler_errors,
 )
 from migration_factory.control_tower.application.v2_profile_runtime import (
     RouteRuntimeProfileUnavailableError,
@@ -3592,7 +3596,7 @@ def create_app(
                                  "ask_explanation", "view_attempt_history", "approve_sandbox_apply"),
             ))
         if event_type == "repair_apply_failed":
-            reason_code = str(payload.get("reason_code") or "RUNTIME_CONTEXT_RESOLUTION_FAILED")
+            reason_code = str(payload.get("reason_code") or "APPLY_FAILED")
             detail = str(payload.get("reason") or latest_event.message or "Repair Apply failed.")
             return repair_unavailable_state_to_dict(RepairUnavailableState(
                 attempted=True,
@@ -3611,8 +3615,11 @@ def create_app(
                 reason_code = "REVIEWER_NEEDS_REVISION"
                 detail = f"Reviewer requested revision: {latest_event.message}"
             else:
-                reason_code = "REPAIR_GENERATION_FAILED" if event_type == "repair_generation_failed" else "PRIMARY_INVALID_RESPONSE"
-                detail = f"Repair generation failed: {latest_event.message}"
+                reason_code = str(
+                    payload.get("reason_code")
+                    or ("REPAIR_GENERATION_FAILED" if event_type == "repair_generation_failed" else "PRIMARY_INVALID_RESPONSE")
+                )
+                detail = f"Repair generation failed: {payload.get('reason') or latest_event.message}"
             return repair_unavailable_state_to_dict(RepairUnavailableState(
                 attempted=True,
                 status="unavailable",
@@ -3689,12 +3696,36 @@ def create_app(
                 created_at=created_at, allowed_actions=("view_failure_summary", "view_attempt_history"),
             ))
         if status == "approve_failed":
+            apply_status = str(getattr(record, "apply_status", "") or "")
+            rerun_status = str(getattr(record, "rerun_status", "") or "")
+            next_gate_status = str(getattr(record, "next_gate_status", "") or "")
+            if apply_status == "APPLIED" and rerun_status == "failed":
+                reason_code = (
+                    "REPAIR_RETRY_GENERATION_FAILED"
+                    if next_gate_status == "generation_failed"
+                    else "REPAIR_VALIDATION_FAILED"
+                )
+                fallback_detail = (
+                    "Repair retry generation failed after sandbox Apply."
+                    if reason_code == "REPAIR_RETRY_GENERATION_FAILED"
+                    else "Repair validation failed after sandbox Apply."
+                )
+            else:
+                reason_code = "APPLY_FAILED"
+                fallback_detail = "Repair Apply failed."
+            event_type = (
+                "repair_generation_failed"
+                if reason_code == "REPAIR_RETRY_GENERATION_FAILED"
+                else "repair_validation_failed"
+                if reason_code == "REPAIR_VALIDATION_FAILED"
+                else "repair_apply_failed"
+            )
             return repair_unavailable_state_to_dict(RepairUnavailableState(
                 attempted=True,
                 status="error",
-                reason_code="RUNTIME_CONTEXT_RESOLUTION_FAILED",
-                detail=getattr(record, "status_reason", None) or "Repair Apply failed.",
-                event_type="repair_apply_failed",
+                reason_code=reason_code,
+                detail=getattr(record, "status_reason", None) or fallback_detail,
+                event_type=event_type,
                 created_at=created_at,
                 allowed_actions=("view_failure_summary", "view_attempt_history", "view_diff"),
             ))
@@ -3759,14 +3790,18 @@ def create_app(
                         policy_validation_checksum=getattr(record, "policy_validation_checksum", None),
                         reviewer_decision=getattr(record, "reviewer_decision", None),
                         risk=getattr(record, "risk", None),
-                        reviewer_reasoning=getattr(record, "status_reason", None),
+                        reviewer_reasoning=None,
                         allowed_actions=allowed_actions,
                         apply_status=getattr(record, "apply_status", None),
                         rerun_status=getattr(record, "rerun_status", None),
                         validation_proof_status=getattr(record, "validation_proof_status", None),
                         final_diff_source=getattr(record, "final_diff_source", None),
                         generation_status="failed" if record.status == "repair_generation_failed" else "ready",
-                        generation_reason=getattr(record, "status_reason", None),
+                        generation_reason=(
+                            getattr(record, "status_reason", None)
+                            if record.status == "repair_generation_failed"
+                            else None
+                        ),
                     )
                     repair_state = _build_repair_state_from_record(record)
                     return {
@@ -3819,14 +3854,18 @@ def create_app(
                         policy_validation_checksum=getattr(record, "policy_validation_checksum", None),
                         reviewer_decision=getattr(record, "reviewer_decision", None),
                         risk=getattr(record, "risk", None),
-                        reviewer_reasoning=getattr(record, "status_reason", None),
+                        reviewer_reasoning=None,
                         allowed_actions=allowed_actions,
                         apply_status=getattr(record, "apply_status", None),
                         rerun_status=getattr(record, "rerun_status", None),
                         validation_proof_status=getattr(record, "validation_proof_status", None),
                         final_diff_source=getattr(record, "final_diff_source", None),
                         generation_status="failed" if record.status == "repair_generation_failed" else "ready",
-                        generation_reason=getattr(record, "status_reason", None),
+                        generation_reason=(
+                            getattr(record, "status_reason", None)
+                            if record.status == "repair_generation_failed"
+                            else None
+                        ),
                     )
                     return {
                         "proposal": reviewed_diff_proposal_to_safe_dict(projection),
@@ -4108,13 +4147,17 @@ def create_app(
                             policy_validation_checksum=getattr(new_record, "policy_validation_checksum", None),
                             reviewer_decision=getattr(new_record, "reviewer_decision", None),
                             risk=getattr(new_record, "risk", None),
-                            reviewer_reasoning=getattr(new_record, "status_reason", None),
+                            reviewer_reasoning=None,
                             apply_status=getattr(new_record, "apply_status", None),
                             rerun_status=getattr(new_record, "rerun_status", None),
                             validation_proof_status=getattr(new_record, "validation_proof_status", None),
                             final_diff_source=getattr(new_record, "final_diff_source", None),
                             generation_status="failed" if new_record.status == "repair_generation_failed" else "ready",
-                            generation_reason=getattr(new_record, "status_reason", None),
+                            generation_reason=(
+                                getattr(new_record, "status_reason", None)
+                                if new_record.status == "repair_generation_failed"
+                                else None
+                            ),
                         )
                     )
                 except (ValueError, OSError):
@@ -4576,7 +4619,7 @@ def create_app(
                     status_reason="Patch applied to sandbox and validation passed.",
                     apply_status=apply_status,
                     rerun_status=rerun_status,
-                    rollback_status=None,
+                    rollback_status="",
                     remaining_attempts=remaining_attempts,
                     completed_at=completed_at,
                     next_gate_id=None,
@@ -4609,14 +4652,15 @@ def create_app(
                 # Validation failed
                 proposal_post_status = "approve_failed"
                 stage_index_val = getattr(record, "route_step_index", 0) or 0
-                rollback_status = None
+                rollback_status = ""
                 remaining_attempts_after = getattr(record, "remaining_attempts", 0) or 0
+                prior_status_reason = getattr(record, "status_reason", None)
                 _persist_apply_fields(
                     status="approve_failed",
                     status_reason=f"Validation failed after sandbox apply: {'; '.join(validation.errors)}",
                     apply_status=apply_status,
                     rerun_status=rerun_status,
-                    rollback_status=None,
+                    rollback_status="",
                     remaining_attempts=remaining_attempts_after,
                 )
                 if remaining_attempts_after > 0:
@@ -4630,9 +4674,42 @@ def create_app(
                             run_dir=run_dir_path,
                             sandbox_path=sandbox_path,
                             model_client=getattr(app.state, "v2_assistant_model_client", None),
+                            unit_of_work_factory=unit_of_work_factory,
                         )
                     except Exception as exc:
-                        _mark_apply_failed(f"repair retry generation raised {type(exc).__name__}")
+                        retry_reason = f"repair retry generation raised {type(exc).__name__}"
+                        import logging as _logging
+                        _logging.getLogger(__name__).exception(
+                            "AMF-252 retry generation failed for job=%s proposal=%s stage=%s",
+                            job_id,
+                            proposal_id,
+                            stage_index_val,
+                        )
+                        _persist_apply_fields(
+                            status="approve_failed",
+                            status_reason=prior_status_reason,
+                            apply_status=apply_status,
+                            rerun_status=rerun_status,
+                            apply_claim_status="completed",
+                            remaining_attempts=remaining_attempts_after,
+                            next_gate_status="generation_failed",
+                            completed_at=utc_now_text(),
+                        )
+                        _persist_apply_event(
+                            job_id=job_id,
+                            stage=int(stage_index_val),
+                            event_type="repair_generation_failed",
+                            status="failed",
+                            message=retry_reason,
+                            payload={
+                                "proposal_id": proposal_id,
+                                "reason_code": "REPAIR_RETRY_GENERATION_FAILED",
+                                "reason": retry_reason,
+                                "apply_status": apply_status,
+                                "rerun_status": rerun_status,
+                                "remaining_attempts": remaining_attempts_after,
+                            },
+                        )
                         raise _error(
                             status.HTTP_500_INTERNAL_SERVER_ERROR,
                             "REPAIR_RETRY_GENERATION_FAILED",
@@ -12701,10 +12778,18 @@ def _resolve_reviewed_repair_runtime_context(
     sandbox_path, _ = sandbox_resolution
 
     try:
+        gate_stage_index = int(getattr(gate, "stage_index", 0) or 0)
+        run_id = _approval_review_run_id_for_stage(
+            uow,
+            job_id=job_id,
+            stage_index=gate_stage_index,
+        )
+        if not run_id:
+            return None
         run_dir = _v2_resume_run_dir_from_commands(
             commands,
-            int(getattr(gate, "stage_index", 0) or 0),
-            str(proposal.command_id),
+            gate_stage_index,
+            run_id,
         )
     except HTTPException:
         return None
@@ -12945,10 +13030,23 @@ def _resolve_repair_proposal_runtime_context(
         # Legacy fallback only: direct contexts produced before run_dir
         # persistence must be reconstructed from the original command.
         try:
+            run_id = str(context_data.get("run_id") or "")
+            if not run_id:
+                run_id = _approval_review_run_id_for_stage(
+                    uow,
+                    job_id=job_id,
+                    stage_index=int(stage_index),
+                )
+            if not run_id:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "RESUME_RUN_DIR_UNAVAILABLE",
+                    "Backend could not resolve an authoritative run_id for repair Apply.",
+                )
             run_dir = _v2_resume_run_dir_from_commands(
                 commands,
                 int(stage_index),
-                str(getattr(record, "command_id", "") or context_data.get("command_id") or ""),
+                run_id,
             )
         except HTTPException as exc:
             raise _RepairRuntimeContextResolutionFailure(
@@ -13015,6 +13113,7 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
     run_dir: str | Path,
     sandbox_path: str | Path,
     model_client: Any | None = None,
+    unit_of_work_factory: Any | None = None,
 ) -> Any:
     """Create the next Option A proposal from post-apply validation evidence."""
     stage_index = int(getattr(record, "route_step_index", 0) or 0)
@@ -13038,6 +13137,63 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
         )
         if value
     )
+    build_contract: dict[str, Any] = {}
+    build_contract_ref = artifact_refs.get("repair_build_error_contract", "")
+    if build_contract_ref:
+        from migration_factory.repair_loop.evidence_collector import _read_json
+
+        build_contract = _read_json(Path(build_contract_ref))
+    build_stdout = build_contract.get("stdout_tail") if isinstance(build_contract.get("stdout_tail"), list) else []
+    build_stderr = build_contract.get("stderr_tail") if isinstance(build_contract.get("stderr_tail"), list) else []
+    build_stdout_text = "\n".join(str(line) for line in build_stdout)
+    build_stderr_text = "\n".join(str(line) for line in build_stderr)
+    compiler_errors = list(_normalize_compiler_errors(
+        stdout_tail=build_stdout_text,
+        stderr_tail=build_stderr_text,
+    ))
+    matched_line = str(build_contract.get("matched_line") or "").strip()
+    if matched_line and not any(error.message == matched_line for error in compiler_errors):
+        compiler_errors.append(NormalizedCompilerError(message=matched_line))
+    exit_code = build_contract.get("exit_code")
+    build_command = build_contract.get("command") or build_contract.get("resolved_command") or ()
+    validation_context = apply_context.get("validation_execution_context")
+    validation_context = validation_context if isinstance(validation_context, dict) else {}
+    build_cwd = str(build_contract.get("cwd") or validation_context.get("working_directory") or "")
+    build_unit_id = str(build_contract.get("unit_id") or validation_context.get("validation_unit_id") or "")
+    evidence_details = [validation_summary]
+    if exit_code is not None:
+        evidence_details.append(f"Build exit code: {exit_code}")
+    if matched_line:
+        evidence_details.append(f"Matched compiler error: {matched_line}")
+    if build_command:
+        evidence_details.append(f"Validation command: {' '.join(str(item) for item in build_command)}")
+    if build_cwd:
+        evidence_details.append(f"Working directory: {build_cwd}")
+    if build_unit_id:
+        evidence_details.append(f"Validation unit: {build_unit_id}")
+    if build_stdout_text:
+        evidence_details.append(f"stdout:\n{build_stdout_text}")
+    if build_stderr_text:
+        evidence_details.append(f"stderr:\n{build_stderr_text}")
+    validation_summary = "\n".join(evidence_details)
+    compiler_locations = [
+        (error.file_path, error.line)
+        for error in compiler_errors
+        if error.file_path and error.line > 0
+    ]
+    context_sandbox = str(validation_context.get("sandbox_path") or sandbox_path)
+    build_context_files = find_relevant_build_context_files(
+        sandbox_root=context_sandbox,
+        working_directory=build_cwd,
+        module=str(build_contract.get("module") or validation_context.get("module") or ""),
+        tool=str(build_contract.get("build_tool") or validation_context.get("tool") or ""),
+    )
+    source_contexts = build_bounded_source_context(
+        sandbox_root=context_sandbox,
+        compiler_errors=compiler_locations,
+        changed_files=tuple(changed_files),
+        build_context_files=build_context_files,
+    )
     evidence = build_failure_evidence(
         failure_source=FailureSource.VALIDATION,
         job_id=job_id,
@@ -13049,6 +13205,9 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
         target_profile=str(apply_context.get("target_profile", "")),
         accepted_artifact_checksums=accepted_checksums,
         artifact_refs=artifact_refs,
+        compiler_errors=tuple(compiler_errors),
+        stdout_tail=build_stdout_text,
+        stderr_tail=build_stderr_text,
         safe_log_preview=validation_summary,
     )
     context_pack = build_repair_context_pack(
@@ -13061,6 +13220,7 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
         prior_proposal_checksums=accepted_checksums,
         prior_reviewer_notes=(),
         changed_files=tuple(changed_files),
+        source_contexts=source_contexts,
         cycle_number=attempt_number,
         max_cycles=DEFAULT_MAX_REPAIR_ATTEMPTS,
     )
@@ -13076,6 +13236,8 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
         encoding="utf-8",
     )
     validation_context = dict(apply_context.get("validation_execution_context") or {})
+    validation_context["run_dir"] = str(run_path)
+    validation_context["sandbox_path"] = str(sandbox_path)
     validation_context_path = repairs_dir / f"validation_execution_context_attempt_{attempt_number}.json"
     validation_context_path.write_text(
         json.dumps(validation_context, indent=2, sort_keys=True) + "\n",
@@ -13103,10 +13265,13 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
         stage_index=stage_index,
         command_id=command_id,
         failure_payload=failure_payload,
+        attempt_number=int(getattr(record, "attempt_number", 0) or 0) + 1,
         model_client=model_client,
         uow=None,
         uow_factory=unit_of_work_factory,
     )
+    if unit_of_work_factory is None:
+        raise ValueError("unit_of_work_factory is required for retry proposal events")
     with unit_of_work_factory() as event_uow:
         event_uow.v2_events.save(
             job_id=job_id,

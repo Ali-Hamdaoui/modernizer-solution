@@ -18,6 +18,7 @@ from typing import Any
 from migration_factory.control_tower.application.v2_assistant_model_client import (
     V2AssistantModelClient,
 )
+from migration_factory.control_tower.application.redaction import redact_model_summary
 from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
 from migration_factory.control_tower.application.v2_review_chain_contracts import (
     _check_forbidden_fields,
@@ -47,6 +48,104 @@ class RepairReviewChainProductionError(RuntimeError):
 _DIAGNOSTIC_SECRET_VALUE_RE = re.compile(
     r"(?i)([\"']?(?:api[_-]?key|token|password|secret|private[_-]?key|credential)[\"']?\s*[:=]\s*)([\"'][^\"']*[\"']|[^,\s}]+)"
 )
+
+_UNIFIED_HUNK_HEADER_RE = re.compile(
+    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$"
+)
+
+
+def _normalize_unified_diff_hunk_counts(unified_diff: str) -> str:
+    """Correct unified-diff hunk counts without changing patch body bytes."""
+    def split_line_ending(line: str) -> tuple[str, str]:
+        if line.endswith("\r\n"):
+            return line[:-2], "\r\n"
+        if line.endswith(("\n", "\r")):
+            return line[:-1], line[-1:]
+        return line, ""
+
+    lines = unified_diff.splitlines(keepends=True)
+    normalized: list[str] = []
+    changed = False
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        body, ending = split_line_ending(line)
+        match = _UNIFIED_HUNK_HEADER_RE.match(body)
+        if match is None:
+            normalized.append(line)
+            index += 1
+            continue
+
+        old_start, old_count, new_start, new_count, section = match.groups()
+        old_actual = 0
+        new_actual = 0
+        body_end = index + 1
+        while body_end < len(lines):
+            candidate = lines[body_end]
+            candidate_body, _ = split_line_ending(candidate)
+            if _UNIFIED_HUNK_HEADER_RE.match(candidate_body):
+                break
+            if candidate_body.startswith("diff --git "):
+                break
+            if candidate_body.startswith("\\ No newline at end of file"):
+                body_end += 1
+                continue
+            if candidate_body.startswith(" "):
+                old_actual += 1
+                new_actual += 1
+            elif candidate_body.startswith("-"):
+                old_actual += 1
+            elif candidate_body.startswith("+"):
+                new_actual += 1
+            body_end += 1
+
+        rendered_old_count = "" if old_count is None and old_actual == 1 else f",{old_actual}"
+        rendered_new_count = "" if new_count is None and new_actual == 1 else f",{new_actual}"
+        rendered_header = (
+            f"@@ -{old_start}{rendered_old_count} +{new_start}{rendered_new_count} @@"
+            f"{section}{ending}"
+        )
+        if rendered_header != line:
+            changed = True
+        normalized.append(rendered_header)
+        normalized.extend(lines[index + 1:body_end])
+        index = body_end
+
+    return "".join(normalized) if changed else unified_diff
+
+
+_CANONICAL_REPAIR_DIFF_CONTRACT = (
+    "CRITICAL PATCH FORMAT CONTRACT\n"
+    "- proposed_diff MUST contain raw Git unified diff text.\n"
+    "- The first non-whitespace content MUST be: diff --git\n"
+    "- Every modified file MUST use:\n"
+    "  diff --git a/<relative-path> b/<relative-path>\n"
+    "  --- a/<relative-path>\n"
+    "  +++ b/<relative-path>\n"
+    "  @@ -oldStart,oldCount +newStart,newCount @@\n"
+    "- Repository-relative paths only; absolute paths and traversal are forbidden.\n"
+    "- The Codex/apply_patch dialect is invalid for AMF-252.\n"
+    "- Markdown fences, prose, JSON, commands, secrets, and test disabling are forbidden in proposed_diff.\n"
+    "- Forbidden markers include: *** Begin Patch, *** Update File:, *** Add File:, *** Delete File:, *** End Patch.\n"
+    "- If no safe Git unified diff can be produced, return proposed_diff = \"\" and no_fix_reason.\n\n"
+    "VALID:\n"
+    "diff --git a/src/main/java/com/example/Foo.java b/src/main/java/com/example/Foo.java\n"
+    "--- a/src/main/java/com/example/Foo.java\n"
+    "+++ b/src/main/java/com/example/Foo.java\n"
+    "@@ -10,1 +10,1 @@\n"
+    "-    final Sort sort = new Sort(direction, column);\n"
+    "+    final Sort sort = Sort.by(direction, column);\n\n"
+    "INVALID:\n"
+    "*** Begin Patch\n"
+    "*** Update File: src/main/java/com/example/Foo.java\n"
+    "@@\n"
+    "- old\n"
+    "+ new\n"
+    "*** End Patch\n\n"
+)
+
+
 from migration_factory.repair_loop.patch_gate import extract_touched_paths
 
 
@@ -123,21 +222,8 @@ def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checks
         "deterministic_rule_id and risk are optional metadata and must never block diff generation.\n"
         "Only set no_fix_reason when the provided context lacks enough evidence to safely create a patch.\n"
         "If no_fix_reason is set, explain exactly which required evidence is missing.\n\n"
-        "CRITICAL PATCH FORMAT CONTRACT\n"
-        "- proposed_diff MUST contain raw Git unified diff text.\n"
-        "- The first non-whitespace content MUST be: diff --git\n"
-        "- For every modified existing file, require:\n"
-        "  diff --git a/<relative-path> b/<relative-path>\n"
-        "  --- a/<relative-path>\n"
-        "  +++ b/<relative-path>\n"
-        "  @@ -oldStart,oldCount +newStart,newCount @@\n"
-        "- Repository paths inside the diff must be sandbox/repository-relative paths.\n"
-        "- This Codex/apply_patch dialect is invalid for AMF-252.\n"
-        "- If you cannot safely produce the required Git unified diff, return:\n"
-        "  proposed_diff = \"\"\n"
-        "  deterministic_rule_id = \"no_safe_rule\"\n"
-        "  no_fix_reason = \"<specific reason>\"\n\n"
-        "CONSTRAINTS:\n"
+        + _CANONICAL_REPAIR_DIFF_CONTRACT
+        + "CONSTRAINTS:\n"
         "- Do NOT include commands, paths to execute, provider data, endpoint data, "
         "env data, deployment data, or approvals.\n"
         "- Do NOT include absolute Windows paths.\n"
@@ -146,30 +232,10 @@ def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checks
         "- Do NOT include explanatory prose inside proposed_diff.\n"
         "- Do NOT include plain source code without diff headers.\n"
         "- Do NOT include JSON embedded inside proposed_diff.\n"
-        "- Do NOT include any Codex/apply_patch markers such as:\n"
-        "  *** Begin Patch\n"
-        "  *** Update File:\n"
-        "  *** Add File:\n"
-        "  *** Delete File:\n"
-        "  *** End Patch\n"
         "- In normal repair mode, proposed_diff must be non-empty.\n"
         "- Empty diff is an unavailable outcome, not an applyable proposal.\n"
         "- Do not skip or disable tests as a fix.\n"
         "- The fix must stay within the sandbox scope and declared changed files.\n\n"
-        "VALID:\n"
-        "diff --git a/src/main/java/com/example/Foo.java b/src/main/java/com/example/Foo.java\n"
-        "--- a/src/main/java/com/example/Foo.java\n"
-        "+++ b/src/main/java/com/example/Foo.java\n"
-        "@@ -10,1 +10,1 @@\n"
-        "-    final Sort sort = new Sort(direction, column);\n"
-        "+    final Sort sort = Sort.by(direction, column);\n\n"
-        "INVALID:\n"
-        "*** Begin Patch\n"
-        "*** Update File: src/main/java/com/example/Foo.java\n"
-        "@@\n"
-        "- old\n"
-        "+ new\n"
-        "*** End Patch\n\n"
         f"Deterministic repair artifact checksum: {deterministic_checksum}\n"
         f"Source context is provided below with exact file contents bounded around error locations.\n"
         f"Use this source context to produce an exact applicable unified diff.\n"
@@ -197,9 +263,8 @@ def _reviewer_repair_prompt(
         "optional decision/risks/policy_concerns, "
         "reviewed_context_checksum, reviewed_primary_output_checksum, "
         "reviewed_diff_checksum.\n\n"
-        "CONSTRAINTS:\n"
-        "- proposed_diff must be raw Git unified diff, never Markdown fences.\n"
-        "- Improve/correct proposer diff when evidence shows it is incomplete or wrong.\n"
+        + _CANONICAL_REPAIR_DIFF_CONTRACT
+        + "- Improve/correct proposer diff when evidence shows it is incomplete or wrong.\n"
         "- Use repository-relative paths only; reject commands, secrets, test disabling, "
         "absolute paths, traversal, or deployment/environment changes.\n"
         "- Bind your decision to the exact checksums provided.\n\n"
@@ -379,6 +444,14 @@ def _validate_candidate_diff(
     failures: list[str] = []
     if not proposed_diff.strip():
         failures.append(f"{role} proposed_diff is empty")
+    elif any(marker in proposed_diff for marker in (
+        "*** Begin Patch",
+        "*** Update File:",
+        "*** Add File:",
+        "*** Delete File:",
+        "*** End Patch",
+    )):
+        failures.append(f"{role} proposed_diff uses the unsupported apply_patch dialect")
     elif "```" in proposed_diff:
         failures.append(f"{role} proposed_diff is Markdown fenced")
     elif not _looks_like_unified_diff(proposed_diff):
@@ -419,10 +492,7 @@ def _looks_like_unified_diff(diff: str) -> bool:
     text = diff.strip()
     if "```" in text:
         return False
-    has_file_header = (
-        "diff --git " in text
-        or ("--- " in text and "+++ " in text)
-    )
+    has_file_header = text.startswith("diff --git ") and "\n--- " in text and "\n+++ " in text
     has_hunk = "@@" in text
     has_change = any(
         line.startswith(("+", "-")) and not line.startswith(("+++", "---"))
@@ -847,6 +917,7 @@ def produce_repair_review_chain(
     final_diff_source = "reviewer" if final_diff else "proposer_fallback" if not proposer_reason else ""
     if not final_diff and not proposer_reason:
         final_diff = proposer_diff
+    final_diff = _normalize_unified_diff_hunk_counts(final_diff)
     selected_changed_files = (
         list(reviewer_output.get("changed_files") or [])
         if final_diff_source == "reviewer"
@@ -891,7 +962,7 @@ def produce_repair_review_chain(
     _write_json(final_artifact_path, final_artifact)
 
     diff_path = output_dir / "final_reviewed_repair.diff"
-    diff_path.write_text(final_diff, encoding="utf-8")
+    diff_path.write_bytes(final_diff.encode("utf-8"))
 
     review_chain: dict[str, Any] = {
         "deterministic_artifact_checksum": deterministic_checksum,

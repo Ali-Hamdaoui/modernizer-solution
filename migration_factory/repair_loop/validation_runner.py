@@ -162,7 +162,8 @@ def run_validation_after_patch(
 
     if build_status != BUILD_PASSED:
         errors.append("build validation failed after repair patch")
-    if test_status not in {TEST_PASSED, TEST_PASS_WITH_WARNINGS, TESTS_NOT_FOUND}:
+        errors.append("test execution was blocked because compilation failed")
+    elif test_status not in {TEST_PASSED, TEST_PASS_WITH_WARNINGS, TESTS_NOT_FOUND}:
         errors.append("test validation failed after repair patch")
     if h2_required and h2_status != "H2_STARTUP_PASSED":
         errors.append("required H2 startup failed after repair patch")

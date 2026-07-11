@@ -38,9 +38,9 @@ class BuildErrorContract:
     required_minimum: str | None = None
     profile: str | None = None
     target_unit: str | None = None
-    MAVEN_CMD: str | None = None
-    MAVEN_HOME: str | None = None
-    JAVA_HOME: str | None = None
+    maven_cmd: str | None = None
+    maven_home: str | None = None
+    effective_java_home: str | None = None
     PATH_excerpt: str | None = None
     platform: str | None = None
 
@@ -124,9 +124,9 @@ def build_error_contract(
         required_minimum=required_minimum,
         profile=profile,
         target_unit=target_unit,
-        MAVEN_CMD=diagnostics.get("MAVEN_CMD"),
-        MAVEN_HOME=diagnostics.get("MAVEN_HOME"),
-        JAVA_HOME=diagnostics.get("JAVA_HOME"),
+        maven_cmd=diagnostics.get("maven_cmd"),
+        maven_home=diagnostics.get("maven_home"),
+        effective_java_home=diagnostics.get("effective_java_home"),
         PATH_excerpt=diagnostics.get("PATH_excerpt"),
         platform=diagnostics.get("platform"),
     )

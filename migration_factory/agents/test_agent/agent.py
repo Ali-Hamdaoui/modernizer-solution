@@ -72,7 +72,7 @@ def run_test_agent(
     elif build_status and build_status != BUILD_STATUS_PASSED:
         log_lines.append(f"Build command did not pass: {build_status}")
         reason = "BUILD_COMMAND_FAILED"
-        test_status = TEST_STATUS_ERROR
+        test_status = TEST_STATUS_TESTS_NOT_FOUND
     else:
         test_sources = _detect_test_sources(resolved_sandbox)
         detected_test_sources = [_relative_or_name(path, resolved_sandbox) for path in test_sources]

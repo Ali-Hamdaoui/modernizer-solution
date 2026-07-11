@@ -12,6 +12,7 @@ from typing import Any
 from migration_factory.orchestrator.state import MigrationState
 from migration_factory.orchestrator.events import emit_control_tower_event
 from migration_factory.orchestrator.timing import record_phase_duration
+from migration_factory.contracts.migration import LedgerError, load_ledger
 
 
 PhaseCallable = Callable[[MigrationState], MigrationState]
@@ -183,6 +184,21 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
     if result.dependency_policy_summary_path is not None:
         artifact_refs["dependency_policy_summary"] = str(result.dependency_policy_summary_path)
     validation_context = dict(result.validation_execution_context or {})
+    build_validation: dict[str, Any] = {}
+    if result.ledger_file is not None:
+        try:
+            ledger = load_ledger(result.ledger_file)
+            candidate = ledger.get("build_validation")
+            if isinstance(candidate, dict):
+                build_validation = dict(candidate)
+        except (LedgerError, OSError, json.JSONDecodeError):
+            build_validation = {}
+    if not validation_context.get("validation_command") and build_validation.get("command"):
+        validation_context["validation_command"] = list(build_validation["command"])
+    if not validation_context.get("working_directory") and build_validation.get("cwd"):
+        validation_context["working_directory"] = str(build_validation["cwd"])
+    if not validation_context.get("validation_unit_id") and build_validation.get("unit_id"):
+        validation_context["validation_unit_id"] = str(build_validation["unit_id"])
     for key in ("source_profile", "target_profile"):
         if not validation_context.get(key) and state.get(key):
             validation_context[key] = state[key]
@@ -221,6 +237,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
                 "policy_patch_applied": result.policy_patch_applied,
                 "sandbox_path": str(result.sandbox_path or ""),
                 "validation_execution_context": validation_context,
+                "build_validation": build_validation,
                 "transform_log_path": str(result.log_file),
                 "artifact_refs": artifact_refs,
                 "profile_id": runtime_profile,
@@ -270,6 +287,8 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
                     "test_status": result.test_status or "",
                     "test_totals": dict(result.test_totals or {}),
                     "sandbox_path": str(result.sandbox_path),
+                    "validation_execution_context": validation_context,
+                    "build_validation": build_validation,
                     "transform_log_path": str(result.log_file),
                     "artifact_refs": artifact_refs,
                     "final_status": "H2_STARTUP_FAILED",
@@ -305,6 +324,7 @@ def run_sandbox_transform_phase(state: MigrationState) -> MigrationState:
         "policy_patch_applied": result.policy_patch_applied,
         "sandbox_path": str(result.sandbox_path),
         "validation_execution_context": validation_context,
+        "build_validation": build_validation,
         "transform_log_path": str(result.log_file),
         "artifact_refs": artifact_refs,
         "profile_id": runtime_profile,

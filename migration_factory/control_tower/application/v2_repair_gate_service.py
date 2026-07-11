@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -369,6 +370,7 @@ class V2RepairGateService:
         stage_index: int,
         command_id: str,
         failure_payload: dict[str, Any],
+        attempt_number: int | None = None,
         model_client: Any | None = None,
         invocation_ledger: Any | None = None,
         uow: Any | None = None,
@@ -380,7 +382,11 @@ class V2RepairGateService:
                 status="skipped",
                 reason="missing repair evidence refs",
             )
-        attempt_number = self._get_persisted_attempt_count(job_id, stage_index) + 1
+        attempt_number = (
+            int(attempt_number)
+            if attempt_number is not None
+            else self._get_persisted_attempt_count(job_id, stage_index) + 1
+        )
         remaining_attempts = max(0, self._max_repair_attempts - attempt_number)
         if uow_factory is not None:
             with uow_factory() as cycle_uow:
@@ -425,6 +431,7 @@ class V2RepairGateService:
             h2_required=bool(failure_payload.get("_repair_h2_required", False)),
             validation_context_ref=refs["validation_context_ref"],
             validation_context_checksum=refs["validation_context_checksum"],
+            attempt_number=attempt_number,
             model_client=model_client,
             invocation_ledger=invocation_ledger,
             uow=uow if uow_factory is None else None,
@@ -523,6 +530,7 @@ class V2RepairGateService:
         h2_required: bool = False,
         validation_context_ref: str = "",
         validation_context_checksum: str = "",
+        attempt_number: int | None = None,
         model_client: Any | None = None,
         invocation_ledger: Any | None = None,
         uow: Any | None = None,
@@ -595,7 +603,11 @@ class V2RepairGateService:
                 logging.getLogger("v2_repair_gate_service").exception(
                     "AMF-252 attempt count lookup failed: %s", exc
                 )
-        attempt_number = persisted_attempts + 1
+        attempt_number = (
+            int(attempt_number)
+            if attempt_number is not None
+            else persisted_attempts + 1
+        )
         if attempt_number > self._max_repair_attempts:
             return ReviewedRepairProposalCreationResult(
                 status="attempts_exhausted",
@@ -771,6 +783,36 @@ class V2RepairGateService:
             return ReviewedRepairProposalCreationResult(
                 status="generation_failed",
                 reason=f"failed to build safe diff preview: {exc}",
+                reviewer_decision=reviewer_decision,
+                attempt_number=attempt_number,
+                remaining_attempts=remaining_attempts,
+            )
+
+        # A parseable diff is not necessarily applicable to the exact sandbox.
+        # Establish the same strict Git precondition used at Apply time before
+        # exposing the reviewed artifact to the human approval gate.
+        try:
+            strict_check = subprocess.run(
+                ["git", "apply", "--check", str(diff_path)],
+                cwd=str(Path(sandbox_path).resolve()),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return ReviewedRepairProposalCreationResult(
+                status="generation_failed",
+                reason=f"strict Git applicability check failed: {type(exc).__name__}",
+                reviewer_decision=reviewer_decision,
+                attempt_number=attempt_number,
+                remaining_attempts=remaining_attempts,
+            )
+        if strict_check.returncode != 0:
+            detail = (strict_check.stderr or strict_check.stdout or "strict Git applicability check failed").strip()
+            return ReviewedRepairProposalCreationResult(
+                status="generation_failed",
+                reason=f"strict Git applicability check failed: {detail[-1000:]}",
                 reviewer_decision=reviewer_decision,
                 attempt_number=attempt_number,
                 remaining_attempts=remaining_attempts,

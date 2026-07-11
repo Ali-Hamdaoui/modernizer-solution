@@ -38,6 +38,16 @@ MAX_SOURCE_CONTEXT_FILES = 3
 MAX_LINES_BEFORE = 40
 MAX_LINES_AFTER = 40
 MAX_SOURCE_CONTEXT_CHARS = 40000
+_BUILD_DESCRIPTOR_NAMES = (
+    "pom.xml",
+    "build.gradle",
+    "build.gradle.kts",
+    "settings.gradle",
+    "settings.gradle.kts",
+    "package.json",
+    "angular.json",
+    "tsconfig.json",
+)
 
 
 @dataclass(frozen=True)
@@ -77,6 +87,7 @@ def build_bounded_source_context(
     sandbox_root: str | Path,
     compiler_errors: list[tuple[str, int]] | None = None,
     changed_files: tuple[str, ...] = (),
+    build_context_files: tuple[str, ...] = (),
     max_files: int = MAX_SOURCE_CONTEXT_FILES,
     lines_before: int = MAX_LINES_BEFORE,
     lines_after: int = MAX_LINES_AFTER,
@@ -88,6 +99,9 @@ def build_bounded_source_context(
         for file_path, line_num in compiler_errors:
             if file_path not in candidate_paths:
                 candidate_paths[file_path] = line_num
+    for build_file in build_context_files:
+        if build_file not in candidate_paths:
+            candidate_paths[build_file] = 0
     for cf in changed_files:
         if cf not in candidate_paths:
             candidate_paths[cf] = 0
@@ -102,7 +116,8 @@ def build_bounded_source_context(
         if not normalized.is_file():
             continue
         try:
-            lines = normalized.read_text(encoding="utf-8", errors="replace").splitlines()
+            with normalized.open("r", encoding="utf-8", errors="replace", newline="") as handle:
+                lines = handle.read().splitlines(keepends=True)
         except (OSError, UnicodeDecodeError):
             continue
         if not lines:
@@ -110,7 +125,7 @@ def build_bounded_source_context(
         error_line = candidate_paths[file_path]
         start_line = max(0, error_line - lines_before)
         end_line = min(len(lines), error_line + lines_after)
-        excerpt = "\n".join(lines[start_line:end_line])
+        excerpt = "".join(lines[start_line:end_line])
         if not excerpt.strip():
             continue
         excerpt_chars = len(excerpt)
@@ -121,16 +136,93 @@ def build_bounded_source_context(
             else:
                 continue
         checksum = _sha256_file(normalized)
+        reason = (
+            "compiler_error"
+            if file_path in {e[0] for e in (compiler_errors or [])}
+            else "build_configuration"
+            if file_path in set(build_context_files)
+            else "changed_file"
+        )
         contexts.append(RepairSourceContext(
             path=file_path,
             content_checksum=checksum,
             start_line=start_line + 1,
             end_line=end_line,
             content=excerpt,
-            reason_included="compiler_error" if file_path in {e[0] for e in (compiler_errors or [])} else "changed_file",
+            reason_included=reason,
         ))
         total_chars += len(excerpt)
     return tuple(contexts)
+
+
+def find_relevant_build_context_files(
+    *,
+    sandbox_root: str | Path,
+    working_directory: str | Path | None = None,
+    module: str = "",
+    tool: str = "",
+) -> tuple[str, ...]:
+    """Find bounded, repository-relative build descriptors for repair context."""
+    sandbox = Path(sandbox_root).resolve()
+    roots: list[Path] = []
+    for candidate in (working_directory, module):
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if not path.is_absolute():
+            path = sandbox / path
+        try:
+            path = path.resolve()
+            path.relative_to(sandbox)
+        except ValueError:
+            continue
+        if path.is_file():
+            path = path.parent
+        if path.is_dir():
+            ancestor = path
+            while True:
+                if ancestor not in roots:
+                    roots.append(ancestor)
+                if ancestor == sandbox or ancestor.parent == ancestor:
+                    break
+                ancestor = ancestor.parent
+    if sandbox not in roots:
+        roots.append(sandbox)
+
+    names = list(_BUILD_DESCRIPTOR_NAMES)
+    tool_text = str(tool or "").lower()
+    if "maven" in tool_text or tool_text in {"mvn", "mvnw"}:
+        names = ["pom.xml"]
+    elif "gradle" in tool_text:
+        names = [
+            "build.gradle",
+            "build.gradle.kts",
+            "settings.gradle",
+            "settings.gradle.kts",
+        ]
+
+    found: list[str] = []
+    for root in roots:
+        for name in names:
+            candidate = root / name
+            if not candidate.is_file() or candidate.is_symlink():
+                continue
+            try:
+                relative = candidate.resolve().relative_to(sandbox).as_posix()
+            except ValueError:
+                continue
+            if relative not in found:
+                found.append(relative)
+        for candidate in sorted(root.glob("tsconfig*.json")):
+            if not candidate.is_file() or candidate.is_symlink():
+                continue
+            try:
+                relative = candidate.resolve().relative_to(sandbox).as_posix()
+            except ValueError:
+                continue
+            if relative not in found:
+                found.append(relative)
+    return tuple(found)
 
 
 @dataclass(frozen=True)
