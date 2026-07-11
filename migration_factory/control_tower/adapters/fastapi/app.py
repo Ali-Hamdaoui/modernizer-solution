@@ -1,4 +1,4 @@
-"""Minimal FastAPI adapter for the M2 diagnostic queue path."""
+﻿"""Minimal FastAPI adapter for the M2 diagnostic queue path."""
 
 from __future__ import annotations
 
@@ -185,6 +185,10 @@ from migration_factory.control_tower.application.safe_diff_preview import (
 from migration_factory.control_tower.application.v2_failure_diagnosis import (
     V2FailureDiagnosisService,
 )
+from migration_factory.control_tower.application.execution_environment import (
+    decode_environment_manifest,
+    materialize_execution_environment,
+)
 from migration_factory.control_tower.application.v2_gate_action_service import (
     V2GateActionService,
     persist_approved_approval_review_revision,
@@ -292,7 +296,7 @@ from migration_factory.control_tower.application.v2_gate_errors import (
 )
 from uuid import uuid4
 
-# F14 — Stage 3 POM dependency editor imports
+# F14 â€” Stage 3 POM dependency editor imports
 from migration_factory.control_tower.application.pom_dependency_editor import (
     PomDependencyEditor,
 )
@@ -600,7 +604,7 @@ class GateActionRequest(BaseModel):
     comments: str = ""
 
 
-# F07 reviewer request — context only, no decision from client
+# F07 reviewer request â€” context only, no decision from client
 
 class CreateReviewerCritiqueRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -611,7 +615,7 @@ class CreateReviewerCritiqueRequest(BaseModel):
     # Internal: model_invocation_id for audit (set by orchestrator, not client)
     model_invocation_id: str | None = None
     # F07: decision, reasoning, missing_evidence, unsafe_assumptions are
-    # NEVER accepted from client body — the model generates them.
+    # NEVER accepted from client body â€” the model generates them.
 
 
 class StageProgressRequest(BaseModel):
@@ -668,16 +672,16 @@ class CreateRepairProposalRequest(BaseModel):
 class ApproveRepairProposalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     approval_checksum: str
-    # F07: both checksums required — reviewer gate is mandatory, no bypass
+    # F07: both checksums required â€” reviewer gate is mandatory, no bypass
     proposal_checksum: str
     context_pack_checksum: str
 
 
-# ── PR-D: User revision request for reviewed repair proposals ─────────
+# â”€â”€ PR-D: User revision request for reviewed repair proposals â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class RepairProposalRevisionRequest(BaseModel):
-    """PR-D revision request — accepts only checksums and instruction text.
+    """PR-D revision request â€” accepts only checksums and instruction text.
 
     No raw patch, path, env, argv, or sandbox fields are accepted.
     """
@@ -696,11 +700,11 @@ class RepairProposalRejectRequest(BaseModel):
     idempotency_key: str = Field(min_length=1)
 
 
-# ── PR-E: Approve reviewed repair sandbox apply ──────────────────────
+# â”€â”€ PR-E: Approve reviewed repair sandbox apply â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class RepairProposalApproveRequest(BaseModel):
-    """PR-E approve request — accepts only IDs and checksums.
+    """PR-E approve request â€” accepts only IDs and checksums.
 
     No raw patch, path, env, argv, command, or sandbox fields accepted.
     Frontend sends IDs/checksums only. Backend reloads all state server-side.
@@ -736,11 +740,11 @@ class RepairProposalApproveResponse(BaseModel):
     allowed_next_actions: tuple[str, ...] = ()
 
 
-# ── F5 Reviewed repair approval (checksum-only, no raw diff/patch) ────
+# â”€â”€ F5 Reviewed repair approval (checksum-only, no raw diff/patch) â”€â”€â”€â”€
 
 
 class ReviewedRepairApprovalRequest(BaseModel):
-    """F5 reviewed repair approval — accepts only checksums, never raw diff/patch."""
+    """F5 reviewed repair approval â€” accepts only checksums, never raw diff/patch."""
     model_config = ConfigDict(extra="forbid")
     expected_gate_checksum: str
     proposal_checksum: str
@@ -774,7 +778,7 @@ class ReviewedRepairApprovalResponse(BaseModel):
     artifact_refs: dict[str, str] = Field(default_factory=dict)
 
 
-# ── F14 POM dependency editor request schemas ──────────────────────────
+# â”€â”€ F14 POM dependency editor request schemas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class PomProposeRequestSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -858,7 +862,7 @@ def create_app(
     app.state.v2_assistant_model_client = v2_assistant_model_client or V2AssistantModelClient()
     app.state.worker_launcher = worker_launcher
     app.state.worker_terminator = worker_terminator
-    # ── F02: Wire automatic failure diagnosis into the orchestrator ──
+    # â”€â”€ F02: Wire automatic failure diagnosis into the orchestrator â”€â”€
     def _diagnosis_event_sink(
         job_id: str,
         stage: int | None,
@@ -2161,7 +2165,7 @@ def create_app(
             _require_v2_job(uow, job_id)
             return _v2_gate_action_response(uow, job_id=job_id, gate_id=gate_id, payload=payload)
 
-    # ── F5: Reviewed repair approval + exact reviewed diff apply ─────────
+    # â”€â”€ F5: Reviewed repair approval + exact reviewed diff apply â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @app.post("/v1/v2/jobs/{job_id}/gates/{gate_id}/approve-reviewed-repair")
     def approve_reviewed_repair(
@@ -2771,12 +2775,12 @@ def create_app(
         """Ask the V2 assistant for read-only status guidance.
 
         F15: If the job has an open PhaseGate, the assistant becomes
-        gate-aware — it loads gate context, classifies intent, and
+        gate-aware â€” it loads gate context, classifies intent, and
         either explains gate-bound evidence or returns an action
         preview for state-changing intents. Confirmation toggles
         execution through V2GateActionService.
         """
-        # ── Phase 1: Check for open gate ──────────────────────────
+        # â”€â”€ Phase 1: Check for open gate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
             open_gates = uow.phase_gates.list_open(job_id)
@@ -2834,7 +2838,7 @@ def create_app(
                 unit_of_work_factory=unit_of_work_factory,
             )
 
-        # ── Phase 2: No open gate — fall back to existing assistant ──
+        # â”€â”€ Phase 2: No open gate â€” fall back to existing assistant â”€â”€
         with unit_of_work_factory() as uow:
             job = _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
@@ -3148,7 +3152,7 @@ def create_app(
                     payload=revision_payload,
                 )
 
-                # Call the model — keep fallback for answer() but check success
+                # Call the model â€” keep fallback for answer() but check success
                 fallback_revision = json.dumps({
                     "failure_hypothesis": source_hypothesis,
                     "patch_summary": source_patch,
@@ -3170,7 +3174,7 @@ def create_app(
                         fallback=fallback_revision,
                     )
 
-                # F05: Fail closed — no model output = no revised proposal
+                # F05: Fail closed â€” no model output = no revised proposal
                 if not model_result.success:
                     raise _error(
                         status.HTTP_502_BAD_GATEWAY,
@@ -3178,7 +3182,7 @@ def create_app(
                         f"Revision model unavailable: {model_result.redacted_summary}",
                     )
 
-                # F05: Parse and validate model output — NO fallback
+                # F05: Parse and validate model output â€” NO fallback
                 # Invalid/non-JSON/schema-failing model output raises ValueError
                 try:
                     revised_output = _parse_and_validate_model_output(
@@ -3347,13 +3351,13 @@ def create_app(
         proposal_id: str,
         payload: CreateReviewerCritiqueRequest,
     ) -> dict[str, Any]:
-        """Request a reviewer critique via model — NEVER accepts decision from client.
+        """Request a reviewer critique via model â€” NEVER accepts decision from client.
 
         The backend builds the reviewer prompt from the proposal context,
         calls the reviewer model, validates the output against
         REVIEWER_CRITIQUE_SCHEMA, and persists the critique.
 
-        Clients CANNOT fabricate a decision=accept — only the model output
+        Clients CANNOT fabricate a decision=accept â€” only the model output
         determines the verdict.
         """
         event_emitted = False
@@ -3404,7 +3408,7 @@ def create_app(
             # Call the reviewer model
             fallback_json = json.dumps({
                 "decision": "revise",
-                "reasoning": "Model unavailable — defaulting to revise for safety.",
+                "reasoning": "Model unavailable â€” defaulting to revise for safety.",
                 "missing_evidence": ["Model output unavailable"],
                 "unsafe_assumptions": ["Reviewer model did not respond"],
             })
@@ -3429,7 +3433,7 @@ def create_app(
                 schema_name="ReviewerCritique",
                 fallback={
                     "decision": "revise",
-                    "reasoning": "Model unavailable — defaulting to revise for safety.",
+                    "reasoning": "Model unavailable â€” defaulting to revise for safety.",
                     "missing_evidence": ["Model output unavailable"],
                     "unsafe_assumptions": ["Reviewer model did not respond"],
                 },
@@ -3508,7 +3512,7 @@ def create_app(
             )
         return service.critique_to_dict(critique)
 
-    # ── PR-B: Reviewed-diff proposal read APIs ─────────────────────────
+    # â”€â”€ PR-B: Reviewed-diff proposal read APIs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _compute_repair_proposal_allowed_actions(record: Any) -> tuple[str, ...]:
         """Compute allowed actions for a repair proposal based on its state."""
@@ -3673,7 +3677,7 @@ def create_app(
             allowed_actions=("view_failure_summary", "view_attempt_history"),
         ))
 
-    def _build_repair_state_from_record(record: Any) -> dict[str, Any] | None:
+    def _build_repair_state_from_record(record: Any, *, uow: Any | None = None) -> dict[str, Any] | None:
         """Build repair_state from a persisted proposal record."""
         status = getattr(record, "status", "")
         reviewer_decision = getattr(record, "reviewer_decision", None)
@@ -3720,11 +3724,31 @@ def create_app(
                 if reason_code == "REPAIR_VALIDATION_FAILED"
                 else "repair_apply_failed"
             )
+            detail = getattr(record, "status_reason", None) or fallback_detail
+            retry_proposal_id = str(getattr(record, "next_gate_id", "") or "")
+            retry_detail = None
+            if reason_code == "REPAIR_RETRY_GENERATION_FAILED" and uow is not None:
+                if retry_proposal_id:
+                    retry_record = uow.v2_repairs.get_proposal(retry_proposal_id)
+                    retry_detail = getattr(retry_record, "status_reason", None) if retry_record is not None else None
+                if not retry_detail:
+                    for event in reversed(uow.v2_events.list_by_job(getattr(record, "job_id", ""))):
+                        if event.type != "repair_generation_failed":
+                            continue
+                        try:
+                            event_payload = json.loads(event.payload_json or "{}")
+                        except (json.JSONDecodeError, TypeError):
+                            event_payload = {}
+                        if str(event_payload.get("proposal_id") or "") == str(getattr(record, "proposal_id", "")):
+                            retry_detail = str(event_payload.get("reason") or event.message or "").strip()
+                            break
+                if retry_detail:
+                    detail = f"Attempt 1 validation failed: {detail}; Attempt 2 repair generation failed: {retry_detail}"
             return repair_unavailable_state_to_dict(RepairUnavailableState(
                 attempted=True,
                 status="error",
                 reason_code=reason_code,
-                detail=getattr(record, "status_reason", None) or fallback_detail,
+                detail=detail,
                 event_type=event_type,
                 created_at=created_at,
                 allowed_actions=("view_failure_summary", "view_attempt_history", "view_diff"),
@@ -3803,7 +3827,7 @@ def create_app(
                             else None
                         ),
                     )
-                    repair_state = _build_repair_state_from_record(record)
+                    repair_state = _build_repair_state_from_record(record, uow=uow)
                     return {
                         "proposal": reviewed_diff_proposal_to_safe_dict(projection),
                         "job_id": job_id,
@@ -3883,7 +3907,7 @@ def create_app(
         """Return the SafeDiffPreview for a reviewed repair proposal.
 
         Validates proposal belongs to job. Returns safe structured diff
-        preview only — never raw patch text.
+        preview only â€” never raw patch text.
         Checksum mismatch is reported via checksum_mismatch flag;
         raw filesystem path is never exposed.
         """
@@ -3921,7 +3945,7 @@ def create_app(
     def list_repair_attempts(job_id: str) -> dict[str, Any]:
         """Return attempt history for a job.
 
-        Safe summaries only — no raw patch, path, or env data.
+        Safe summaries only â€” no raw patch, path, or env data.
         """
         with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
@@ -3931,7 +3955,7 @@ def create_app(
                 "job_id": job_id,
             }
 
-    # ── PR-D: User revision request for reviewed repair proposals ────────
+    # â”€â”€ PR-D: User revision request for reviewed repair proposals â”€â”€â”€â”€â”€â”€â”€â”€
 
     @app.post("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/revise")
     def request_repair_proposal_revision(
@@ -4202,7 +4226,7 @@ def create_app(
                              payload={"proposal_id": proposal_id, "reviewer_decision": "reject"})
         return {"job_id": job_id, "proposal_id": proposal_id, "status": "rejected"}
 
-    # ── PR-E: Approve reviewed repair sandbox apply ─────────────────
+    # â”€â”€ PR-E: Approve reviewed repair sandbox apply â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @app.post("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/approve")
     def approve_repair_proposal_sandbox_apply(
@@ -4489,7 +4513,7 @@ def create_app(
 
             touched_paths = list(technical_result.touched_paths)
 
-            # ── Apply to sandbox ────────────────────────────────
+            # â”€â”€ Apply to sandbox â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             try:
                 apply_result = apply_patch_to_sandbox(
                     run_dir=run_dir_path,
@@ -4537,7 +4561,7 @@ def create_app(
                     apply_status=apply_status,
                 ).model_dump()
 
-            # ── Rerun validation ────────────────────────────────
+            # â”€â”€ Rerun validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             _persist_apply_event(
                 job_id=job_id,
                 stage=int(getattr(record, "route_step_index", 0) or 0),
@@ -4547,6 +4571,44 @@ def create_app(
                 payload={"proposal_id": proposal_id},
             )
             try:
+                validation_context = ValidationExecutionContext.from_mapping(
+                    apply_context.get("validation_execution_context")
+                )
+                execution_env = None
+                if validation_context.command_id:
+                    with unit_of_work_factory() as environment_uow:
+                        original_command = environment_uow.v2_commands.get(
+                            validation_context.command_id
+                        )
+                    if (
+                        original_command is not None
+                        and (
+                            not validation_context.job_id
+                            or validation_context.job_id == job_id
+                        )
+                        and original_command.job_id == job_id
+                        and int(original_command.stage_index)
+                        == int(validation_context.stage_index or 0)
+                    ):
+                        try:
+                            manifest = decode_environment_manifest(original_command.env_json)
+                            manifest_route_step = manifest.get("ROUTE_STEP_INDEX")
+                            manifest_runtime_profile = manifest.get("ROUTE_STEP_RUNTIME_PROFILE")
+                            route_step_matches = (
+                                validation_context.route_step_index is None
+                                or manifest_route_step in (None, "")
+                                or int(manifest_route_step)
+                                == int(validation_context.route_step_index)
+                            )
+                            runtime_profile_matches = (
+                                not validation_context.runtime_profile
+                                or not manifest_runtime_profile
+                                or manifest_runtime_profile == validation_context.runtime_profile
+                            )
+                            if route_step_matches and runtime_profile_matches:
+                                execution_env = materialize_execution_environment(manifest)
+                        except (TypeError, ValueError, json.JSONDecodeError):
+                            execution_env = None
                 validation: ValidationResult = run_validation_after_patch(
                     run_id=apply_context.get("command_id", proposal_id) or proposal_id,
                     run_dir=run_dir_path,
@@ -4554,9 +4616,8 @@ def create_app(
                     attempt=getattr(record, "attempt_number", None) or 1,
                     h2_required=apply_context.get("h2_required", False),
                     h2_enabled=apply_context.get("h2_required", False),
-                    validation_context=ValidationExecutionContext.from_mapping(
-                        apply_context.get("validation_execution_context")
-                    ),
+                    validation_context=validation_context,
+                    execution_env=execution_env,
                 )
             except Exception as exc:
                 _mark_apply_failed(f"repair validation raised {type(exc).__name__}")
@@ -4802,7 +4863,7 @@ def create_app(
         return service.continuation_to_public_dict(result)
 
     # ------------------------------------------------------------------
-    # F14 — Stage 3 POM Dependency Review + Apply + Validate + Rollback
+    # F14 â€” Stage 3 POM Dependency Review + Apply + Validate + Rollback
     # ------------------------------------------------------------------
 
     @app.get("/v1/v2/jobs/{job_id}/stage/3/pom")
@@ -6236,7 +6297,7 @@ def create_app(
         )
         return redact_public_data(payload)
 
-    # ── F14 helper functions ───────────────────────────────────────────
+    # â”€â”€ F14 helper functions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _make_pom_dependency_editor() -> PomDependencyEditor:
         """Build a PomDependencyEditor backed by the current UoW repos."""
@@ -6345,7 +6406,7 @@ def create_app(
             pass
         return "mvn clean compile test"
 
-    # ── V2 Final Report routes ───────────────────────────────────
+    # â”€â”€ V2 Final Report routes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     from migration_factory.control_tower.application.v2_final_report_service import (
         V2FinalReportService,
         REPORT_ARTIFACT_KINDS,
@@ -6858,7 +6919,7 @@ def _emit_v2_stage1_uat_events(uow: Any, *, job_id: str, command_id: str) -> Non
         )
 
 
-# ── Artifact-content assistant helpers ──────────────────────────────
+# â”€â”€ Artifact-content assistant helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 _ARTIFACT_CONTENT_KEYWORDS = {
     "pom", "xml", "artifact", "openrewrite", "plugin", "plan lock",
@@ -6898,7 +6959,7 @@ def _classify_v2_assistant_intent(question: str) -> str:
         return "pom_validation_result"
 
     # 1. Model status first (model/Azure/provider questions)
-    #    BUT skip if user is also asking about POM/dependency changes — model status is secondary
+    #    BUT skip if user is also asking about POM/dependency changes â€” model status is secondary
     pom_or_dep_terms = (
         "pom", "pom.xml", "dependency", "property", "modelmapper",
         "jackson", "spring boot", "version", "apply change", "propose change",
@@ -6923,7 +6984,7 @@ def _classify_v2_assistant_intent(question: str) -> str:
     ):
         return "stage3_dependency_review"
 
-    # 2. Check if the user explicitly says NOT to apply/execute —
+    # 2. Check if the user explicitly says NOT to apply/execute â€”
     #    this negates capability_boundary and shifts toward proposal
     user_says_dont_apply = any(phrase in lowered for phrase in (
         "do not apply", "don't apply", "do not execute",
@@ -6944,7 +7005,7 @@ def _classify_v2_assistant_intent(question: str) -> str:
         )):
             return "pom_change_proposal"
 
-    # 3. Capability / action boundary — takes priority
+    # 3. Capability / action boundary â€” takes priority
     #    BUT skip if user explicitly said DO NOT apply
     if not user_says_dont_apply:
         capability_boundary_terms = (
@@ -6995,7 +7056,7 @@ def _classify_v2_assistant_intent(question: str) -> str:
             if not any(t in lowered for t in ("review", "what dependency", "what should", "which dependency")):
                 return "apply_dependency_change"
 
-    # 5. POM change proposal intent — draft/upgrade/propose/modify with POM terms
+    # 5. POM change proposal intent â€” draft/upgrade/propose/modify with POM terms
     #    Check BEFORE stage3 review so proposals take priority over reviews
     proposal_actions = (
         "propose", "draft", "upgrade", "modify", "change",
@@ -7012,7 +7073,7 @@ def _classify_v2_assistant_intent(question: str) -> str:
     ):
         return "pom_change_proposal"
 
-    # 6. Stage 3 dependency review intent — broad dependency modernization at final stage
+    # 6. Stage 3 dependency review intent â€” broad dependency modernization at final stage
     stage3_review_terms = (
         "dependency modernization", "dependency review", "dependency report",
         "what dependencies should", "which dependencies should",
@@ -7124,7 +7185,7 @@ def _handle_gate_aware_ask(
         )
         context, evidence_pack = loader.load_gate_with_evidence(open_gate.gate_id)
         if context is None:
-            # Gate not found — fall through to existing assistant
+            # Gate not found â€” fall through to existing assistant
             return _fallback_to_existing_assistant(
                 app=app,
                 job_id=job_id,
@@ -7143,7 +7204,7 @@ def _handle_gate_aware_ask(
             correlation_id=correlation_id,
         )
 
-        # ── Detect confirmation intent before classification ────
+        # â”€â”€ Detect confirmation intent before classification â”€â”€â”€â”€
         question_lower = question.strip().lower()
         _CONFIRM_PATTERNS = (
             "confirm", "yes", "yes,", "yeah", "sure",
@@ -7604,7 +7665,7 @@ def _handle_gate_aware_ask(
                         "cannot_override_proof": True,
                     },
                 }
-# ── Handle "confirm" intent (explicit or after preview) ────
+# â”€â”€ Handle "confirm" intent (explicit or after preview) â”€â”€â”€â”€
         if is_confirm or intent.action_type == "confirm":
             pending = confirmation_store.resolve(
                 job_id=job_id,
@@ -7758,7 +7819,7 @@ def _handle_gate_aware_ask(
                     },
                 }
 
-            # No pending confirmation — treat as ambiguous if user said confirm
+            # No pending confirmation â€” treat as ambiguous if user said confirm
             if is_confirm:
                 explanation = (
                     "There is no pending action to confirm. "
@@ -7789,7 +7850,7 @@ def _handle_gate_aware_ask(
                 }
             # Fall through to classification below
 
-        # ── Handle ambiguous / unknown intent ─────────────────────
+        # â”€â”€ Handle ambiguous / unknown intent â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if intent.ambiguous or not intent.action_type:
             from migration_factory.control_tower.application.v2_gate_assistant import (
                 AmbiguityHandler,
@@ -7821,7 +7882,7 @@ def _handle_gate_aware_ask(
                 },
             }
 
-        # ── Build action preview (state-changing intent) ──────────
+        # â”€â”€ Build action preview (state-changing intent) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         preview_builder = GateActionPreviewBuilder()
         preview: ActionPreview = preview_builder.build_preview(
             intent=intent,
@@ -8505,16 +8566,16 @@ def _maybe_auto_approve_open_approval_gate(
     This reuses the EXACT same backend path as the manual Approve button
     (approve_decision_card endpoint) and the assistant `confirm checksum`
     command:
-      1. V2ApprovalMappingService.approve()  — create resume command
-      2. V2GateActionService.approve_from_gate()  — resolve gate + persist
+      1. V2ApprovalMappingService.approve()  â€” create resume command
+      2. V2GateActionService.approve_from_gate()  â€” resolve gate + persist
          approval_review revision artifact
-      3. update_card_status("auto_approved")  — mark decision card
+      3. update_card_status("auto_approved")  â€” mark decision card
 
     The only difference from manual approval is the decision source:
       - Manual:  decided_by="human", actor_type="human"
       - Auto:    decided_by="system:auto-approval", actor_type="system"
 
-    Safety rules — auto-approval is skipped (gate left blocked) when:
+    Safety rules â€” auto-approval is skipped (gate left blocked) when:
       * there is no open approval_review gate,
       * there is no pending decision card matching the gate checksum,
       * the job was cancelled/completed/failed,
@@ -8588,7 +8649,7 @@ def _maybe_auto_approve_open_approval_gate(
             stage_index=stage_index,
         )
         checksum_present = bool(gate.source_artifact_checksum)
-        # Soft-check accepted revisions for logging only — do NOT block.
+        # Soft-check accepted revisions for logging only â€” do NOT block.
         # The manual Approve button and confirm_checksum path use
         # approve_from_gate which does NOT require accepted analysis/plan
         # revision records.  The UI shows PASS based on events, not on
@@ -8692,7 +8753,7 @@ def _maybe_auto_approve_open_approval_gate(
         #   - POST /approvals/{card_id}/approve  (frontend Approve button)
         #   - assistant "confirm checksum <checksum>" command
         # It resolves the gate, records the decision, and persists the
-        # approval_review revision artifact — all the side effects needed
+        # approval_review revision artifact â€” all the side effects needed
         # to unblock the orchestrator and continue to Transform.
         gate_result = action_service.approve_from_gate(
             gate_id=gate.gate_id,
@@ -8897,7 +8958,7 @@ def _format_execution_response(
                 from_phase = progression.get("from_phase", "")
                 to_phase = progression.get("to_phase", "")
                 stage = progression.get("stage_index", "")
-                lines.append(f"**Stage {stage} phase advanced: {from_phase} → {to_phase}**")
+                lines.append(f"**Stage {stage} phase advanced: {from_phase} â†’ {to_phase}**")
                 message = progression.get("message", "")
                 if message:
                     lines.append(f"- {message}")
@@ -9616,7 +9677,7 @@ def _is_final_dependency_review_allowed(
         getattr(e, "type", "") in {"build_completed", "test_completed"} for e in stage_events
     )
     if not has_build:
-        return True, "ok"  # Not blocking on missing build/test — just warn
+        return True, "ok"  # Not blocking on missing build/test â€” just warn
     return True, "ok"
 
 
@@ -10006,7 +10067,7 @@ def _build_v2_assistant_answer(
     artifact_previews: tuple[dict[str, Any], ...] | None = None,
     assistant_intent: str = "general_question",
 ) -> str:
-    # ── Intent-adaptive fallback paths ──
+    # â”€â”€ Intent-adaptive fallback paths â”€â”€
     # Auto-detect status questions when intent not explicitly set
     effective_intent = assistant_intent
     if effective_intent == "general_question":
@@ -10100,7 +10161,7 @@ def _build_v2_assistant_answer(
     )
 
 
-# ── POM change proposal builder ─────────────────────────────────────
+# â”€â”€ POM change proposal builder â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def _extract_pom_summary(xml_text: str) -> dict[str, Any]:
@@ -10219,7 +10280,7 @@ def _extract_pom_summary(xml_text: str) -> dict[str, Any]:
                     result["dependency_management_boms"].append(bom)
         return result
 
-    # Namespace-aware tag helpers — handle both Maven namespace and plain XML
+    # Namespace-aware tag helpers â€” handle both Maven namespace and plain XML
     ns = "{http://maven.apache.org/POM/4.0.0}"
     # Detect if root uses Maven namespace
     _has_maven_ns = root.tag == f"{ns}project"
@@ -10372,7 +10433,7 @@ def _redact_xml_preserve_maven_urls(text: str) -> str:
         text,
     )
 
-    # Redact secret-like XML elements — replace their content with [redacted]
+    # Redact secret-like XML elements â€” replace their content with [redacted]
     for tag in ("password", "secret", "token", "apiKey", "api_key"):
         text = re.sub(
             rf"<{tag}>[^<]*</{tag}>",
@@ -10409,7 +10470,7 @@ def _build_pom_change_proposal_answer(
 
     For vague requests ("propose pom changes"), produces a generic checklist.
     """
-    # ── Detect specific property/dependency change and delegate to editor ──
+    # â”€â”€ Detect specific property/dependency change and delegate to editor â”€â”€
     import re as _re
     lowered = str(question or "").lower()
 
@@ -10447,7 +10508,7 @@ def _build_pom_change_proposal_answer(
                 job_id = str(jid)
                 break
 
-    # ── If specific change detected + job_id available, call editor ──
+    # â”€â”€ If specific change detected + job_id available, call editor â”€â”€
     if specific_change and job_id:
         try:
             editor = _build_pom_dependency_editor()
@@ -10489,14 +10550,14 @@ def _build_pom_change_proposal_answer(
                 f"Please try again or use the Stage 3 Dependency Review panel."
             )
 
-    # ── Generic proposal (no specific change detected) ──
+    # â”€â”€ Generic proposal (no specific change detected) â”€â”€
     lines = []
     lines.append(
         "I cannot apply this directly, but I can draft a human-reviewable "
         "POM change proposal.\n"
     )
 
-    # ── Resolve root_pom preview ──
+    # â”€â”€ Resolve root_pom preview â”€â”€
     root_pom_preview: dict[str, Any] | None = None
     root_pom_exists = False
     if artifact_previews:
@@ -10506,7 +10567,7 @@ def _build_pom_change_proposal_answer(
                 root_pom_exists = bool(pv.get("exists"))
                 break
 
-    # ── Resolve other artifact previews for evidence ──
+    # â”€â”€ Resolve other artifact previews for evidence â”€â”€
     available_artifact_kinds: list[str] = []
     if artifact_previews:
         for pv in artifact_previews:
@@ -10516,14 +10577,14 @@ def _build_pom_change_proposal_answer(
     event_artifact_kinds = _extract_artifact_kinds_list(events)
     all_evidence_kinds = sorted(set(available_artifact_kinds + event_artifact_kinds))
 
-    # ── Extract POM summary ──
+    # â”€â”€ Extract POM summary â”€â”€
     pom_summary: dict[str, Any] | None = None
     if root_pom_preview and root_pom_exists:
         raw_preview = str(root_pom_preview.get("preview", ""))
         if raw_preview.strip():
             pom_summary = _extract_pom_summary(raw_preview)
 
-    # ── Section 1: Proposed change ──
+    # â”€â”€ Section 1: Proposed change â”€â”€
     lines.append("## 1. Proposed Change\n")
 
     if not root_pom_exists:
@@ -10544,7 +10605,7 @@ def _build_pom_change_proposal_answer(
             "to control transitive versions.\n"
             "- Align dependency versions to a single Spring Boot BOM.\n"
             "- Remove explicit version tags from Boot-managed dependencies.\n"
-            "- Review javax.* → jakarta.* migration readiness."
+            "- Review javax.* â†’ jakarta.* migration readiness."
         )
     elif pom_summary:
         props = pom_summary.get("properties", {})
@@ -10630,7 +10691,7 @@ def _build_pom_change_proposal_answer(
         lines.append("")
         if java_version and java_version == "11":
             lines.append(
-                "- **`java.version`**: change `11` → `17` (Spring Boot 3 requires Java 17)."
+                "- **`java.version`**: change `11` â†’ `17` (Spring Boot 3 requires Java 17)."
             )
         elif java_version:
             lines.append(
@@ -10645,7 +10706,7 @@ def _build_pom_change_proposal_answer(
 
         if boot_version:
             lines.append(
-                f"- **`spring-boot.version`**: change `{boot_version}` → "
+                f"- **`spring-boot.version`**: change `{boot_version}` â†’ "
                 "target version from `target_dependency_plan` or approved migration plan."
             )
         else:
@@ -10654,7 +10715,7 @@ def _build_pom_change_proposal_answer(
                 "from `target_dependency_plan`."
             )
 
-        # javax → jakarta migration candidates
+        # javax â†’ jakarta migration candidates
         javax_deps = [
             d for d in deps
             if any(pfx in d.get("groupId", "").lower() for pfx in ("javax",))
@@ -10662,7 +10723,7 @@ def _build_pom_change_proposal_answer(
         ]
         if javax_deps:
             lines.append("")
-            lines.append("**javax.* → jakarta.* migration candidates:**")
+            lines.append("**javax.* â†’ jakarta.* migration candidates:**")
             javax_to_jakarta_map = {
                 "javax.persistence": ("jakarta.persistence", "jakarta.persistence-api"),
                 "javax.servlet": ("jakarta.servlet", "jakarta.servlet-api"),
@@ -10682,11 +10743,11 @@ def _build_pom_change_proposal_answer(
                         break
                 if mapped:
                     lines.append(
-                        f"  - `{gid}:{aid}` ({ver}) → `{mapped[0]}:{mapped[1]}`"
+                        f"  - `{gid}:{aid}` ({ver}) â†’ `{mapped[0]}:{mapped[1]}`"
                     )
                 else:
                     lines.append(
-                        f"  - `{gid}:{aid}` ({ver}) → check jakarta equivalent"
+                        f"  - `{gid}:{aid}` ({ver}) â†’ check jakarta equivalent"
                     )
 
         # Hibernate note
@@ -10749,7 +10810,7 @@ def _build_pom_change_proposal_answer(
         lines.append("- Audit javax.* dependencies for jakarta migration.")
         lines.append("- Confirm Java 17+ readiness for Spring Boot 3.")
 
-    # ── Section 2: Why ──
+    # â”€â”€ Section 2: Why â”€â”€
     lines.append("")
     lines.append("## 2. Why\n")
     lines.append(
@@ -10759,7 +10820,7 @@ def _build_pom_change_proposal_answer(
         "security support, JDK 17+ compatibility, and Jakarta namespace alignment."
     )
 
-    # ── Section 3: Risk ──
+    # â”€â”€ Section 3: Risk â”€â”€
     lines.append("")
     lines.append("## 3. Risk\n")
 
@@ -10774,24 +10835,24 @@ def _build_pom_change_proposal_answer(
 
     if java11 or has_javax:
         lines.append(
-            "**Medium/High** — Spring Boot 3 requires Java 17 and Jakarta "
+            "**Medium/High** â€” Spring Boot 3 requires Java 17 and Jakarta "
             "namespace migration. Source imports, transitive dependency chains, "
             "and annotation processors may break. Backend build/test validation "
             "is required before acceptance."
         )
     else:
         lines.append(
-            "**Low/Medium** — Dependency version alignment through BOM "
+            "**Low/Medium** â€” Dependency version alignment through BOM "
             "management is generally safe if the target versions are tested. "
             "Backend build validation is still required."
         )
     lines.append(
         "- Compatibility: verify `mvn dependency:tree` after change.\n"
         "- Breaking changes: Spring Boot 3 removes deprecated APIs; "
-        "`javax.*` → `jakarta.*` migration requires source changes."
+        "`javax.*` â†’ `jakarta.*` migration requires source changes."
     )
 
-    # ── Section 4: Evidence to review ──
+    # â”€â”€ Section 4: Evidence to review â”€â”€
     lines.append("")
     lines.append("## 4. Evidence to Review\n")
     evidence_artifacts = [
@@ -10819,7 +10880,7 @@ def _build_pom_change_proposal_answer(
         "\nThe operator should review these artifacts before approving any change."
     )
 
-    # ── Section 5: Approval / gate ──
+    # â”€â”€ Section 5: Approval / gate â”€â”€
     lines.append("")
     lines.append("## 5. Approval / Gate\n")
     lines.append(
@@ -10833,7 +10894,7 @@ def _build_pom_change_proposal_answer(
         "through this chat interface."
     )
 
-    # ── Section 6: Not applied ──
+    # â”€â”€ Section 6: Not applied â”€â”€
     lines.append("")
     lines.append("## 6. Not Applied\n")
     lines.append(
@@ -10857,7 +10918,7 @@ def _build_pom_change_proposal_answer(
     return redacted
 
 
-# ── Stage 3 helpers ──────────────────────────────────────────────────
+# â”€â”€ Stage 3 helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def _detect_stage3_baseline(
@@ -10967,11 +11028,11 @@ def _classify_stage3_dependencies(
     """Classify dependencies into buckets for Stage 3 review.
 
     Buckets:
-    A. boot_managed — dependencies normally managed by Spring Boot BOM/parent
-    B. jakarta_platform — javax.* dependencies (may need migration)
-    C. app_specific_third_party — not controlled by Boot/OpenRewrite
-    D. build_plugins — Maven plugins
-    E. transitive_or_bom_managed_risk — requests for transitive deps
+    A. boot_managed â€” dependencies normally managed by Spring Boot BOM/parent
+    B. jakarta_platform â€” javax.* dependencies (may need migration)
+    C. app_specific_third_party â€” not controlled by Boot/OpenRewrite
+    D. build_plugins â€” Maven plugins
+    E. transitive_or_bom_managed_risk â€” requests for transitive deps
     """
     deps = pom_summary.get("dependencies", [])
     plugins = pom_summary.get("plugins", [])
@@ -11017,7 +11078,7 @@ def _classify_stage3_dependencies(
         gid = d.get("groupId", "")
         aid = d.get("artifactId", "")
 
-        # B. javax → jakarta check
+        # B. javax â†’ jakarta check
         if "javax." in gid or any(
             aid.startswith(pfx)
             for pfx in ("javax.servlet", "javax.persistence", "javax.annotation", "javax.validation")
@@ -11083,7 +11144,7 @@ def _build_apply_dependency_change_answer(
             "to target. Please navigate to a migration job first."
         )
 
-    # ── Parse the target from the question ──
+    # â”€â”€ Parse the target from the question â”€â”€
     dep_name = ""
     target_version = ""
     is_property_update = False
@@ -11445,7 +11506,7 @@ def _build_pom_dependency_change_request_answer(
         "dependency change request.\n"
     )
 
-    # ── Resolve root_pom preview ──
+    # â”€â”€ Resolve root_pom preview â”€â”€
     root_pom_preview: dict[str, Any] | None = None
     root_pom_exists = False
     requested_stage = (
@@ -11466,7 +11527,7 @@ def _build_pom_dependency_change_request_answer(
         if raw_preview.strip():
             pom_summary = _extract_pom_summary(raw_preview)
 
-    # ── Parse target dependency/property from question ──
+    # â”€â”€ Parse target dependency/property from question â”€â”€
     # Patterns: "update library-name to 1.2.3", "change server-runtime to 4.5.6"
     # Also: "update property example.version to 1.2.3"
     dep_name = ""
@@ -11511,7 +11572,7 @@ def _build_pom_dependency_change_request_answer(
         if dep_match:
             dep_name = dep_match.group(1).strip()
 
-    # ── Detect if dependency is transitive/BOM-managed ──
+    # â”€â”€ Detect if dependency is transitive/BOM-managed â”€â”€
     is_transitive = False
     found_dep: dict[str, str] | None = None
     if pom_summary and (dep_name or target_version):
@@ -11524,19 +11585,19 @@ def _build_pom_dependency_change_request_answer(
                 found_dep = d
                 break
         if not found_dep and dep_name:
-            # Dependency not found in POM — likely transitive
+            # Dependency not found in POM â€” likely transitive
             is_transitive = True
 
-    # ── Section 1: Proposed Change ──
+    # â”€â”€ Section 1: Proposed Change â”€â”€
     lines.append("## 1. Proposed Change\n")
 
-    # ── Property update path ──
+    # â”€â”€ Property update path â”€â”€
     if is_property_update and pom_summary:
         props = pom_summary.get("properties", {})
         current_ver = props.get(dep_name, "unknown")
         lines.append(f"**Property:** `{dep_name}` currently `{current_ver}` in Stage {requested_stage} root_pom.\n")
         if target_version:
-            lines.append(f"**Requested change:** `{current_ver}` → `{target_version}`\n")
+            lines.append(f"**Requested change:** `{current_ver}` â†’ `{target_version}`\n")
             lines.append("**Exact XML edit:**\n")
             lines.append("~~~xml")
             lines.append("<!-- Before -->")
@@ -11602,7 +11663,7 @@ def _build_pom_dependency_change_request_answer(
 
         lines.append(f"**Current match:** `{gid}:{aid}` currently uses `{current_ver}`{scope_note} in Stage {requested_stage} root_pom.\n")
         if target_version:
-            lines.append(f"**Requested change:** `{current_ver}` → `{target_version}`\n")
+            lines.append(f"**Requested change:** `{current_ver}` â†’ `{target_version}`\n")
             lines.append("**Exact XML edit:**\n")
             lines.append("~~~xml")
             lines.append("<!-- Before -->")
@@ -11639,24 +11700,24 @@ def _build_pom_dependency_change_request_answer(
             "Please check the exact dependency groupId and artifactId."
         )
 
-    # ── Section 2: Risk ──
+    # â”€â”€ Section 2: Risk â”€â”€
     lines.append("")
     lines.append("## 2. Risk\n")
     if is_transitive:
         lines.append(
-            "**Medium** — Adding a direct transitive dependency can create version conflicts "
+            "**Medium** â€” Adding a direct transitive dependency can create version conflicts "
             "and override BOM-managed versions. Backend build/test validation is required."
         )
     elif found_dep and target_version:
         lines.append(
-            "**Low/Medium** — A direct dependency version change may affect transitive "
+            "**Low/Medium** â€” A direct dependency version change may affect transitive "
             "dependency resolution. Backend `mvn dependency:tree` and build/test "
             "validation are required before acceptance."
         )
     else:
         lines.append("Risk cannot be assessed without a specific dependency match.")
 
-    # ── Section 3: Evidence ──
+    # â”€â”€ Section 3: Evidence â”€â”€
     lines.append("")
     lines.append("## 3. Evidence\n")
     available_artifact_kinds: list[str] = []
@@ -11679,7 +11740,7 @@ def _build_pom_dependency_change_request_answer(
     else:
         lines.append("No dependency evidence artifacts are currently available.")
 
-    # ── Section 4: Approval ──
+    # â”€â”€ Section 4: Approval â”€â”€
     lines.append("")
     lines.append("## 4. Approval\n")
     lines.append(
@@ -11691,7 +11752,7 @@ def _build_pom_dependency_change_request_answer(
         "5. **Proof gate** confirms acceptance before the change is final."
     )
 
-    # ── Section 5: Not Applied ──
+    # â”€â”€ Section 5: Not Applied â”€â”€
     lines.append("")
     lines.append("## 5. Not Applied\n")
     lines.append(
@@ -11728,10 +11789,10 @@ def _build_stage3_dependency_review_answer(
     """
     lines: list[str] = []
 
-    # ── Determine requested stage ──
+    # â”€â”€ Determine requested stage â”€â”€
     requested_stage = _get_requested_stage(question, "stage3_dependency_review") or 3
 
-    # ── Resolve root_pom preview ──
+    # â”€â”€ Resolve root_pom preview â”€â”€
     root_pom_preview: dict[str, Any] | None = None
     root_pom_exists = False
     stage_of_preview = 1
@@ -11743,14 +11804,14 @@ def _build_stage3_dependency_review_answer(
                 stage_of_preview = int(pv.get("stage_index", 1) or 1)
                 break
 
-    # ── Check if Stage 3 review is allowed ──
+    # â”€â”€ Check if Stage 3 review is allowed â”€â”€
     allowed, reason = _is_final_dependency_review_allowed(
         stage_index=requested_stage if root_pom_exists else stage_of_preview,
         root_pom_preview=root_pom_preview,
         events=events,
     )
 
-    # ── If not Stage 3 (or stage 1/2), defer final recommendations ──
+    # â”€â”€ If not Stage 3 (or stage 1/2), defer final recommendations â”€â”€
     if requested_stage in (1, 2) and not allowed:
         return _build_stage1_or_2_deferred_dependency_answer(
             requested_stage=requested_stage,
@@ -11778,7 +11839,7 @@ def _build_stage3_dependency_review_answer(
         )
         return "\n".join(lines)
 
-    # ── Extract POM summary and detect baseline ──
+    # â”€â”€ Extract POM summary and detect baseline â”€â”€
     raw_preview = str(root_pom_preview.get("preview", ""))
     pom_summary: dict[str, Any] | None = None
     baseline: dict[str, Any] = {}
@@ -11793,7 +11854,7 @@ def _build_stage3_dependency_review_answer(
         )
         return "\n".join(lines)
 
-    # ── Section 1: Detected Stage 3 Baseline ──
+    # â”€â”€ Section 1: Detected Stage 3 Baseline â”€â”€
     lines.append("## 1. Detected Stage 3 Baseline\n")
     java_ver = baseline.get("java_version", "unknown")
     boot_ver = baseline.get("spring_boot_version", "unknown")
@@ -11820,7 +11881,7 @@ def _build_stage3_dependency_review_answer(
         )
         return "\n".join(lines) + "\n\nNot applied.\n"
 
-    # ── Section 2: What I Will Not Do ──
+    # â”€â”€ Section 2: What I Will Not Do â”€â”€
     lines.append("\n## 2. What I Will Not Do\n")
     lines.append(
         "- I will **not** propose Java/Spring Boot upgrades if Stage 3 already reached the target baseline.\n"
@@ -11828,7 +11889,7 @@ def _build_stage3_dependency_review_answer(
         "- I will **not** apply anything directly.\n"
     )
 
-    # ── Section 3: Dependency Buckets ──
+    # â”€â”€ Section 3: Dependency Buckets â”€â”€
     lines.append("\n## 3. Dependency Buckets\n")
     buckets = _classify_stage3_dependencies(pom_summary, baseline)
 
@@ -11896,7 +11957,7 @@ def _build_stage3_dependency_review_answer(
         "Do not inject direct transitive dependencies.\n"
     )
 
-    # ── Section 4: Recommended Dependency Actions ──
+    # â”€â”€ Section 4: Recommended Dependency Actions â”€â”€
     lines.append("## 4. Recommended Dependency Actions\n")
 
     recommendations: list[str] = []
@@ -11907,7 +11968,7 @@ def _build_stage3_dependency_review_answer(
         ver = d.get("version", "(managed)")
         if d.get("version") and d.get("version") not in ("${spring-boot.version}", "${project.parent.version}"):
             recommendations.append(
-                f"**`{gid}:{aid}`** — current: `{ver}` → **Action:** Remove explicit version; let Boot BOM manage it. "
+                f"**`{gid}:{aid}`** â€” current: `{ver}` â†’ **Action:** Remove explicit version; let Boot BOM manage it. "
                 "Reason: managed by Spring Boot BOM. Risk: Low."
             )
     if len(boot_managed_deps) > 5:
@@ -11922,8 +11983,8 @@ def _build_stage3_dependency_review_answer(
         aid = d.get("artifactId", "?")
         ver = d.get("version", "(managed)")
         recommendations.append(
-            f"**`{gid}:{aid}`** — current: `{ver}` → "
-            "**Action:** Replace javax→jakarta equivalent. "
+            f"**`{gid}:{aid}`** â€” current: `{ver}` â†’ "
+            "**Action:** Replace javaxâ†’jakarta equivalent. "
             "Reason: Spring Boot 3 requires Jakarta namespace. "
             f"Risk: Medium/High (source imports may break). "
             "Evidence: Stage 3 root_pom."
@@ -11944,14 +12005,14 @@ def _build_stage3_dependency_review_answer(
         ):
             policy_candidates.append(d)
             recommendations.append(
-                f"**`{gid}:{aid}`** — current: `{ver}` → "
+                f"**`{gid}:{aid}`** â€” current: `{ver}` â†’ "
                 "**Action: Needs policy decision.** "
                 "No target version in evidence artifacts. "
                 "Provide operator target version or reference dependency_policy_report."
             )
         else:
             recommendations.append(
-                f"**`{gid}:{aid}`** — current: `{ver}` → "
+                f"**`{gid}:{aid}`** â€” current: `{ver}` â†’ "
                 "**Action:** Review against dependency_policy_report or operator target."
             )
 
@@ -11961,7 +12022,7 @@ def _build_stage3_dependency_review_answer(
     else:
         lines.append("No specific dependency actions recommended at this stage.")
 
-    # ── Section 5: Human Decisions Needed ──
+    # â”€â”€ Section 5: Human Decisions Needed â”€â”€
     lines.append("")
     lines.append("## 5. Human Decisions Needed\n")
     if policy_candidates:
@@ -11981,17 +12042,17 @@ def _build_stage3_dependency_review_answer(
     else:
         lines.append("No policy decisions are currently outstanding.")
 
-    # ── Section 6: Governed Change Proposal Next Step ──
+    # â”€â”€ Section 6: Governed Change Proposal Next Step â”€â”€
     lines.append("")
     lines.append("## 6. Governed Change Proposal Next Step\n")
     lines.append(
         "- An exact dependency change can be turned into a `pom_dependency_change_request`.\n"
         "- Backend/OpenRewrite candidate recipe is available.\n"
         "- Human approval with checksum is required.\n"
-        "- Sandbox apply → build/test/proof validates the change."
+        "- Sandbox apply â†’ build/test/proof validates the change."
     )
 
-    # ── Section 7: Not Applied ──
+    # â”€â”€ Section 7: Not Applied â”€â”€
     lines.append("")
     lines.append("## 7. Not Applied\n")
     lines.append(
@@ -12062,7 +12123,7 @@ def _build_stage1_or_2_deferred_dependency_answer(
                 f"- Java {java_ver} detected (Spring Boot 3 requires Java 17+)."
             )
         if not pom_summary.get("has_dependency_management") and not pom_summary.get("has_parent"):
-            lines.append("- No dependencyManagement or parent POM — version drift risk.")
+            lines.append("- No dependencyManagement or parent POM â€” version drift risk.")
     else:
         reason = "not_available"
         if root_pom_preview:
@@ -12107,7 +12168,7 @@ def _build_pom_explanation_answer(
     For "find" operations, reads the live Stage 3 sandbox POM
     instead of just the truncated preview.
     """
-    # ── For "find" / "show raw" operations, use live POM from editor ──
+    # â”€â”€ For "find" / "show raw" operations, use live POM from editor â”€â”€
     if job_id:
         try:
             editor = _build_pom_dependency_editor()
@@ -12119,7 +12180,7 @@ def _build_pom_explanation_answer(
                     if raw_xml_requested:
                         safe_xml = _redact_xml_preserve_maven_urls(live_content)
                         if view.truncated:
-                            note = " (excerpt — full XML truncated for safety)"
+                            note = " (excerpt â€” full XML truncated for safety)"
                         else:
                             note = ""
                         answer = (
@@ -12324,7 +12385,7 @@ def _extract_artifact_kinds_list(events: tuple[Any, ...]) -> list[str]:
 
 
 def _build_capability_boundary_answer() -> str:
-    """Build capability boundary fallback — no stage status template."""
+    """Build capability boundary fallback â€” no stage status template."""
     answer = (
         "I cannot apply changes, approve gates, execute commands, or modify stages. "
         "The backend owns all execution. A human must approve decisions.\n\n"
@@ -12494,7 +12555,7 @@ def _build_status_answer(
     )
     artifact_text = f"Artifacts generated: {', '.join(artifact_kinds[-10:])}." if artifact_kinds else "No artifacts generated yet."
 
-    # ── Artifact preview content ──
+    # â”€â”€ Artifact preview content â”€â”€
     artifact_preview_text = ""
     if artifact_previews:
         preview_parts: list[str] = []
@@ -12898,7 +12959,7 @@ def _resolve_repair_proposal_runtime_context(
                 uow=uow, job_id=job_id, gate=gate, proposal_id=record.proposal_id,
             )
 
-    # Direct proposal — resolve from proposal's own refs
+    # Direct proposal â€” resolve from proposal's own refs
     context_data: dict[str, Any] = {}
     repair_context_ref = getattr(record, "repair_context_ref", None)
     if repair_context_ref:
@@ -13313,6 +13374,8 @@ def _validation_proof_status(validation: ValidationResult) -> str:
     """Truthful proof state; failed builds/tests never become verified."""
     if any("validation execution context" in str(error).lower() for error in validation.errors):
         return "VALIDATION_CONTEXT_MISSING"
+    if validation.test_status in {"TEST_FAILED", "TEST_ERROR"}:
+        return "TEST_FAILED"
     if validation.build_status != "BUILD_PASSED_IN_SANDBOX":
         return "BUILD_FAILED"
     if validation.test_status == "TEST_PASSED":
@@ -14249,7 +14312,7 @@ def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, 
         ]
 
     command_stages = {command.stage_index for command in commands}
-    # Chronological lifecycle reducer — processes events in sequence order.
+    # Chronological lifecycle reducer â€” processes events in sequence order.
     # Each event transitions the state; later running/terminal events override
     # earlier blocked/pending.  This is *not* a max-precedence scan.
     from collections import defaultdict
@@ -14354,12 +14417,12 @@ def _transition_stage_status(current: str, mapped: str) -> str:
     """State-transition helper: given current status and mapped label,
     return the new status respecting lifecycle rules.
 
-    * failed         → terminal (highest priority)
-    * completed      → terminal unless a later failure arrives
-    * running        → overrides blocked/pending/queued
-    * blocked        → applies only if not already running/completed/failed
-    * queued         → applies only if not already past it
-    * pending        → no change
+    * failed         â†’ terminal (highest priority)
+    * completed      â†’ terminal unless a later failure arrives
+    * running        â†’ overrides blocked/pending/queued
+    * blocked        â†’ applies only if not already running/completed/failed
+    * queued         â†’ applies only if not already past it
+    * pending        â†’ no change
     """
     if current == "cancelled":
         return "cancelled"
@@ -14866,3 +14929,5 @@ def _registered_root_status(unit_of_work_factory: UnitOfWorkFactory) -> dict[str
         }
     except Exception:
         return {"ready": False, "status": "error", "checked_root_count": 0}
+
+

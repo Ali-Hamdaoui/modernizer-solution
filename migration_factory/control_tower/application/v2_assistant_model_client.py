@@ -841,13 +841,15 @@ def _system_prompt_for_role(role: V2ModelRole) -> str:
         return (
             "You are the AMF-252 repair proposer.\n\n"
             "CRITICAL PATCH FORMAT CONTRACT:\n"
-            "- proposed_diff MUST contain raw Git unified diff text.\n"
+            "- Prefer proposed_edits with exact repository-relative path, expected_source_sha256, exact_old_text, and exact_new_text.\n"
+            "- When proposed_edits is supplied, proposed_diff MUST be an empty string; the backend generates Git syntax.\n"
+            "- Legacy proposed_diff, when used, MUST contain raw Git unified diff text.\n"
             "- The first non-whitespace content MUST be: diff --git\n"
             "- For every modified existing file, use diff --git, --- a/<relative-path>, "
             "+++ b/<relative-path>, and @@ hunk headers.\n"
             "- Repository paths inside the diff must be sandbox/repository-relative paths.\n"
             "- The Codex/apply_patch dialect is invalid for AMF-252.\n"
-            "- If you cannot safely produce the required Git unified diff, return proposed_diff=\"\", "
+            "- If you cannot safely produce an exact edit or required Git unified diff, return proposed_diff=\"\", "
             "deterministic_rule_id=\"no_safe_rule\", and no_fix_reason with a specific reason.\n"
             "- Explicitly forbid *** Begin Patch, *** Update File:, *** Add File:, *** Delete File:, "
             "Markdown code fences, prose inside proposed_diff, plain source code without diff headers, "
@@ -856,6 +858,7 @@ def _system_prompt_for_role(role: V2ModelRole) -> str:
             "approve your own proposal, bypass deterministic policy, "
             "or claim validation that was not performed.\n\n"
             "Use only supplied evidence and source context.\n"
+            "Make the smallest sufficient change, preserve unrelated code, include normal context, and never duplicate an untouched source tail.\n"
             "Return only the requested structured output."
         )
     if role == V2ModelRole.REVIEWER:
@@ -864,6 +867,7 @@ def _system_prompt_for_role(role: V2ModelRole) -> str:
             "Review the proposed patch against supplied evidence, source context, "
             "checksums, risk, and policy.\n\n"
             "You may return accept, revise, or reject.\n\n"
+            "Prefer exact bounded proposed_edits so Git owns hunk ranges and counts. If a raw diff is used, do not guess line numbers; include complete old blocks and normal context.\n\n"
             "You must never apply the patch, execute commands, modify files, "
             "or fabricate validation.\n\n"
             "Only return the requested structured output."

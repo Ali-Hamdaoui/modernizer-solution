@@ -88,6 +88,7 @@ REPAIR_PRIMARY_OUTPUT_SCHEMA = {
         "fix_strategy",
         "changed_files",
         "proposed_diff",
+        "proposed_edits",
         "deterministic_rule_id",
         "risk",
         "confidence",
@@ -101,9 +102,24 @@ REPAIR_PRIMARY_OUTPUT_SCHEMA = {
         "proposed_diff": {
             "type": "string",
             "description": (
-                "Raw Git-style unified diff. Must include file headers and hunk markers. "
-                "Must not be Markdown fenced. Must be directly applyable as a patch."
+                "Legacy raw Git-style unified diff. Leave empty when proposed_edits is supplied; "
+                "the backend will generate the authoritative diff."
             ),
+        },
+        "proposed_edits": {
+            "type": "array",
+            "description": "Preferred bounded source replacements; the backend generates Git syntax.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "expected_source_sha256", "exact_old_text", "exact_new_text"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "expected_source_sha256": {"type": "string"},
+                    "exact_old_text": {"type": "string"},
+                    "exact_new_text": {"type": "string"},
+                },
+            },
         },
         "deterministic_rule_id": {"type": ["string", "null"]},
         "risk": {"type": ["string", "null"], "enum": ["LOW", "MEDIUM", "HIGH", None]},
@@ -119,6 +135,7 @@ REPAIR_REVIEWER_OUTPUT_SCHEMA = {
     "required": [
         "decision",
         "proposed_diff",
+        "proposed_edits",
         "changed_files",
         "review_notes",
         "notes",
@@ -132,6 +149,21 @@ REPAIR_REVIEWER_OUTPUT_SCHEMA = {
     "properties": {
         "decision": {"type": "string", "enum": ["accept", "revise", "reject"]},
         "proposed_diff": {"type": "string"},
+        "proposed_edits": {
+            "type": "array",
+            "description": "Preferred bounded source replacements; the backend generates Git syntax.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "expected_source_sha256", "exact_old_text", "exact_new_text"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "expected_source_sha256": {"type": "string"},
+                    "exact_old_text": {"type": "string"},
+                    "exact_new_text": {"type": "string"},
+                },
+            },
+        },
         "changed_files": {"type": "array", "items": {"type": "string"}},
         "review_notes": {"type": "array", "items": {"type": "string"}},
         "notes": {"type": "array", "items": {"type": "string"}},

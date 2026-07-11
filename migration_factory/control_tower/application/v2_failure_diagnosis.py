@@ -1,4 +1,4 @@
-"""V2 Automatic Failure Diagnosis (F02).
+﻿"""V2 Automatic Failure Diagnosis (F02).
 
 Creates governed LLM diagnosis and repair proposal objects when backend-owned
 migration execution emits build_failed, test_failed, or transform_failed.
@@ -42,7 +42,7 @@ from migration_factory.control_tower.application.v2_repair_flow import (
 )
 
 
-# ── Diagnosis record ──────────────────────────────────────────────
+# â”€â”€ Diagnosis record â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 @dataclass(frozen=True)
@@ -64,7 +64,7 @@ class FailureDiagnosisRecord:
     created_at: str
 
 
-# ── Diagnosis service ─────────────────────────────────────────────
+# â”€â”€ Diagnosis service â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class V2FailureDiagnosisService:
@@ -304,7 +304,7 @@ class V2FailureDiagnosisService:
         """Clear in-memory diagnoses (for testing)."""
         self._diagnoses.clear()
 
-    # ── Internal helpers ───────────────────────────────────────────
+    # â”€â”€ Internal helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _build_failure_summary(
         self,
@@ -481,31 +481,48 @@ class V2FailureDiagnosisService:
         build_status: str,
         test_status: str,
     ) -> dict[str, Any]:
-        """Create a minimal classification when evidence collector is unavailable."""
-        failure_type = event_type.upper()
-        severity = "BLOCKER"
+        """Create a fail-closed classification when evidence collector is unavailable.
+
+        Without concrete evidence, this must NOT convert the raw event type into
+        a justified concrete failure classification (e.g. BUILD_FAILED, TEST_FAILED).
+        Fabricating certainty when evidence was unavailable contaminates retry cycles.
+        """
+        failure_type = "UNKNOWN_MIGRATION_FAILURE"
+        severity = "UNKNOWN"
 
         if event_type == "build_failed":
-            likely_root_cause = f"Maven build failed: {build_status or 'unknown error'}"
+            likely_root_cause = (
+                f"Maven build reported as failed ({build_status or 'unknown status'}); "
+                "evidence collector was unavailable — classification is UNKNOWN"
+            )
         elif event_type == "test_failed":
-            likely_root_cause = f"Test validation failed: {test_status or 'unknown error'}"
+            likely_root_cause = (
+                f"Test validation reported as failed ({test_status or 'unknown status'}); "
+                "evidence collector was unavailable — classification is UNKNOWN"
+            )
         elif event_type == "transform_failed":
-            likely_root_cause = "Sandbox transform failed"
+            likely_root_cause = (
+                "Sandbox transform reported as failed; "
+                "evidence collector was unavailable — classification is UNKNOWN"
+            )
         else:
-            likely_root_cause = "Unknown failure"
+            likely_root_cause = (
+                f"Event type {event_type!r} reported; "
+                "evidence collector was unavailable — classification is UNKNOWN"
+            )
 
         return {
             "failure_type": failure_type,
             "severity": severity,
-            "migration_blocker": True,
+            "migration_blocker": False,
             "security_env_warning": False,
             "likely_root_cause": likely_root_cause,
             "evidence": [],
-            "recommended_next_step": "Review build/test logs and rerun.",
-            "requires_human_review": False,
+            "recommended_next_step": "Rerun with evidence collector enabled to get concrete classification.",
+            "requires_human_review": True,
         }
 
-    # ── Serialization ──────────────────────────────────────────────
+    # â”€â”€ Serialization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @staticmethod
     def diagnosis_to_dict(diagnosis: FailureDiagnosisRecord) -> dict[str, Any]:
@@ -529,7 +546,7 @@ class V2FailureDiagnosisService:
         return event_type in V2FailureDiagnosisService.TRIGGER_EVENT_TYPES
 
 
-# ── Orchestrator integration helper ───────────────────────────────
+# â”€â”€ Orchestrator integration helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def create_orchestrator_diagnosis_callback(
@@ -583,3 +600,4 @@ def create_orchestrator_diagnosis_callback(
         )
 
     return callback
+

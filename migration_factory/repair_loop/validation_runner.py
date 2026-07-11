@@ -1,6 +1,7 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass, fields
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +88,7 @@ def run_validation_after_patch(
     h2_enabled: bool = False,
     build_timeout_seconds: int | None = None,
     validation_context: ValidationExecutionContext | None = None,
+    execution_env: Mapping[str, str] | None = None,
 ) -> ValidationResult:
     context = ValidationExecutionContext.from_mapping(validation_context)
     run_path = Path(run_dir)
@@ -102,6 +104,24 @@ def run_validation_after_patch(
             warnings=[],
             errors=["validation execution context did not contain the original validation command"],
         )
+    if execution_env is None:
+        return ValidationResult(
+            passed=False,
+            build_status=BUILD_FAILED,
+            test_status=TESTS_NOT_FOUND,
+            h2_status=H2_SKIPPED,
+            validation_commands=[],
+            artifact_refs={},
+            warnings=[],
+            errors=[
+                "authoritative stage execution environment was unavailable; "
+                "repair validation refused to inherit the backend environment "
+                f"(job_id={context.job_id!r}, command_id={context.command_id!r}, "
+                f"stage_index={context.stage_index!r}, "
+                f"route_step_index={context.route_step_index!r}, "
+                f"runtime_profile={context.runtime_profile!r})"
+            ],
+        )
     output_dir = run_path / "build" / f"repair_attempt_{attempt}"
     build_result = run_build_agent(
         sandbox,
@@ -116,14 +136,16 @@ def run_validation_after_patch(
         main_class=context.main_class,
         source_jdk_home_env=context.source_jdk_home_env,
         target_jdk_home_env=context.target_jdk_home_env,
+        execution_env=execution_env,
     )
-    build_status = BUILD_PASSED if build_result.succeeded else BUILD_FAILED
     validation_commands = [list(build_result.command or context.validation_command)] if (build_result.command or context.validation_command) else []
     artifact_refs: dict[str, str] = {}
     errors: list[str] = []
     warnings: list[str] = list(build_result.warnings or [])
     if build_result.error_contract_path:
         artifact_refs["repair_build_error_contract"] = str(build_result.error_contract_path)
+
+    build_status = BUILD_PASSED if build_result.succeeded else BUILD_FAILED
 
     test_result = run_test_agent(
         sandbox_path=sandbox,
@@ -145,6 +167,9 @@ def run_validation_after_patch(
         }
     )
 
+    test_reports_observed = bool(test_result.report_paths) or any((test_result.totals or {}).get(key, 0) > 0 for key in ("tests", "failures", "errors", "skipped", "passed"))
+    build_status = BUILD_PASSED if (build_result.succeeded or test_reports_observed) else BUILD_FAILED
+
     h2_status = H2_SKIPPED
     if h2_required or h2_enabled:
         h2_report = build_h2_startup_report(
@@ -162,7 +187,10 @@ def run_validation_after_patch(
 
     if build_status != BUILD_PASSED:
         errors.append("build validation failed after repair patch")
-        errors.append("test execution was blocked because compilation failed")
+        if build_result.result_kind == "compilation_error" and not test_result.report_paths:
+            errors.append("test execution was blocked because compilation failed")
+        elif test_result.report_paths and test_status not in {TEST_PASSED, TEST_PASS_WITH_WARNINGS}:
+            errors.append("test validation failed after repair patch")
     elif test_status not in {TEST_PASSED, TEST_PASS_WITH_WARNINGS, TESTS_NOT_FOUND}:
         errors.append("test validation failed after repair patch")
     if h2_required and h2_status != "H2_STARTUP_PASSED":
@@ -178,3 +206,5 @@ def run_validation_after_patch(
         warnings=warnings,
         errors=errors,
     )
+
+

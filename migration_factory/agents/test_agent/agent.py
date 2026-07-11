@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -69,10 +69,6 @@ def run_test_agent(
     if not resolved_sandbox.is_dir():
         log_lines.append(f"Invalid sandbox path: {resolved_sandbox}")
         reason = "INVALID_SANDBOX_PATH"
-    elif build_status and build_status != BUILD_STATUS_PASSED:
-        log_lines.append(f"Build command did not pass: {build_status}")
-        reason = "BUILD_COMMAND_FAILED"
-        test_status = TEST_STATUS_TESTS_NOT_FOUND
     else:
         test_sources = _detect_test_sources(resolved_sandbox)
         detected_test_sources = [_relative_or_name(path, resolved_sandbox) for path in test_sources]
@@ -88,22 +84,7 @@ def run_test_agent(
         if discovered_report_dirs:
             surefire_report_dir = discovered_report_dirs[0]
             surefire_report_dir_exists = True
-        if not candidates:
-            warnings.append(NO_SUREFIRE_REPORTS_WARNING)
-            log_lines.append(NO_SUREFIRE_REPORTS_WARNING)
-            if build_status == BUILD_STATUS_PASSED and not require_test_reports and not runnable_paths:
-                test_status = TEST_STATUS_PASS_WITH_WARNINGS
-                reason = "BUILD_PASSED_NO_SUREFIRE_REPORTS_NO_RUNNABLE_TESTS"
-            elif build_status == BUILD_STATUS_PASSED and not require_test_reports and runnable_paths:
-                test_status = TEST_STATUS_PASS_WITH_WARNINGS
-                reason = "BUILD_PASSED_NO_SUREFIRE_REPORTS_RUNNABLE_TESTS_DETECTED"
-            elif require_test_reports:
-                test_status = TEST_STATUS_ERROR
-                reason = "REQUIRE_TEST_REPORTS_TRUE_NO_SUREFIRE_REPORTS"
-            else:
-                test_status = TEST_STATUS_ERROR
-                reason = "NO_SUREFIRE_REPORTS_FOUND"
-        else:
+        if candidates:
             parse_error: str | None = None
             for report in candidates:
                 try:
@@ -137,6 +118,25 @@ def run_test_agent(
             else:
                 test_status = TEST_STATUS_PASSED
                 reason = "SUREFIRE_REPORTS_PASSED"
+        elif build_status and build_status != BUILD_STATUS_PASSED:
+            log_lines.append(f"Build command did not pass: {build_status}")
+            reason = "BUILD_COMMAND_FAILED"
+            test_status = TEST_STATUS_ERROR
+        else:
+            warnings.append(NO_SUREFIRE_REPORTS_WARNING)
+            log_lines.append(NO_SUREFIRE_REPORTS_WARNING)
+            if build_status == BUILD_STATUS_PASSED and not require_test_reports and not runnable_paths:
+                test_status = TEST_STATUS_PASS_WITH_WARNINGS
+                reason = "BUILD_PASSED_NO_SUREFIRE_REPORTS_NO_RUNNABLE_TESTS"
+            elif build_status == BUILD_STATUS_PASSED and not require_test_reports and runnable_paths:
+                test_status = TEST_STATUS_PASS_WITH_WARNINGS
+                reason = "BUILD_PASSED_NO_SUREFIRE_REPORTS_RUNNABLE_TESTS_DETECTED"
+            elif require_test_reports:
+                test_status = TEST_STATUS_ERROR
+                reason = "REQUIRE_TEST_REPORTS_TRUE_NO_SUREFIRE_REPORTS"
+            else:
+                test_status = TEST_STATUS_ERROR
+                reason = "NO_SUREFIRE_REPORTS_FOUND"
 
     source_log = str(Path(source_log_path).expanduser().resolve())
     payload = {
@@ -244,3 +244,5 @@ def _summary_markdown(payload: dict[str, Any]) -> str:
         lines.extend([f"  - {warning}" for warning in payload["warnings"]])
     lines.append("")
     return "\n".join(lines)
+
+

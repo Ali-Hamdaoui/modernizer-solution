@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from migration_factory.control_tower.domain.checksums import (
@@ -20,6 +20,7 @@ from migration_factory.control_tower.domain.checksums import (
     utc_now_text,
 )
 from migration_factory.repair_loop.failure_evidence import FailureEvidence
+from migration_factory.repair_loop.patch_gate import _has_symlink_parent
 
 
 FORBIDDEN_CONTEXT_KEYS: frozenset[str] = frozenset({
@@ -63,13 +64,29 @@ class RepairSourceContext:
 def _normalize_and_check_path(
     file_path: str,
     sandbox_root: Path,
+    *,
+    allow_absolute: bool = True,
 ) -> Path | None:
-    resolved = (sandbox_root / file_path).resolve()
+    raw_path = str(file_path or "").strip()
+    if not raw_path:
+        return None
+    windows_path = PureWindowsPath(raw_path)
+    if not allow_absolute and (Path(raw_path).is_absolute() or windows_path.is_absolute() or windows_path.drive):
+        return None
+    candidate = (
+        Path(raw_path)
+        if Path(raw_path).is_absolute() or windows_path.is_absolute()
+        else sandbox_root / PurePosixPath(raw_path.replace("\\", "/"))
+    )
+    if _has_symlink_parent(candidate, sandbox_root):
+        return None
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
     try:
         resolved.relative_to(sandbox_root)
     except ValueError:
-        return None
-    if resolved.is_symlink():
         return None
     return resolved
 
@@ -143,8 +160,12 @@ def build_bounded_source_context(
             if file_path in set(build_context_files)
             else "changed_file"
         )
+        try:
+            relative_path = normalized.relative_to(sandbox).as_posix()
+        except ValueError:
+            continue
         contexts.append(RepairSourceContext(
-            path=file_path,
+            path=relative_path,
             content_checksum=checksum,
             start_line=start_line + 1,
             end_line=end_line,

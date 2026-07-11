@@ -11,8 +11,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
+import subprocess
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
 from migration_factory.control_tower.application.v2_assistant_model_client import (
@@ -35,6 +39,7 @@ from migration_factory.repair_loop.failure_evidence import (
 )
 from migration_factory.repair_loop.repair_context import (
     RepairContextPack,
+    _normalize_and_check_path,
     compute_base_repo_state_checksum,
     compute_context_pack_checksum,
     context_pack_to_dict,
@@ -52,6 +57,165 @@ _DIAGNOSTIC_SECRET_VALUE_RE = re.compile(
 _UNIFIED_HUNK_HEADER_RE = re.compile(
     r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$"
 )
+
+_DIFF_METADATA_PREFIXES = (
+    "index ", "old mode ", "new mode ", "new file mode ",
+    "deleted file mode ", "similarity index ", "dissimilarity index ",
+    "rename from ", "rename to ",
+)
+
+
+def _line_body(line: str) -> str:
+    if line.endswith("\r\n"):
+        return line[:-2]
+    if line.endswith(("\n", "\r")):
+        return line[:-1]
+    return line
+
+
+def _relative_diff_path(raw: str) -> str:
+    value = raw.split("\t", 1)[0].strip().strip('"')
+    if value in {"/dev/null", ""}:
+        return value
+    normalized = value.replace("\\", "/")
+    if normalized.startswith(("a/", "b/")):
+        normalized = normalized[2:]
+    return normalized
+
+
+def _path_errors(path: str) -> list[str]:
+    normalized = str(path).replace("\\", "/")
+    pure = PurePosixPath(normalized)
+    win = PureWindowsPath(str(path))
+    if not normalized or normalized == "/dev/null":
+        return []
+    errors: list[str] = []
+    if normalized.startswith(("/", "//")) or win.is_absolute() or re.match(r"^[A-Za-z]:", str(path)):
+        errors.append(f"absolute patch path rejected: {path}")
+    if ".." in pure.parts:
+        errors.append(f"path traversal rejected: {path}")
+    return errors
+
+
+def _strict_parse_unified_diff(diff: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """Parse the candidate grammar without discarding malformed hunk lines."""
+    if not diff or not diff.strip():
+        return [], ["candidate diff is empty"]
+    if "```" in diff:
+        return [], ["candidate diff contains Markdown fences"]
+    if not diff.lstrip().startswith("diff --git "):
+        return [], ["candidate diff must start with diff --git"]
+    lines = diff.splitlines(keepends=True)
+    sections: list[dict[str, Any]] = []
+    failures: list[str] = []
+    current: dict[str, Any] | None = None
+    hunk: dict[str, Any] | None = None
+
+    def finish_hunk() -> None:
+        nonlocal hunk
+        if hunk is None:
+            return
+        old_actual = sum(1 for line in hunk["body"] if line.startswith((" ", "-")))
+        new_actual = sum(1 for line in hunk["body"] if line.startswith((" ", "+")))
+        if old_actual != hunk["old_count"] or new_actual != hunk["new_count"]:
+            failures.append(
+                f"hunk {hunk['header']} count mismatch: declared old/new "
+                f"{hunk['old_count']}/{hunk['new_count']}, body has {old_actual}/{new_actual}"
+            )
+        hunk = None
+
+    def finish_section() -> None:
+        nonlocal current
+        finish_hunk()
+        if current is None:
+            return
+        if not current.get("old_path") or not current.get("new_path"):
+            failures.append("file section is missing --- or +++ headers")
+        for marker in ("old_path", "new_path"):
+            failures.extend(_path_errors(str(current.get(marker) or "")))
+        if not current.get("hunks"):
+            failures.append(f"file section {current.get('path', '<unknown>')} has no hunk")
+        sections.append(current)
+        current = None
+
+    for raw in lines:
+        line = _line_body(raw)
+        if line.startswith("diff --git "):
+            finish_section()
+            try:
+                parts = shlex.split(line[len("diff --git "):])
+            except ValueError:
+                parts = []
+            if len(parts) != 2:
+                failures.append(f"malformed diff --git header: {line}")
+                current = {"path": "", "old_path": "", "new_path": "", "hunks": []}
+                continue
+            old_path = _relative_diff_path(parts[0])
+            new_path = _relative_diff_path(parts[1])
+            failures.extend(_path_errors(old_path))
+            failures.extend(_path_errors(new_path))
+            if old_path != new_path and "/dev/null" not in {old_path, new_path}:
+                failures.append(f"file section has mismatched paths: {old_path} != {new_path}")
+            current = {
+                "path": new_path if new_path != "/dev/null" else old_path,
+                "header_old_path": old_path,
+                "header_new_path": new_path,
+                "old_path": None,
+                "new_path": None,
+                "hunks": [],
+            }
+            hunk = None
+            continue
+
+        if current is None:
+            if line.strip():
+                failures.append(f"prose or metadata outside diff section: {line[:120]}")
+            continue
+        if line.startswith("--- "):
+            current["old_path"] = _relative_diff_path(line[4:])
+            continue
+        if line.startswith("+++ "):
+            current["new_path"] = _relative_diff_path(line[4:])
+            continue
+        match = _UNIFIED_HUNK_HEADER_RE.match(line)
+        if match:
+            finish_hunk()
+            old_start, old_count, new_start, new_count, section = match.groups()
+            hunk = {
+                "header": line,
+                "old_start": int(old_start),
+                "old_count": int(old_count or 1),
+                "new_start": int(new_start),
+                "new_count": int(new_count or 1),
+                "section": section,
+                "body": [],
+            }
+            current["hunks"].append(hunk)
+            continue
+        if hunk is None:
+            if line.strip() and not line.startswith(_DIFF_METADATA_PREFIXES):
+                failures.append(f"unexpected content outside hunk: {line[:120]}")
+            continue
+        if line == "\\ No newline at end of file":
+            hunk["body"].append(line)
+        elif line.startswith((" ", "+", "-")):
+            hunk["body"].append(line)
+        else:
+            failures.append(f"unprefixed line inside hunk {hunk['header']}: {line[:120]}")
+
+    finish_section()
+    if not sections:
+        failures.append("candidate diff contains no valid file section")
+    seen_paths: set[str] = set()
+    for section in sections:
+        if section.get("path") in seen_paths:
+            failures.append(f"duplicate file section for {section.get('path')}")
+        seen_paths.add(str(section.get("path") or ""))
+        if section.get("old_path") != section.get("header_old_path") and section.get("old_path") != "/dev/null":
+            failures.append(f"--- path does not match diff --git path for {section['path']}")
+        if section.get("new_path") != section.get("header_new_path") and section.get("new_path") != "/dev/null":
+            failures.append(f"+++ path does not match diff --git path for {section['path']}")
+    return sections, failures
 
 
 def _normalize_unified_diff_hunk_counts(unified_diff: str) -> str:
@@ -128,7 +292,17 @@ _CANONICAL_REPAIR_DIFF_CONTRACT = (
     "- The Codex/apply_patch dialect is invalid for AMF-252.\n"
     "- Markdown fences, prose, JSON, commands, secrets, and test disabling are forbidden in proposed_diff.\n"
     "- Forbidden markers include: *** Begin Patch, *** Update File:, *** Add File:, *** Delete File:, *** End Patch.\n"
-    "- If no safe Git unified diff can be produced, return proposed_diff = \"\" and no_fix_reason.\n\n"
+    "- If no safe Git unified diff can be produced, return proposed_diff = \"\" and no_fix_reason.\n"
+    "- Every hunk MUST contain at least one unchanged context line prefixed by a single space.\n"
+    "- Prefer 3 context lines where source size allows it.\n"
+    "- Never emit zero-context hunks.\n"
+    "- Hunk header old/new counts MUST match the actual hunk body lines.\n"
+    "- Removed/replaced old code MUST use \"-\" prefix.\n"
+    "- Added/replacement new code MUST use \"+\" prefix.\n"
+    "- Unchanged context MUST use a single leading space.\n"
+    "- Never represent old code being replaced as unchanged context.\n"
+    "- Never add replacement code without deleting the replaced code when replacement is intended.\n"
+    "- Do not fabricate line numbers or file contents.\n\n"
     "VALID:\n"
     "diff --git a/src/main/java/com/example/Foo.java b/src/main/java/com/example/Foo.java\n"
     "--- a/src/main/java/com/example/Foo.java\n"
@@ -197,20 +371,44 @@ def _build_deterministic_repair_payload(
 # ── F5-T4/T5: Primary/Reviewer repair contracts ─────────────────────
 
 
+def _format_authoritative_source_contexts(source_contexts: list[Any]) -> str:
+    """Render bounded current source consistently in repair prompts."""
+    parts = []
+    for source_context in source_contexts:
+        get = source_context.get if isinstance(source_context, dict) else lambda key: getattr(source_context, key, "")
+        path = get("path")
+        parts.append(
+            f"FILE_PATH: {path}\n"
+            f"CURRENT_SOURCE_SHA256: {get('content_checksum')}\n"
+            f"SOURCE_LINES: {get('start_line')}-{get('end_line')}\n"
+            f"CURRENT_AUTHORITATIVE_SOURCE:\n{get('content')}\n"
+            f"END_CURRENT_AUTHORITATIVE_SOURCE: {path}"
+        )
+    return "\n\n".join(parts)
+
+
+_STRUCTURED_REPAIR_EDIT_CONTRACT = (
+    "STRUCTURED EDIT CONTRACT (required when bounded authoritative source context is present):\n"
+    "- Prefer non-empty proposed_edits whenever authoritative bounded source context is present; use proposed_diff only as the raw-diff fallback.\n"
+    "- proposed_diff remains a permitted raw unified-diff fallback only when structured exact edits cannot be safely authored.\n"
+    "- Each edit MUST contain path, expected_source_sha256, exact_old_text, and exact_new_text.\n"
+    "- Use the exact per-file CURRENT_SOURCE_SHA256 for expected_source_sha256; never reuse a SHA across files or use a context-pack checksum.\n"
+    "- exact_old_text MUST be copied verbatim from CURRENT_AUTHORITATIVE_SOURCE and must occur exactly once in that current file.\n"
+    "- Use the smallest exact replacement possible: preserve unrelated code and do not reconstruct whole methods or classes.\n"
+    "- Use multiple independent, non-overlapping edits instead of one large replacement spanning unrelated changes.\n"
+    "- Do not normalize indentation, EOL style, trailing whitespace, or any other whitespace.\n"
+    "- Leave proposed_diff empty when proposed_edits is supplied; the application layer will generate the final diff.\n"
+)
+
+
 def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checksum: str) -> str:
     context_dict = context_pack_to_dict(context_pack)
     source_contexts = context_dict.get("source_contexts") or []
-    source_section = ""
-    if source_contexts:
-        parts = []
-        for sc in source_contexts:
-            parts.append(
-                f"--- {sc['path']} (lines {sc['start_line']}-{sc['end_line']}, "
-                f"reason: {sc['reason_included']}) ---\n"
-                f"{sc['content']}\n"
-                f"--- end {sc['path']} ---"
-            )
-        source_section = "\n\nSOURCE CONTEXT:\n" + "\n\n".join(parts)
+    source_section = (
+        "\n\nSOURCE CONTEXT:\n" + _format_authoritative_source_contexts(source_contexts)
+        if source_contexts else ""
+    )
+    retry_contract = _post_apply_retry_contract(context_pack)
     return (
         "You are the AMF-252 repair proposer.\n"
         "Your task is to produce a minimal, safe, raw Git unified diff that fixes the failing build/test evidence.\n\n"
@@ -218,11 +416,13 @@ def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checks
         "Do NOT include any text before or after the JSON.\n\n"
         "Required JSON keys: "
         "root_cause (string), fix_strategy (string), changed_files (list of file paths), "
-        "proposed_diff (unified diff string), confidence (0.0-1.0), rationale (string). "
+        "proposed_diff (legacy unified diff string), proposed_edits (optional bounded edit list), "
+        "confidence (0.0-1.0), rationale (string). "
         "deterministic_rule_id and risk are optional metadata and must never block diff generation.\n"
         "Only set no_fix_reason when the provided context lacks enough evidence to safely create a patch.\n"
         "If no_fix_reason is set, explain exactly which required evidence is missing.\n\n"
         + _CANONICAL_REPAIR_DIFF_CONTRACT
+        + _STRUCTURED_REPAIR_EDIT_CONTRACT
         + "CONSTRAINTS:\n"
         "- Do NOT include commands, paths to execute, provider data, endpoint data, "
         "env data, deployment data, or approvals.\n"
@@ -232,11 +432,12 @@ def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checks
         "- Do NOT include explanatory prose inside proposed_diff.\n"
         "- Do NOT include plain source code without diff headers.\n"
         "- Do NOT include JSON embedded inside proposed_diff.\n"
-        "- In normal repair mode, proposed_diff must be non-empty.\n"
-        "- Empty diff is an unavailable outcome, not an applyable proposal.\n"
+        "- In normal repair mode, either proposed_edits or proposed_diff must be non-empty.\n"
+        "- Empty proposed_diff is valid only when proposed_edits is supplied; an empty repair is unavailable.\n"
         "- Do not skip or disable tests as a fix.\n"
         "- The fix must stay within the sandbox scope and declared changed files.\n\n"
         f"Deterministic repair artifact checksum: {deterministic_checksum}\n"
+        f"{retry_contract}"
         f"Source context is provided below with exact file contents bounded around error locations.\n"
         f"Use this source context to produce an exact applicable unified diff.\n"
         f"{source_section}\n\n"
@@ -253,17 +454,22 @@ def _reviewer_repair_prompt(
     primary_checksum: str,
     diff_checksum: str,
 ) -> str:
+    source_contexts = list(context_pack.source_contexts or [])
+    retry_contract = _post_apply_retry_contract(context_pack)
     return (
         "You are the AMF-252 final repair author and reviewer. Inspect exact failure "
         "evidence, bounded source context, proposer reasoning, and proposer diff. "
         "Correct or replace proposer work and return the best final raw Git unified diff.\n\n"
         "Return JSON with keys:\n"
-        "  proposed_diff (raw unified diff; empty only when no usable repair exists), "
+        "  proposed_diff (legacy raw unified diff; empty when proposed_edits is supplied), "
+        "proposed_edits (preferred bounded edit list with path, expected_source_sha256, exact_old_text, exact_new_text), "
         "changed_files (list), review_notes (list), confidence (0.0-1.0), "
         "optional decision/risks/policy_concerns, "
         "reviewed_context_checksum, reviewed_primary_output_checksum, "
         "reviewed_diff_checksum.\n\n"
         + _CANONICAL_REPAIR_DIFF_CONTRACT
+        + _STRUCTURED_REPAIR_EDIT_CONTRACT
+        + "- Independently verify every proposed edit against the supplied current authoritative source.\n"
         + "- Improve/correct proposer diff when evidence shows it is incomplete or wrong.\n"
         "- Use repository-relative paths only; reject commands, secrets, test disabling, "
         "absolute paths, traversal, or deployment/environment changes.\n"
@@ -272,8 +478,10 @@ def _reviewer_repair_prompt(
         f"Context pack checksum: {context_checksum}\n"
         f"Primary output checksum: {primary_checksum}\n"
         f"Proposed diff checksum: {diff_checksum}\n"
+        f"{retry_contract}"
         f"FAILURE EVIDENCE:\n{json.dumps(failure_evidence_to_dict(failure_evidence), sort_keys=True)}\n\n"
         f"SOURCE/CONTEXT PACK:\n{json.dumps(context_pack_to_dict(context_pack), sort_keys=True)}\n\n"
+        f"CURRENT AUTHORITATIVE SOURCE BLOCKS:\n{_format_authoritative_source_contexts(source_contexts)}\n\n"
         f"PROPOSER OUTPUT:\n{json.dumps(primary_output, sort_keys=True)}"
     )
 
@@ -306,15 +514,16 @@ def _coerce_primary_repair_output(content: str) -> dict[str, Any]:
         )
 
     proposed_diff = str(parsed.get("proposed_diff") or "")
-    if not proposed_diff.strip():
+    edits = _structured_edits(parsed.get("proposed_edits"))
+    if not proposed_diff.strip() and not edits:
         raise RepairReviewChainProductionError(
-            "invalid_response_missing_proposed_diff: proposed_diff is empty or missing"
+            "invalid_response_missing_repair: proposed_diff and proposed_edits are both empty"
         )
     if "```" in proposed_diff:
         raise RepairReviewChainProductionError(
             "invalid_response_markdown_fenced_diff: proposed_diff is wrapped in Markdown fences"
         )
-    if not _looks_like_unified_diff(proposed_diff):
+    if proposed_diff.strip() and not _looks_like_unified_diff(proposed_diff):
         raise RepairReviewChainProductionError(
             "invalid_response_non_unified_diff: proposed_diff does not contain unified diff markers"
         )
@@ -349,6 +558,7 @@ def _coerce_reviewer_repair_output(
         )
 
     proposed_diff = str(parsed.get("proposed_diff") or "")
+    edits = _structured_edits(parsed.get("proposed_edits"))
     decision = str(parsed.get("decision") or "").strip().lower()
     if decision not in {"", "accept", "revise", "reject"}:
         raise RepairReviewChainProductionError(f"invalid reviewer decision {decision!r}")
@@ -358,6 +568,7 @@ def _coerce_reviewer_repair_output(
     return {
         "decision": decision,
         "proposed_diff": proposed_diff,
+        "proposed_edits": edits,
         "changed_files": parsed.get("changed_files") if isinstance(parsed.get("changed_files"), list) else [],
         "notes": parsed.get("review_notes") if isinstance(parsed.get("review_notes"), list) else parsed.get("notes") if isinstance(parsed.get("notes"), list) else [],
         "confidence": float(parsed.get("confidence", 0.8)),
@@ -376,6 +587,7 @@ def _compute_primary_repair_checksum(output: dict[str, Any]) -> str:
         "fix_strategy": str(output.get("fix_strategy", "")),
         "changed_files": list(output.get("changed_files", [])),
         "proposed_diff": str(output.get("proposed_diff", "")),
+        "proposed_edits": _structured_edits(output.get("proposed_edits")),
         "deterministic_rule_id": str(output.get("deterministic_rule_id", "")),
         "risk": str(output.get("risk", "")),
         "confidence": float(output.get("confidence", 0.0)),
@@ -389,6 +601,7 @@ def _compute_reviewer_repair_checksum(output: dict[str, Any]) -> str:
     payload = {
         "decision": str(output.get("decision", "")),
         "proposed_diff": str(output.get("proposed_diff", "")),
+        "proposed_edits": _structured_edits(output.get("proposed_edits")),
         "changed_files": list(output.get("changed_files", [])),
         "notes": list(output.get("notes", [])),
         "confidence": float(output.get("confidence", 0.0)),
@@ -404,7 +617,7 @@ def _compute_reviewer_repair_checksum(output: dict[str, Any]) -> str:
 def _validate_primary_repair_output(output: dict[str, Any]) -> list[str]:
     failures: list[str] = []
 
-    for key in ("root_cause", "fix_strategy", "proposed_diff"):
+    for key in ("root_cause", "fix_strategy"):
         if not isinstance(output.get(key), str) or not output[key].strip():
             failures.append(f"empty or missing required field {key!r}")
 
@@ -417,11 +630,21 @@ def _validate_primary_repair_output(output: dict[str, Any]) -> list[str]:
         failures.append("confidence must be a float between 0.0 and 1.0")
 
     diff = str(output.get("proposed_diff", ""))
+    edits = _structured_edits(output.get("proposed_edits"))
+    if not diff.strip() and not edits:
+        failures.append("one of proposed_diff or proposed_edits must be non-empty")
     if diff.strip():
         if "```" in diff:
             failures.append("proposed_diff appears to be Markdown fenced")
         elif not _looks_like_unified_diff(diff):
             failures.append("proposed_diff does not appear to be a valid unified diff")
+
+    if output.get("proposed_edits") is not None and not isinstance(output.get("proposed_edits"), list):
+        failures.append("proposed_edits must be a list when supplied")
+    for edit in edits:
+        for key in ("path", "expected_source_sha256", "exact_old_text", "exact_new_text"):
+            if not edit.get(key) and key != "exact_new_text":
+                failures.append(f"structured edit is missing {key!r}")
 
     forbidden_paths = _check_forbidden_paths_in_diff(diff)
     if forbidden_paths:
@@ -470,6 +693,130 @@ def _validate_candidate_diff(
     return failures
 
 
+def _validate_model_candidate(
+    *,
+    output: dict[str, Any],
+    role: str,
+    context_pack: RepairContextPack,
+    sandbox_path: str | Path | None,
+    output_dir: Path,
+) -> tuple[str, list[str], list[str]]:
+    """Return canonical diff, validation failures, and touched paths."""
+    edits = _structured_edits(output.get("proposed_edits"))
+    if edits:
+        if sandbox_path is None:
+            return "", [f"{role} structured edits require sandbox_path for canonicalization"], []
+        canonical, edit_failures = _apply_structured_edits_to_shadow(
+            edits=edits,
+            sandbox_path=sandbox_path,
+            output_dir=output_dir,
+            context_pack=context_pack,
+        )
+        if edit_failures:
+            return "", [f"{role} {failure}" for failure in edit_failures], []
+        proposed_diff = canonical
+    else:
+        proposed_diff = str(output.get("proposed_diff") or "")
+    normalized = _normalize_unified_diff_hunk_counts(proposed_diff)
+    failures = _candidate_source_validation(
+        proposed_diff=normalized,
+        changed_files=list(output.get("changed_files") or []),
+        context_pack=context_pack,
+        sandbox_path=sandbox_path,
+    )
+    if not failures:
+        failures.extend(_strict_git_applicability(
+            proposed_diff=normalized,
+            sandbox_path=sandbox_path,
+            output_dir=output_dir,
+        ))
+    sections, parse_failures = _strict_parse_unified_diff(normalized)
+    if parse_failures:
+        failures.extend(parse_failures)
+    touched_paths = [str(section["path"]) for section in sections]
+    return normalized, failures, touched_paths
+
+
+def _post_apply_retry_contract(context_pack: RepairContextPack) -> str:
+    if int(context_pack.cycle_number or 0) < 2:
+        return ""
+    current_checksums = "\n".join(
+        f"- {context.path}: {context.content_checksum}"
+        for context in context_pack.source_contexts
+    )
+    return (
+        "\nPOST-APPLY RETRY CONTRACT:\n"
+        "PRIOR PATCH IS ALREADY APPLIED.\n"
+        "The supplied source is the current authoritative sandbox state.\n"
+        "Do not propose edits against the pre-patch source.\n"
+        "Every exact_old_text must occur exactly once in the supplied current source.\n"
+        "expected_source_sha256 must correspond to that same current source.\n"
+        f"Current source checksums:\n{current_checksums}\n"
+    )
+
+
+def _candidate_correction_prompt(
+    *,
+    context_pack: RepairContextPack,
+    candidate_diff: str,
+    failures: list[str],
+    context_checksum: str,
+    primary_checksum: str,
+    diff_checksum: str,
+) -> str:
+    retry_contract = _post_apply_retry_contract(context_pack)
+    source_excerpt = _format_authoritative_source_contexts(
+        list(context_pack.source_contexts or [])
+    )
+    diagnostics = "\n".join(f"- {_safe_diagnostic_text(failure, limit=1200)}" for failure in failures)[:6000]
+    candidate_stripped = candidate_diff.strip()
+    if not candidate_stripped:
+        correction_guidance = (
+            "CORRECTION GUIDANCE:\n"
+            "Both upstream candidates (proposer and reviewer) were technically rejected.\n"
+            "Do not attempt to repair an empty diff textually.\n"
+            "Use the supplied CURRENT_AUTHORITATIVE_SOURCE contexts below.\n"
+            "Prefer non-empty proposed_edits when authoritative bounded source context is present; use proposed_diff only as the raw-diff fallback.\n"
+            "Use minimal exact replacements from current source only.\n"
+            "Use the exact supplied per-file CURRENT_SOURCE_SHA256 values as expected_source_sha256.\n"
+            "expected_source_sha256 MUST equal the supplied CURRENT_SOURCE_SHA256 for that exact path.\n"
+            "exact_old_text MUST be copied verbatim from CURRENT_AUTHORITATIVE_SOURCE.\n"
+            "exact_old_text MUST identify exactly one current-source occurrence.\n"
+            "Never reuse one file's SHA for another file.\n"
+            "Do not use context_pack_checksum as a file checksum.\n"
+            "Leave proposed_diff empty when proposed_edits is supplied.\n\n"
+        )
+    else:
+        correction_guidance = ""
+    return (
+        "You are correcting one failed AMF-252 repair candidate. Return only JSON matching "
+        "RepairReviewerOutput.\n\n"
+        + _STRUCTURED_REPAIR_EDIT_CONTRACT
+        + "- Prefer non-empty proposed_edits when authoritative bounded source context is present; use proposed_diff only as the raw-diff fallback.\n"
+        "- path MUST identify exactly one supplied source file.\n"
+        "- expected_source_sha256 MUST equal the CURRENT_SOURCE_SHA256 for that exact file.\n"
+        "- Never reuse one file's SHA for another file.\n"
+        "- Do not use context_pack_checksum as a file checksum.\n"
+        "- exact_old_text MUST be copied verbatim from CURRENT_AUTHORITATIVE_SOURCE.\n"
+        "- exact_old_text MUST identify exactly one current-source occurrence.\n"
+        "- Leave proposed_diff empty when proposed_edits is supplied.\n"
+        "- Return minimal exact replacements only: no reconstructed whole methods, indentation/EOL/whitespace normalization, or overlapping edits.\n"
+        "- If proposed_diff is used as the fallback, every hunk MUST be contextual with at least one unchanged "
+        "space-prefixed line (prefer three where possible), never zero-context, with correct old/new counts "
+        "and exact '-'/'+'/' ' prefixes.\n\n"
+        "Do not return prose or Markdown fences. Do not use apply_patch markers. Do not invent files, "
+        "change unrelated code, invent anchors/source, or guess hunk line numbers. Preserve unrelated code.\n\n"
+        f"Context pack checksum: {context_checksum}\n"
+        f"Primary output checksum: {primary_checksum}\n"
+        f"Proposer diff checksum: {diff_checksum}\n\n"
+        f"{retry_contract}"
+        f"{correction_guidance}"
+        f"Deterministic validation failures:\n{diagnostics}\n\n"
+        f"Candidate diff (bounded):\n{candidate_diff[:12000]}\n\n"
+        f"Authoritative source context (bounded):\n{source_excerpt}\n"
+    )
+
+
 def _unusable_primary_output(reason: str, raw_content: str = "") -> dict[str, Any]:
     """Shape proposer failure as reviewer input without treating it as a final diff."""
     return {
@@ -499,6 +846,301 @@ def _looks_like_unified_diff(diff: str) -> bool:
         for line in text.splitlines()
     )
     return has_file_header and has_hunk and has_change
+
+
+def _structured_edits(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    edits: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        edits.append({
+            "path": str(item.get("path") or ""),
+            "expected_source_sha256": str(item.get("expected_source_sha256") or ""),
+            "exact_old_text": str(item.get("exact_old_text") or ""),
+            "exact_new_text": str(item.get("exact_new_text") or ""),
+        })
+    return edits
+
+
+def _source_contexts_by_path(context_pack: RepairContextPack) -> dict[str, Any]:
+    return {
+        _relative_diff_path(str(context.path)): context
+        for context in context_pack.source_contexts
+    }
+
+
+def _source_paths_from_context(context_pack: RepairContextPack) -> dict[str, str]:
+    return {
+        path: str(context.content_checksum)
+        for path, context in _source_contexts_by_path(context_pack).items()
+    }
+
+
+def _safe_source_path(sandbox_path: str | Path, relative_path: str) -> Path | None:
+    normalized = str(relative_path).replace("\\", "/")
+    if _path_errors(normalized):
+        return None
+    sandbox = Path(sandbox_path).resolve()
+    candidate = _normalize_and_check_path(normalized, sandbox, allow_absolute=False)
+    if candidate is None or not candidate.is_file():
+        return None
+    return candidate
+
+
+def _apply_structured_edits_to_shadow(
+    *,
+    edits: list[dict[str, str]],
+    sandbox_path: str | Path,
+    output_dir: Path,
+    context_pack: RepairContextPack,
+) -> tuple[str, list[str]]:
+    """Generate a canonical diff from exact replacements without touching sandbox."""
+    if not edits:
+        return "", []
+    context_checksums = _source_paths_from_context(context_pack)
+    context_sources = _source_contexts_by_path(context_pack)
+    files: dict[str, bytes] = {}
+    replacements: dict[str, list[tuple[int, int, str]]] = {}
+    failures: list[str] = []
+    for edit in edits:
+        path = str(edit.get("path") or "").replace("\\", "/")
+        source_path = _safe_source_path(sandbox_path, path)
+        if source_path is None:
+            failures.append(f"structured edit path is not a safe existing file: {path}")
+            continue
+        source_bytes = source_path.read_bytes()
+        source_checksum = hashlib.sha256(source_bytes).hexdigest()
+        expected = str(edit.get("expected_source_sha256") or "")
+        if expected != source_checksum:
+            failures.append(f"source checksum mismatch for {path}: expected {expected}, live {source_checksum}")
+        context_checksum = context_checksums.get(path)
+        if context_pack.source_contexts and context_checksum is None:
+            failures.append(f"source context is missing for {path}")
+        elif context_checksum != source_checksum:
+            failures.append(f"source context is stale for {path}: context {context_checksum}, live {source_checksum}")
+        old_text = str(edit.get("exact_old_text") or "")
+        new_text = str(edit.get("exact_new_text") or "")
+        if not old_text:
+            failures.append(f"structured edit has empty exact_old_text: {path}")
+            continue
+        context_source = context_sources.get(path)
+        if context_source is None:
+            failures.append(f"structured edit source context is missing for {path}")
+            continue
+        context_matches = str(context_source.content).count(old_text)
+        if context_matches != 1:
+            failures.append(
+                f"structured edit old text context match count for {path}: "
+                f"{context_matches} (expected 1)"
+            )
+            continue
+        try:
+            source_text = source_bytes.decode("utf-8")
+            old_bytes = old_text.encode("utf-8")
+            new_text.encode("utf-8")
+        except UnicodeDecodeError:
+            failures.append(f"structured edit source is not UTF-8: {path}")
+            continue
+        matches: list[int] = []
+        offset = source_text.find(old_text)
+        while offset >= 0:
+            matches.append(offset)
+            offset = source_text.find(old_text, offset + 1)
+        if len(matches) != 1:
+            failures.append(f"structured edit old text match count for {path}: {len(matches)} (expected 1)")
+            continue
+        start = matches[0]
+        end = start + len(old_text)
+        prior = replacements.setdefault(path, [])
+        if any(start < existing_end and existing_start < end for existing_start, existing_end, _ in prior):
+            failures.append(f"structured edits overlap for {path}")
+        prior.append((start, end, new_text))
+        files[path] = source_bytes
+
+    if failures:
+        return "", failures
+
+    with tempfile.TemporaryDirectory(prefix="repair-diff-", dir=str(output_dir)) as temp_name:
+        temp_root = Path(temp_name)
+        old_root = temp_root / "old"
+        new_root = temp_root / "new"
+        generated: list[str] = []
+        for path in sorted(files):
+            old_bytes = files[path]
+            source_text = old_bytes.decode("utf-8")
+            new_text = source_text
+            for start, end, replacement in sorted(replacements[path], reverse=True):
+                # Offsets are text offsets and are applied from right to left,
+                # so earlier offsets stay stable for Unicode source too.
+                new_text = new_text[:start] + replacement + new_text[end:]
+            new_bytes = new_text.encode("utf-8")
+            old_file = old_root / PurePosixPath(path)
+            new_file = new_root / PurePosixPath(path)
+            old_file.parent.mkdir(parents=True, exist_ok=True)
+            new_file.parent.mkdir(parents=True, exist_ok=True)
+            old_file.write_bytes(old_bytes)
+            new_file.write_bytes(new_bytes)
+            result = subprocess.run(
+                ["git", "diff", "--no-index", "--no-ext-diff", "--no-color", "--unified=3", "--", str(old_file), str(new_file)],
+                cwd=str(temp_root),
+                capture_output=True,
+                text=False,
+                check=False,
+                timeout=60,
+            )
+            if result.returncode not in {0, 1}:
+                failures.append(f"Git canonical diff generation failed for {path}: {(result.stderr or b'').decode('utf-8', 'replace')[-500:]}")
+                continue
+            if result.returncode == 0 or not result.stdout:
+                failures.append(f"structured edit produced no change for {path}")
+                continue
+            raw = result.stdout.decode("utf-8", errors="strict")
+            canonical_lines: list[str] = []
+            header_seen = 0
+            for line in raw.splitlines(keepends=True):
+                body = _line_body(line)
+                ending = line[len(body):]
+                if header_seen == 0 and body.startswith("diff --git "):
+                    canonical_lines.append(f"diff --git a/{path} b/{path}{ending}")
+                    header_seen = 1
+                elif header_seen == 1 and body.startswith("--- "):
+                    canonical_lines.append(f"--- a/{path}{ending}")
+                    header_seen = 2
+                elif header_seen == 2 and body.startswith("+++ "):
+                    canonical_lines.append(f"+++ b/{path}{ending}")
+                    header_seen = 3
+                else:
+                    canonical_lines.append(line)
+            generated.append("".join(canonical_lines))
+        if failures:
+            return "", failures
+        return "".join(generated), []
+
+
+def _candidate_source_validation(
+    *,
+    proposed_diff: str,
+    changed_files: list[Any],
+    context_pack: RepairContextPack,
+    sandbox_path: str | Path | None,
+) -> list[str]:
+    sections, failures = _strict_parse_unified_diff(proposed_diff)
+    failures.extend(_check_forbidden_paths_in_diff(proposed_diff))
+    if failures or not sections:
+        return failures
+    actual = {str(section["path"]).replace("\\", "/") for section in sections}
+    declared = {str(path).replace("\\", "/").removeprefix("a/").removeprefix("b/") for path in changed_files}
+    if actual != declared:
+        failures.append(f"changed_files do not exactly match parsed paths: declared={sorted(declared)}, actual={sorted(actual)}")
+    if sandbox_path is None:
+        return failures
+
+    context_checksums = _source_paths_from_context(context_pack)
+    matched_ranges: dict[str, list[tuple[int, int]]] = {}
+    for section in sections:
+        path = str(section["path"])
+        source_path = _safe_source_path(sandbox_path, path)
+        if source_path is None:
+            failures.append(f"candidate path is not a safe existing source file: {path}")
+            continue
+        source_bytes = source_path.read_bytes()
+        source_checksum = hashlib.sha256(source_bytes).hexdigest()
+        context_checksum = context_checksums.get(path)
+        if context_checksums and context_checksum is None:
+            failures.append(f"source context is missing for {path}")
+        elif context_checksum != source_checksum:
+            failures.append(f"source context checksum mismatch for {path}: context {context_checksum}, live {source_checksum}")
+        try:
+            source_lines = source_bytes.decode("utf-8").splitlines()
+        except UnicodeDecodeError:
+            failures.append(f"candidate source is not UTF-8: {path}")
+            continue
+        ranges = matched_ranges.setdefault(path, [])
+        for hunk in section["hunks"]:
+            old_lines = [line[1:] for line in hunk["body"] if line.startswith((" ", "-"))]
+            if not any(line.startswith(" ") for line in hunk["body"]):
+                failures.append(
+                    f"zero-context hunk rejected for {path} {hunk['header']}: "
+                    "every changed hunk must contain unchanged context"
+                )
+            if not old_lines:
+                insertion_index = max(0, min(len(source_lines), int(hunk["old_start"])))
+                matches = [insertion_index]
+            else:
+                matches = [
+                    index for index in range(0, len(source_lines) - len(old_lines) + 1)
+                    if source_lines[index:index + len(old_lines)] == old_lines
+                ]
+            if len(matches) != 1:
+                failures.append(
+                    f"exact preimage match count for {path} {hunk['header']}: {len(matches)}; "
+                    f"source checksum={source_checksum}"
+                )
+                continue
+            start = matches[0]
+            end = start + len(old_lines)
+            expected_start = start if not old_lines else start + 1
+            if int(hunk["old_start"]) != expected_start:
+                failures.append(
+                    f"hunk line anchor does not match unique preimage for {path} {hunk['header']}: "
+                    f"header={hunk['old_start']}, expected={expected_start}"
+                )
+            if any(start < prior_end and prior_start < end for prior_start, prior_end in ranges):
+                failures.append(f"overlapping hunk preimages for {path} {hunk['header']}")
+            ranges.append((start, end))
+            new_lines = [line[1:] for line in hunk["body"] if line.startswith((" ", "+"))]
+            tail = source_lines[end:]
+            max_overlap = min(len(new_lines), len(tail))
+            overlap = 0
+            for size in range(max_overlap, 1, -1):
+                if new_lines[-size:] == tail[:size]:
+                    overlap = size
+                    break
+            if overlap >= 2 and (overlap >= 3 or overlap * 2 >= max(1, len(new_lines))):
+                failures.append(
+                    f"duplicate-tail overlap for {path} {hunk['header']}: {overlap} inserted lines "
+                    "duplicate the untouched source tail"
+                )
+    return failures
+
+
+def _strict_git_applicability(
+    *,
+    proposed_diff: str,
+    sandbox_path: str | Path | None,
+    output_dir: Path,
+) -> list[str]:
+    if sandbox_path is None:
+        return []
+    patch_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", suffix=".diff", prefix="candidate-", dir=str(output_dir), delete=False
+        ) as handle:
+            patch_path = Path(handle.name)
+            patch_bytes = proposed_diff.encode("utf-8")
+            if not patch_bytes.endswith((b"\n", b"\r")):
+                patch_bytes += b"\n"
+            handle.write(patch_bytes)
+        result = subprocess.run(
+            ["git", "apply", "--check", str(patch_path)],
+            cwd=str(Path(sandbox_path).resolve()),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        if result.returncode:
+            detail = (result.stderr or result.stdout or "git apply --check failed").strip()
+            return [f"strict Git applicability failed: {detail[-1000:]}"]
+        return []
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return [f"strict Git applicability execution failed: {type(exc).__name__}"]
+    finally:
+        if patch_path is not None:
+            patch_path.unlink(missing_ok=True)
 
 
 def _check_forbidden_paths_in_diff(diff: str) -> list[str]:
@@ -680,11 +1322,115 @@ def _persist_proposer_diagnostic(
     return path
 
 
+def _persist_correction_diagnostic(
+    *,
+    output_dir: Path,
+    raw_content: str,
+    schema_name: str,
+    validation_failures: list[str],
+    coerced_output: dict[str, Any] | None,
+    context_checksums: dict[str, str],
+    technical_validation_passed: bool,
+    finish_reason: Any = None,
+    response_format: Any = None,
+    model_metadata: dict[str, Any] | None = None,
+) -> Path:
+    """Persist a safe diagnostic artifact when correction fails.
+
+    Follows the same redaction policy as _persist_proposer_diagnostic.
+    exact_old_text / exact_new_text values are never persisted (lengths only).
+    """
+    parsed_json: dict[str, Any] = coerced_output or {}
+    if coerced_output is None and raw_content.strip():
+        try:
+            parsed_json = json.loads(raw_content)
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    proposed_diff = str(parsed_json.get("proposed_diff") or "")
+    proposed_diff_preview = _safe_diagnostic_text(proposed_diff) if proposed_diff else ""
+    for pattern in (
+        "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
+        "-----BEGIN", "bearer ", "Bearer ",
+    ):
+        if pattern in proposed_diff_preview:
+            proposed_diff_preview = "[REDACTED - pattern detected]"
+
+    normalized_diff = proposed_diff.lstrip()
+    if not proposed_diff.strip():
+        proposed_diff_format = "empty"
+    elif normalized_diff.startswith("diff --git"):
+        proposed_diff_format = "git_unified_diff"
+    elif normalized_diff.startswith("*** Begin Patch"):
+        proposed_diff_format = "apply_patch"
+    elif "```" in proposed_diff:
+        proposed_diff_format = "markdown_fenced"
+    else:
+        proposed_diff_format = "unknown"
+
+    safe_preview = _safe_diagnostic_text(raw_content) if raw_content else ""
+    for pattern in (
+        "ghp_", "gho_", "ghu_", "ghs_", "ghr_",
+        "-----BEGIN", "bearer ", "Bearer ",
+    ):
+        if pattern in safe_preview:
+            safe_preview = "[REDACTED - pattern detected]"
+
+    raw_edits = parsed_json.get("proposed_edits") if isinstance(parsed_json, dict) else None
+    structured_edits = _structured_edits(raw_edits)
+    sanitized_edits: list[dict[str, Any]] = []
+    expected_source_sha256_values: list[str] = []
+    for edit in structured_edits:
+        sanitized = {
+            "path": edit.get("path", ""),
+            "expected_source_sha256": edit.get("expected_source_sha256", ""),
+            "exact_old_text_length": len(edit.get("exact_old_text", "")),
+            "exact_new_text_length": len(edit.get("exact_new_text", "")),
+        }
+        sanitized_edits.append(sanitized)
+        if edit.get("expected_source_sha256"):
+            expected_source_sha256_values.append(edit["expected_source_sha256"])
+
+    decision = str(parsed_json.get("decision") or "") if isinstance(parsed_json, dict) else ""
+
+    diagnostic: dict[str, Any] = {
+        "diagnostic_kind": "correction_validation_failure",
+        "role": "reviewer_correction",
+        "responsibility": "repair_correction",
+        "schema_name": schema_name,
+        "validation_failures": validation_failures,
+        "raw_content_preview": safe_preview,
+        "proposed_diff_preview": proposed_diff_preview,
+        "proposed_diff_length": len(proposed_diff),
+        "proposed_diff_checksum": hashlib.sha256(proposed_diff.encode("utf-8")).hexdigest() if proposed_diff else "",
+        "proposed_diff_format": proposed_diff_format,
+        "has_diff_git": normalized_diff.startswith("diff --git"),
+        "has_old_file_marker": "--- a/" in proposed_diff or "--- " in proposed_diff,
+        "has_new_file_marker": "+++ b/" in proposed_diff or "+++ " in proposed_diff,
+        "has_hunk_marker": "@@" in proposed_diff,
+        "has_apply_patch_begin": "*** Begin Patch" in proposed_diff,
+        "has_apply_patch_update_file": "*** Update File:" in proposed_diff,
+        "proposed_edits": sanitized_edits,
+        "reviewer_decision": decision,
+        "expected_source_sha256_values": expected_source_sha256_values,
+        "context_checksums": context_checksums,
+        "technical_validation_passed": technical_validation_passed,
+        "finish_reason": str(finish_reason) if finish_reason is not None else "",
+        "response_format_used": str(response_format) if response_format is not None else "",
+        "model_metadata": model_metadata or {},
+        "created_at": utc_now_text(),
+    }
+    path = output_dir / "correction_repair_llm_output.json"
+    _write_json(path, diagnostic)
+    return path
+
+
 def produce_repair_review_chain(
     *,
     failure_evidence: FailureEvidence,
     context_pack: RepairContextPack,
     output_dir: Path,
+    sandbox_path: str | Path | None = None,
     source_profile: str = "",
     target_profile: str = "",
     model_client: V2AssistantModelClient | None = None,
@@ -813,6 +1559,20 @@ def produce_repair_review_chain(
             fallback_used=fallback_used_primary,
         )
 
+    primary_candidate_diff = ""
+    primary_candidate_failures: list[str] = list(primary_failures)
+    if not primary_candidate_failures:
+        primary_candidate_diff, candidate_failures, candidate_paths = _validate_model_candidate(
+            output=primary_output,
+            role="proposer",
+            context_pack=context_pack,
+            sandbox_path=sandbox_path,
+            output_dir=output_dir,
+        )
+        primary_candidate_failures.extend(candidate_failures)
+        if not primary_candidate_failures and primary_candidate_diff:
+            primary_output["proposed_diff"] = primary_candidate_diff
+            primary_output["changed_files"] = candidate_paths
     primary_checksum = _compute_primary_repair_checksum(primary_output)
     primary_output["output_checksum"] = primary_checksum
     primary_path = output_dir / "primary_repair_llm_output.json"
@@ -888,13 +1648,18 @@ def produce_repair_review_chain(
             if checksum_failures:
                 reviewer_reason = "; ".join(checksum_failures)
             else:
-                reviewer_failures = _validate_candidate_diff(
-                    proposed_diff=str(reviewer_output.get("proposed_diff") or ""),
-                    changed_files=list(reviewer_output.get("changed_files") or []),
+                reviewer_candidate_diff, reviewer_failures, reviewer_paths = _validate_model_candidate(
+                    output=reviewer_output,
                     role="reviewer",
+                    context_pack=context_pack,
+                    sandbox_path=sandbox_path,
+                    output_dir=output_dir,
                 )
                 if reviewer_failures:
                     reviewer_reason = "; ".join(reviewer_failures)
+                else:
+                    reviewer_output["proposed_diff"] = reviewer_candidate_diff
+                    reviewer_output["changed_files"] = reviewer_paths
         except RepairReviewChainProductionError as exc:
             reviewer_reason = _safe_diagnostic_text(str(exc))
     reviewer_output["usability_reason"] = reviewer_reason
@@ -906,11 +1671,7 @@ def produce_repair_review_chain(
         _write_json(reviewer_path, reviewer_output)
 
     proposer_diff = str(primary_output.get("proposed_diff") or "")
-    proposer_failures = _validate_candidate_diff(
-        proposed_diff=proposer_diff,
-        changed_files=list(primary_output.get("changed_files") or []),
-        role="proposer",
-    )
+    proposer_failures = list(primary_candidate_failures)
     proposer_reason = "; ".join(proposer_failures)
     primary_output["usability_reason"] = proposer_reason
     final_diff = str(reviewer_output.get("proposed_diff") or "") if not reviewer_reason else ""
@@ -923,8 +1684,144 @@ def produce_repair_review_chain(
         if final_diff_source == "reviewer"
         else list(primary_output.get("changed_files") or [])
     )
+    correction_attempts = 0
+    final_failures = _candidate_source_validation(
+        proposed_diff=final_diff,
+        changed_files=selected_changed_files,
+        context_pack=context_pack,
+        sandbox_path=sandbox_path,
+    ) if final_diff else ["no candidate diff available for final validation"]
+    if not final_failures and final_diff:
+        final_failures.extend(_strict_git_applicability(
+            proposed_diff=final_diff,
+            sandbox_path=sandbox_path,
+            output_dir=output_dir,
+        ))
+
+    if final_failures:
+        correction_attempts = 1
+        correction_result = client.answer_with_role(
+            role=V2ModelRole.REVIEWER,
+            prompt=_candidate_correction_prompt(
+                context_pack=context_pack,
+                candidate_diff=final_diff,
+                failures=final_failures,
+                context_checksum=context_checksum,
+                primary_checksum=primary_checksum,
+                diff_checksum=diff_checksum,
+            ),
+            fallback="Corrective repair model unavailable; reviewed repair cannot be produced.",
+            output_schema_name="RepairReviewerOutput",
+            require_schema=True,
+        )
+        correction_finish = getattr(correction_result, "finish_reason", None)
+        correction_format = getattr(correction_result, "response_format_used", None)
+        correction_meta = {
+            "source": getattr(correction_result, "source", ""),
+            "model_status": getattr(correction_result, "model_status", ""),
+            "provider": getattr(correction_result, "provider", ""),
+            "role": getattr(correction_result, "role", ""),
+            "configured_max_input_tokens": getattr(correction_result, "configured_max_input_tokens", 0),
+            "configured_max_output_tokens": getattr(correction_result, "configured_max_output_tokens", 0),
+            "response_format_used": getattr(correction_result, "response_format_used", ""),
+        }
+        if correction_result.success:
+            try:
+                corrected_output = _coerce_reviewer_repair_output(
+                    correction_result.content,
+                    deterministic_checksum,
+                    context_checksum,
+                    primary_checksum,
+                    diff_checksum,
+                )
+                checksum_failures = []
+                if corrected_output["reviewed_context_checksum"] != context_checksum:
+                    checksum_failures.append("correction context checksum mismatch")
+                if corrected_output["reviewed_primary_output_checksum"] != primary_checksum:
+                    checksum_failures.append("correction primary checksum mismatch")
+                if corrected_output["reviewed_diff_checksum"] != diff_checksum:
+                    checksum_failures.append("correction proposer-diff checksum mismatch")
+                corrected_diff, corrected_failures, corrected_paths = _validate_model_candidate(
+                    output=corrected_output,
+                    role="reviewer correction",
+                    context_pack=context_pack,
+                    sandbox_path=sandbox_path,
+                    output_dir=output_dir,
+                )
+                final_failures = checksum_failures + corrected_failures
+                if not final_failures:
+                    corrected_output["proposed_diff"] = corrected_diff
+                    corrected_output["changed_files"] = corrected_paths
+                    reviewer_output = corrected_output
+                    reviewer_reason = ""
+                    reviewer_checksum = _compute_reviewer_repair_checksum(reviewer_output)
+                    reviewer_output["output_checksum"] = reviewer_checksum
+                    final_diff = corrected_diff
+                    final_diff_source = "reviewer_correction"
+                    selected_changed_files = corrected_paths
+                else:
+                    _persist_correction_diagnostic(
+                        output_dir=output_dir,
+                        raw_content=correction_result.content,
+                        schema_name="RepairReviewerOutput",
+                        validation_failures=final_failures,
+                        coerced_output=corrected_output,
+                        context_checksums={
+                            "context_pack_checksum": context_checksum,
+                            "primary_checksum": primary_checksum,
+                            "diff_checksum": diff_checksum,
+                        },
+                        technical_validation_passed=False,
+                        finish_reason=correction_finish,
+                        response_format=correction_format,
+                        model_metadata=correction_meta,
+                    )
+            except RepairReviewChainProductionError as exc:
+                final_failures = [_safe_diagnostic_text(str(exc))]
+                _persist_correction_diagnostic(
+                    output_dir=output_dir,
+                    raw_content=correction_result.content,
+                    schema_name="RepairReviewerOutput",
+                    validation_failures=final_failures,
+                    coerced_output=None,
+                    context_checksums={
+                        "context_pack_checksum": context_checksum,
+                        "primary_checksum": primary_checksum,
+                        "diff_checksum": diff_checksum,
+                    },
+                    technical_validation_passed=False,
+                    finish_reason=correction_finish,
+                    response_format=correction_format,
+                    model_metadata=correction_meta,
+                )
+        else:
+            final_failures = [
+                f"correction reviewer unavailable: {correction_result.failure_reason or correction_result.model_status}"
+            ]
+            _persist_correction_diagnostic(
+                output_dir=output_dir,
+                raw_content=correction_result.content,
+                schema_name="RepairReviewerOutput",
+                validation_failures=final_failures,
+                coerced_output=None,
+                context_checksums={
+                    "context_pack_checksum": context_checksum,
+                    "primary_checksum": primary_checksum,
+                    "diff_checksum": diff_checksum,
+                },
+                technical_validation_passed=False,
+                finish_reason=correction_finish,
+                response_format=correction_format,
+                model_metadata=correction_meta,
+            )
+
     if not final_diff:
-        generation_reason = "; ".join(filter(None, [proposer_reason, reviewer_reason, "no technically usable final diff"]))
+        generation_reason = "; ".join(filter(None, [
+            proposer_reason,
+            reviewer_reason,
+            "; ".join(final_failures),
+            "no technically usable final diff",
+        ]))
         return {"artifact_refs": {
             "deterministic_artifact": str(deterministic_path),
             "primary_llm_output": str(primary_path),
@@ -936,10 +1833,34 @@ def produce_repair_review_chain(
             "reviewer_usability_reason": reviewer_reason,
             "proposer_diff_usable": not bool(proposer_reason),
             "reviewer_diff_usable": not bool(reviewer_reason) and bool(reviewer_output.get("proposed_diff")),
+            "correction_attempts": correction_attempts,
+            "final_validation_failures": final_failures,
             "reviewer_output_checksum": reviewer_checksum,
             "final_diff_source": "", "final_diff_ref": "",
             "model_roles": {"proposer": _safe_model_role_status(primary_result), "reviewer": _safe_model_role_status(reviewer_result)},
         }}
+    if final_failures:
+        return {"artifact_refs": {
+            "deterministic_artifact": str(deterministic_path),
+            "primary_llm_output": str(primary_path),
+            "reviewer_llm_output": str(reviewer_path) if reviewer_output else "",
+        }, "review_chain": {
+            "generation_status": "repair_generation_failed",
+            "generation_failure_reason": "; ".join(final_failures),
+            "proposer_usability_reason": proposer_reason,
+            "reviewer_usability_reason": reviewer_reason,
+            "proposer_diff_usable": not bool(proposer_reason),
+            "reviewer_diff_usable": not bool(reviewer_reason) and bool(reviewer_output.get("proposed_diff")),
+            "correction_attempts": correction_attempts,
+            "final_validation_failures": final_failures,
+            "reviewer_output_checksum": reviewer_checksum,
+            "final_diff_source": "", "final_diff_ref": "",
+            "model_roles": {"proposer": _safe_model_role_status(primary_result), "reviewer": _safe_model_role_status(reviewer_result)},
+        }}
+    if not final_diff.endswith(("\n", "\r")):
+        final_diff += "\n"
+    if reviewer_output:
+        _write_json(reviewer_path, reviewer_output)
     selected_diff_checksum = sha256_canonical_json({"unified_diff": final_diff})
 
     final_artifact = _build_final_reviewed_repair_artifact(
@@ -978,6 +1899,8 @@ def produce_repair_review_chain(
         "reviewer_usability_reason": reviewer_reason,
         "proposer_diff_usable": not bool(proposer_reason),
         "reviewer_diff_usable": not bool(reviewer_reason) and bool(reviewer_output.get("proposed_diff")),
+        "correction_attempts": correction_attempts,
+        "final_validation_failures": final_failures,
         "job_id": context_pack.job_id,
         "stage_index": context_pack.stage_index,
         "deterministic_rule_id": str(final_artifact.get("deterministic_rule_id", "")),

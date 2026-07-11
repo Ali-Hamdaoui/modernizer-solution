@@ -18,6 +18,12 @@ from migration_factory.control_tower.application.redaction import (
     redact_model_summary,
     redact_public_value,
 )
+from migration_factory.control_tower.application.execution_environment import (
+    MANIFEST_ENV_KEYS,
+    SAFE_ENV_KEYS,
+    decode_environment_manifest,
+    materialize_execution_environment,
+)
 from migration_factory.control_tower.application.v2_approval_mapping import V2ApprovalMappingService
 from migration_factory.control_tower.application.v2_gate_action_service import V2GateActionService
 from migration_factory.control_tower.application.v2_phase_gate_service import V2PhaseGateService
@@ -54,30 +60,8 @@ _EVENT_PREFIX = "CONTROL_TOWER_EVENT "
 _FINAL_JSON_PREFIX = "CONTROL_TOWER_FINAL_JSON "
 _MAX_TEXT = 4096
 
-_SAFE_ENV_KEYS = (
-    "COMSPEC",
-    "HOME",
-    "LOCALAPPDATA",
-    "PATH",
-    "PATHEXT",
-    "PROGRAMDATA",
-    "PROGRAMFILES",
-    "PROGRAMFILES(X86)",
-    "SYSTEMDRIVE",
-    "SYSTEMROOT",
-    "TEMP",
-    "TMP",
-    "USERPROFILE",
-    "WINDIR",
-)
-
-_MANIFEST_ENV_KEYS = (
-    "JAVA_HOME",
-    "JAVA11_HOME",
-    "JAVA17_HOME",
-    "JAVA21_HOME",
-    "MAVEN_CMD",
-)
+_SAFE_ENV_KEYS = SAFE_ENV_KEYS
+_MANIFEST_ENV_KEYS = MANIFEST_ENV_KEYS
 
 _SECRET_ENV_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "AUTHORIZATION")
 
@@ -259,6 +243,19 @@ class V2OrchestratorRunner:
                     argv = _load_json_list(resume.command_json)
                     stage_index = resume.stage_index
                     env_manifest = _load_env_manifest_for_stage(uow, job_id, stage_index)
+                    authoritative_command = _resolve_original_stage_command_for_resume(
+                        uow,
+                        job_id=job_id,
+                        stage_index=stage_index,
+                    )
+                    if authoritative_command is None:
+                        rejected = _ResumeValidationResult(
+                            False,
+                            "missing_original_stage_command_metadata",
+                            stage_index,
+                        )
+                    else:
+                        authoritative_command_id = authoritative_command.command_id
         except sqlite3.OperationalError as exc:
             if _is_sqlite_locked_error(exc):
                 return V2OrchestratorStart(
@@ -293,11 +290,12 @@ class V2OrchestratorRunner:
             target=self._run_process,
             kwargs={
                 "job_id": job_id,
-                "command_id": resume_id,
+                "command_id": authoritative_command_id,
                 "stage_index": stage_index,
                 "argv": argv,
                 "env_manifest": env_manifest,
                 "resume": True,
+                "resume_id": resume_id,
             },
             name=f"v2-orchestrator-resume-{resume_id[:8]}",
             daemon=True,
@@ -322,26 +320,36 @@ class V2OrchestratorRunner:
         argv: list[str],
         env_manifest: dict[str, Any],
         resume: bool = False,
+        resume_id: str | None = None,
         command_phase: str | None = None,
     ) -> None:
         if resume:
+            resume_payload = {"command_id": command_id}
+            if resume_id:
+                resume_payload["resume_id"] = resume_id
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="approval_started",
                 status="running",
                 message="Approval accepted; orchestrator resume process starting.",
-                payload={"command_id": command_id},
+                payload=resume_payload,
             )
 
+        start_payload = {"command_id": command_id}
+        if resume_id:
+            start_payload["resume_id"] = resume_id
         self._event(
             job_id=job_id,
             stage=stage_index,
             event_type="resume_started" if resume else "stage_started",
             status="running",
             message=f"Stage {stage_index} real orchestrator {'resume ' if resume else ''}started.",
-            payload={"command_id": command_id},
+            payload=start_payload,
         )
+        command_payload = {"command_id": command_id, "shell": False, "cwd": str(self._cwd)}
+        if resume_id:
+            command_payload["resume_id"] = resume_id
         self._event(
             job_id=job_id,
             stage=stage_index,
@@ -352,7 +360,7 @@ class V2OrchestratorRunner:
                 if resume
                 else "Backend-owned orchestrator manifest launched."
             ),
-            payload={"command_id": command_id, "shell": False, "cwd": str(self._cwd)},
+            payload=command_payload,
         )
 
         stdout_lines: list[str] = []
@@ -2221,25 +2229,7 @@ def _normalized_argv(argv: list[str]) -> list[str]:
 
 
 def _build_env(manifest: dict[str, Any]) -> dict[str, str]:
-    env = {
-        key: value
-        for key in _SAFE_ENV_KEYS
-        if (value := os.environ.get(key)) is not None
-    }
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[3])
-
-    for key in _MANIFEST_ENV_KEYS:
-        value = manifest.get(key)
-        if isinstance(value, str) and value:
-            env[key] = value
-
-    path_prepend = manifest.get("PATH_PREPEND")
-    if isinstance(path_prepend, str) and path_prepend:
-        current_path = env.get("PATH", "")
-        env["PATH"] = path_prepend + (os.pathsep + current_path if current_path else "")
-
-    env["AI_MIGRATION_CONTROL_TOWER_EVENTS"] = "jsonl"
-    return env
+    return materialize_execution_environment(manifest)
 
 
 def _is_secret_env_key(key: str) -> bool:
@@ -2255,10 +2245,7 @@ def _load_json_list(text: str) -> list[str]:
 
 
 def _load_json_dict(text: str) -> dict[str, Any]:
-    value = json.loads(text or "{}")
-    if not isinstance(value, dict):
-        raise ValueError("Persisted env_json must be an object")
-    return value
+    return decode_environment_manifest(text)
 
 
 def _load_env_manifest_for_stage(uow: Any, job_id: str, stage_index: int) -> dict[str, Any]:
