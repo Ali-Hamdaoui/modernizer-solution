@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -17,6 +18,7 @@ from migration_factory.control_tower.application.v2_stage_progression import (
     TERMINAL_STAGE_INDEX,
 )
 from migration_factory.control_tower.domain.entities import ArtifactRecord
+from migration_factory.control_tower.domain.errors import StorageIntegrityError
 from migration_factory.final_report.pdf_writer import write_text_pdf_from_markdown
 
 UnitOfWorkFactory = Callable[[], Any]
@@ -81,7 +83,7 @@ class V2FinalReportService:
                 raise ValueError(f"V2 job {job_id!r} not found")
 
             eligibility = self._evaluate_eligibility(uow, job_id, job=job)
-            artifacts = self._load_report_artifacts(uow, job_id)
+            artifacts = self._load_report_artifacts(uow, job_id, job=job)
 
             status = "not_generated"
             generated_at = None
@@ -137,7 +139,7 @@ class V2FinalReportService:
                 )
 
             # Idempotency: return existing artifacts if already generated
-            existing = self._load_report_artifacts(uow, job_id)
+            existing = self._load_report_artifacts(uow, job_id, job=job)
             if existing:
                 return V2FinalReportResult(
                     job_id=job_id,
@@ -182,6 +184,22 @@ class V2FinalReportService:
                     for a in artifacts
                 ),
             )
+
+    def resolve_report_artifact(
+        self,
+        job_id: str,
+        artifact_id: str,
+    ) -> "_ArtifactSnapshot":
+        with self._uow_factory() as uow:
+            job = uow.v2_jobs.get(job_id) if hasattr(uow, "v2_jobs") else None
+            if job is None:
+                raise ValueError(f"V2 job {job_id!r} not found")
+
+            for artifact in self._load_report_artifacts(uow, job_id, job=job):
+                if artifact.artifact_id == artifact_id:
+                    return artifact
+
+        raise LookupError(f"V2 report artifact {artifact_id!r} not found")
 
     def _evaluate_eligibility(
         self,
@@ -247,6 +265,8 @@ class V2FinalReportService:
         self,
         uow: Any,
         job_id: str,
+        *,
+        job: Any | None = None,
     ) -> list[_ArtifactSnapshot]:
         snapshots: list[_ArtifactSnapshot] = []
         if hasattr(uow, "artifacts") and hasattr(uow.artifacts, "list_for_job"):
@@ -268,8 +288,11 @@ class V2FinalReportService:
                     download_url=f"/v1/v2/jobs/{job_id}/report-artifacts/{rec.artifact_id}/download",
                     generated_at=rec.created_at,
                     input_checksum=rec.checksum,
+                    file_path=Path(str(rec.relative_path)),
                 ))
-        return snapshots
+        if snapshots:
+            return snapshots
+        return self._load_filesystem_report_artifacts(uow, job_id, job=job)
 
     def _generate_report_artifacts(
         self,
@@ -306,7 +329,7 @@ class V2FinalReportService:
         input_checksum = _compute_report_input_checksum(uow, job)
 
         # Idempotency: check if artifacts with same input checksum already exist
-        existing = self._load_report_artifacts(uow, job_id)
+        existing = self._load_report_artifacts(uow, job_id, job=job)
         if existing:
             return existing
 
@@ -360,20 +383,59 @@ class V2FinalReportService:
                 created_at=created_at,
                 created_by=_ARTIFACT_CREATED_BY,
             )
-            uow.artifacts.insert(artifact_record)
-            download_url = f"/v1/v2/jobs/{job_id}/report-artifacts/{artifact_id}/download"
-            result.append(_ArtifactSnapshot(
-                artifact_id=artifact_id,
+            snapshot = _snapshot_from_report_file(
+                path=path,
+                job_id=job_id,
                 kind=kind,
+                content_type=content_type,
                 checksum_sha256=sha256,
                 size_bytes=size,
-                content_type=content_type,
-                download_url=download_url,
                 generated_at=created_at,
                 input_checksum=input_checksum,
-            ))
+            )
+            if hasattr(uow, "artifacts") and hasattr(uow.artifacts, "insert"):
+                try:
+                    uow.artifacts.insert(artifact_record)
+                    snapshot = _ArtifactSnapshot(
+                        artifact_id=artifact_id,
+                        kind=kind,
+                        checksum_sha256=sha256,
+                        size_bytes=size,
+                        content_type=content_type,
+                        download_url=f"/v1/v2/jobs/{job_id}/report-artifacts/{artifact_id}/download",
+                        generated_at=created_at,
+                        input_checksum=input_checksum,
+                        file_path=path,
+                    )
+                except StorageIntegrityError as exc:
+                    if not _is_legacy_artifact_fk_failure(exc):
+                        raise
+            result.append(snapshot)
 
         return result
+
+    def _load_filesystem_report_artifacts(
+        self,
+        uow: Any,
+        job_id: str,
+        *,
+        job: Any | None = None,
+    ) -> list["_ArtifactSnapshot"]:
+        for report_dir in _candidate_report_dirs(uow, job_id, job=job):
+            snapshots: list[_ArtifactSnapshot] = []
+            for filename, kind, content_type in _REPORT_FILE_SPECS:
+                path = report_dir / filename
+                if not path.is_file():
+                    continue
+                snapshots.append(_snapshot_from_report_file(
+                    path=path,
+                    job_id=job_id,
+                    kind=kind,
+                    content_type=content_type,
+                ))
+            if len(snapshots) == len(_REPORT_FILE_SPECS):
+                return snapshots
+        return []
 
 
 @dataclass
@@ -386,6 +448,91 @@ class _ArtifactSnapshot:
     download_url: str
     generated_at: str | None = None
     input_checksum: str | None = None
+    file_path: Path | None = None
+
+
+_REPORT_FILE_SPECS = (
+    ("detailed_migration_report_v2.json", "final_report_json", "application/json"),
+    ("detailed_migration_report_v2.md", "final_report_markdown", "text/markdown"),
+    ("detailed_migration_report_v2.pdf", "final_report_pdf", "application/pdf"),
+)
+
+
+def _candidate_report_dirs(
+    uow: Any,
+    job_id: str,
+    *,
+    job: Any | None = None,
+) -> tuple[Path, ...]:
+    candidates: list[Path] = []
+    if job is not None and hasattr(uow, "v2_commands"):
+        try:
+            terminal_stage = terminal_stage_for_job(uow, job)
+            commands = uow.v2_commands.list_by_job_and_stage(job_id, terminal_stage)
+        except Exception:
+            commands = ()
+        if commands and getattr(commands[0], "result_json", None):
+            try:
+                state = json.loads(commands[0].result_json)
+            except (json.JSONDecodeError, TypeError):
+                state = {}
+            if isinstance(state, dict) and state.get("sandbox_path"):
+                candidates.append(Path(str(state["sandbox_path"])) / "final")
+    candidates.append(Path("reports") / job_id)
+
+    deduped: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate.resolve()) if candidate.exists() else str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return tuple(deduped)
+
+
+def _snapshot_from_report_file(
+    *,
+    path: Path,
+    job_id: str,
+    kind: str,
+    content_type: str,
+    checksum_sha256: str | None = None,
+    size_bytes: int | None = None,
+    generated_at: str | None = None,
+    input_checksum: str | None = None,
+) -> _ArtifactSnapshot:
+    if checksum_sha256 is None:
+        checksum_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    if size_bytes is None:
+        size_bytes = path.stat().st_size
+    if generated_at is None:
+        generated_at = _mtime_text(path)
+    artifact_id = f"report-{kind}-{checksum_sha256[:12]}"
+    return _ArtifactSnapshot(
+        artifact_id=artifact_id,
+        kind=kind,
+        checksum_sha256=checksum_sha256,
+        size_bytes=size_bytes,
+        content_type=content_type,
+        download_url=f"/v1/v2/jobs/{job_id}/report-artifacts/{artifact_id}/download",
+        generated_at=generated_at,
+        input_checksum=input_checksum or checksum_sha256,
+        file_path=path,
+    )
+
+
+def _mtime_text(path: Path) -> str:
+    return (
+        datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _is_legacy_artifact_fk_failure(exc: StorageIntegrityError) -> bool:
+    return "FOREIGN KEY constraint failed" in str(exc)
 
 
 def _looks_like_success(result: dict[str, Any]) -> bool:

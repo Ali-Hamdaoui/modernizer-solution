@@ -38,6 +38,7 @@ _IGNORED_DIRECTORY_NAMES = frozenset({
     "coverage",
     "dist",
     "node_modules",
+    ".migration",
     "out",
     "target",
 })
@@ -140,6 +141,8 @@ def render_detailed_report_markdown(report: dict[str, Any]) -> str:
             f"This migration moved the application from **{summary.get('source', 'not captured')}** "
             f"to **{summary.get('target', 'not captured')}**."
         ),
+        "",
+        "### Key Metrics",
         "",
         "| Metric | Value |",
         "|---|---|",
@@ -473,9 +476,9 @@ def _stage_reports(
         stage_commands = commands.get(stage_index, [])
         command = _preferred_command(stage_commands)
         result = _json_object(getattr(command, "result_json", None)) if command is not None else {}
-        output_path = _result_output_path(result)
         stage_events = [event for event in events if getattr(event, "stage", None) == stage_index]
         duration = _stage_duration_seconds(command, result, stage_events)
+        output_path = _stage_output_path(result, stage_events)
         metrics = _extract_change_metrics(result)
         if metrics is None:
             metrics = _compare_source_trees(current_source_path, output_path)
@@ -709,13 +712,15 @@ def _narrative_prompt(facts: dict[str, Any]) -> str:
         "event_counts": facts.get("event_counts"),
     }
     return (
-        "Write the 'Migration Story' section of a detailed engineering migration report. "
-        "Use only the evidence in the JSON below. Describe the journey chronologically, "
-        "the important technical work in each included stage, validation outcomes, repairs "
-        "or approvals, timing, and line-change impact. Do not mention excluded migrations as "
-        "if they ran. Never invent missing facts; say 'not captured' when needed. Do not expose "
-        "paths, environment variables, commands, endpoints, deployment names, secrets, or raw "
-        "model prompts. Return 4-8 concise Markdown paragraphs with no top-level heading.\n\n"
+        "Write the 'Migration Story' section of a polished engineering migration report for "
+        "technical leaders and delivery stakeholders. Use only the evidence in the JSON below. "
+        "Write clear, well-structured paragraphs that explain the migration journey "
+        "chronologically: scope, stage-by-stage technical work, validation outcomes, repairs or "
+        "approvals, timing, and line-change impact. Emphasize what changed, how it was validated, "
+        "and what limitations remain. Do not mention excluded migrations as if they ran. Never "
+        "invent missing facts; say 'not captured' when needed. Do not expose paths, environment "
+        "variables, commands, endpoints, deployment names, secrets, or raw model prompts. Return "
+        "5-8 concise Markdown paragraphs with no top-level heading, no table, and no bullet list.\n\n"
         + json.dumps(narrative_facts, sort_keys=True)
     )
 
@@ -825,6 +830,54 @@ def _test_totals(result: dict[str, Any]) -> dict[str, int]:
         "skipped": _int_value(raw.get("skipped")),
     }
 
+
+def _event_payload(event: Any) -> dict[str, Any]:
+    payload = getattr(event, "payload", None)
+    if isinstance(payload, dict):
+        return payload
+    payload_json = getattr(event, "payload_json", None)
+    if isinstance(payload_json, dict):
+        return payload_json
+    if isinstance(payload_json, str) and payload_json.strip():
+        try:
+            parsed = json.loads(payload_json)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+def _stage_output_path(result: dict[str, Any], events: list[Any]) -> Path | None:
+    path = _result_output_path(result)
+    if path is not None:
+        return path
+    for event in reversed(events):
+        if not _is_output_event(event):
+            continue
+        payload = _event_payload(event)
+        for key in ("sandbox_path", "modernized_app_path", "output_app_path"):
+            path = _safe_path_value(payload.get(key))
+            if path is not None:
+                return path
+        if str(payload.get("artifact_kind") or "") == "sandbox":
+            path = _safe_path_value(payload.get("relative_path") or payload.get("path"))
+            if path is not None:
+                return path
+        refs = payload.get("artifact_refs")
+        if isinstance(refs, dict):
+            for key in ("sandbox", "sandbox_path", "modernized_app", "modernized_app_path"):
+                path = _safe_path_value(refs.get(key))
+                if path is not None:
+                    return path
+    return None
+
+def _is_output_event(event: Any) -> bool:
+    event_type = str(getattr(event, "type", "") or "")
+    if event_type in {"stage_completed", "sandbox_transform_completed"}:
+        return True
+    if event_type != "artifact_written":
+        return False
+    payload = _event_payload(event)
+    return str(payload.get("artifact_kind") or "") == "sandbox"
 
 def _result_output_path(result: dict[str, Any]) -> Path | None:
     for key in ("sandbox_path", "modernized_app_path", "output_app_path"):

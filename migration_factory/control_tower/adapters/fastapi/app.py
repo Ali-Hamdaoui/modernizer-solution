@@ -5888,54 +5888,45 @@ def create_app(
         from fastapi.responses import StreamingResponse
         import hashlib
 
-        with unit_of_work_factory() as uow:
-            job = uow.v2_jobs.get(job_id) if hasattr(uow, "v2_jobs") else None
-            if job is None:
-                raise _error(404, "V2_JOB_NOT_FOUND", "V2 job not found.")
+        try:
+            artifact = _report_service.resolve_report_artifact(job_id, artifact_id)
+        except ValueError:
+            raise _error(404, "V2_JOB_NOT_FOUND", "V2 job not found.")
+        except LookupError:
+            raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
 
-            # Resolve artifact from artifact repository
-            from migration_factory.control_tower.domain.entities import ArtifactRecord
-            artifact = None
-            if hasattr(uow, "artifacts") and hasattr(uow.artifacts, "list_for_job"):
-                for art in uow.artifacts.list_for_job(job_id):
-                    if art.artifact_id == artifact_id:
-                        artifact = art
-                        break
-            if artifact is None:
-                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
-            if artifact.artifact_type not in REPORT_ARTIFACT_KINDS:
-                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
-            if artifact.job_id != job_id:
-                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+        if artifact.kind not in REPORT_ARTIFACT_KINDS:
+            raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+        if artifact.file_path is None:
+            raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact file not found.")
 
-            # Resolve file path from artifact record
-            file_path = Path(artifact.relative_path).resolve()
+        file_path = artifact.file_path.resolve()
 
-            # Containment check: ensure the resolved path is within
-            # a reports/ directory or the sandbox final directory
-            file_path_str = str(file_path).replace("\\", "/")
-            if not any(marker in file_path_str for marker in ("/reports/", "/final/", "\\reports\\", "\\final\\")):
-                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
+        # Containment check: ensure the resolved path is within
+        # a reports/ directory or the sandbox final directory.
+        file_path_str = str(file_path).replace("\\", "/")
+        if not any(marker in file_path_str for marker in ("/reports/", "/final/", "\\reports\\", "\\final\\")):
+            raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact not found.")
 
-            if not file_path.is_file():
-                raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact file not found.")
+        if not file_path.is_file():
+            raise _error(404, "V2_REPORT_ARTIFACT_NOT_FOUND", "Report artifact file not found.")
 
-            actual_sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
-            if actual_sha256 != artifact.checksum:
-                raise _error(409, "V2_REPORT_ARTIFACT_CHECKSUM_MISMATCH", "Artifact integrity check failed.")
+        actual_sha256 = hashlib.sha256(file_path.read_bytes()).hexdigest()
+        if actual_sha256 != artifact.checksum_sha256:
+            raise _error(409, "V2_REPORT_ARTIFACT_CHECKSUM_MISMATCH", "Artifact integrity check failed.")
 
-            ext = REPORT_CONTENT_TYPES.get(artifact.artifact_type, "application/octet-stream").split("/")[-1]
-            filename = f"{job_id}_{artifact.artifact_type}.{ext}"
-            media_type = REPORT_CONTENT_TYPES.get(artifact.artifact_type, "application/octet-stream")
+        media_type = REPORT_CONTENT_TYPES.get(artifact.kind, artifact.content_type or "application/octet-stream")
+        ext = media_type.split("/")[-1]
+        filename = f"{job_id}_{artifact.kind}.{ext}"
 
-            return StreamingResponse(
-                content=open(file_path, "rb"),
-                media_type=media_type,
-                headers={
-                    "Content-Disposition": f'attachment; filename="{filename}"',
-                    "Content-Length": str(file_path.stat().st_size),
-                },
-            )
+        return StreamingResponse(
+            content=open(file_path, "rb"),
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(file_path.stat().st_size),
+            },
+        )
 
     return app
 
