@@ -645,6 +645,13 @@ class V2OrchestratorRunner:
         if sandbox_path:
             result["sandbox_path"] = sandbox_path
 
+        # Persist the complete backend result, including the successful
+        # ValidationExecutionContext. Repair handling also persists a focused
+        # context artifact, but target-version validation must load the
+        # authoritative context after a successful stage completes.
+        with self._unit_of_work_factory() as result_uow:
+            result_uow.v2_commands.save_result(command_id, result)
+
         self._maybe_write_repair_failure_context(
             job_id=job_id,
             stage_index=stage_index,

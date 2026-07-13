@@ -3,7 +3,7 @@
 from dataclasses import dataclass, fields
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from migration_factory.agents.build_agent import run_build_agent
 from migration_factory.agents.h2_runtime_startup_agent import build_h2_startup_report, write_h2_startup_report
@@ -89,6 +89,7 @@ def run_validation_after_patch(
     build_timeout_seconds: int | None = None,
     validation_context: ValidationExecutionContext | None = None,
     execution_env: Mapping[str, str] | None = None,
+    observer: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> ValidationResult:
     context = ValidationExecutionContext.from_mapping(validation_context)
     run_path = Path(run_dir)
@@ -124,6 +125,8 @@ def run_validation_after_patch(
         )
     output_dir = run_path / "build" / f"repair_attempt_{attempt}"
     pre_surefire_snapshot = capture_surefire_report_index(sandbox / "target" / "surefire-reports")
+    if observer is not None:
+        observer("build_started", {"attempt": attempt, "run_id": run_id})
     build_result = run_build_agent(
         sandbox,
         output_dir=output_dir,
@@ -147,7 +150,19 @@ def run_validation_after_patch(
         artifact_refs["repair_build_error_contract"] = str(build_result.error_contract_path)
 
     build_status = BUILD_PASSED if build_result.succeeded else BUILD_FAILED
+    if observer is not None:
+        observer(
+            "build_passed" if build_result.succeeded else "build_failed",
+            {
+                "attempt": attempt,
+                "run_id": run_id,
+                "build_status": build_status,
+                "exit_code": build_result.exit_code,
+            },
+        )
 
+    if observer is not None and build_result.succeeded:
+        observer("test_started", {"attempt": attempt, "run_id": run_id})
     test_result = run_test_agent(
         sandbox_path=sandbox,
         run_dir=run_path,
@@ -161,6 +176,19 @@ def run_validation_after_patch(
         pre_snapshot=pre_surefire_snapshot,
     )
     test_status = test_result.test_status
+    if observer is not None:
+        if not build_result.succeeded:
+            observer("test_blocked", {
+                "attempt": attempt,
+                "run_id": run_id,
+                "test_status": TESTS_NOT_FOUND,
+                "reason": "build_failed",
+            })
+        else:
+            observer(
+                "test_passed" if test_status in {TEST_PASSED, TEST_PASS_WITH_WARNINGS, TESTS_NOT_FOUND} else "test_failed",
+                {"attempt": attempt, "run_id": run_id, "test_status": test_status},
+            )
     artifact_refs.update(
         {
             "repair_test_report": str(test_result.report_path),

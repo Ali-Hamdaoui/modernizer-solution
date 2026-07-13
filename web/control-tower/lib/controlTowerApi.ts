@@ -55,6 +55,7 @@ import type {
   PomProposeRequest,
   PomApplyRequest,
   Stage4TargetVersionApplyResponse,
+  TargetVersionUpdateStatusResponse,
   Stage4TargetVersionChangeRequest,
   // PR-C types
   RepairProposalCurrentResponse,
@@ -771,13 +772,18 @@ export async function applyPomRepairPlan(
 export async function applyStage4TargetVersionChanges(
   jobId: string,
   stage: number,
-  request: { changes: Stage4TargetVersionChangeRequest[]; idempotency_key?: string }
+  request: { changes: Stage4TargetVersionChangeRequest[]; idempotency_key?: string; expected_pom_checksum: string }
 ): Promise<Stage4TargetVersionApplyResponse> {
   const safeJobId = requireJobId(jobId);
   return postJson<Stage4TargetVersionApplyResponse>(
     `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/stage/${stage}/pom/apply-target-version-changes`,
     request
   );
+}
+
+export async function getLatestTargetVersionUpdate(jobId: string): Promise<TargetVersionUpdateStatusResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<TargetVersionUpdateStatusResponse>(`/v1/v2/jobs/${encodeURIComponent(safeJobId)}/target-version-update`);
 }
 
 export async function rollbackPomChange(

@@ -791,6 +791,7 @@ export type V2ArtifactPreviewResponse = {
   content_type: string;
   download_url?: string | null;
   source_ref?: Record<string, string> | null;
+  pom_checksum?: string | null;
   reason?: string | null;
 };
 
@@ -915,6 +916,7 @@ export type PomView = {
   redaction_applied: boolean;
   detected_baseline: PomBaseline | null;
   reason?: string | null;
+  pom_checksum?: string | null;
 };
 
 export type PomChangeRecordSummary = {
@@ -973,6 +975,16 @@ export type Stage4TargetVersionApplyResponse = {
   blocked_count: number;
   items: Stage4TargetVersionApplyItem[];
   blockers: string[];
+  change_id?: string | null;
+  validation_id?: string | null;
+  status?: string;
+  validation?: Record<string, unknown> | null;
+};
+
+export type TargetVersionUpdateStatusResponse = {
+  job_id: string;
+  update: Record<string, unknown> | null;
+  validation: Record<string, unknown> | null;
 };
 
 // ── F15 Gate types (jobs 101-117) ──────────────────────────────────────

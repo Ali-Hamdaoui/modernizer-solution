@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import re
 import sqlite3
@@ -10,6 +11,7 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 import hashlib
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from contextlib import asynccontextmanager, contextmanager
@@ -311,6 +313,10 @@ from migration_factory.control_tower.application.pom_change_models import (
 from migration_factory.control_tower.application.target_version_update import (
     PomTargetVersionChange,
     apply_target_version_updates,
+    atomic_replace_text,
+)
+from migration_factory.control_tower.application.target_version_validation_coordinator import (
+    TargetVersionValidationCoordinator,
 )
 
 
@@ -811,6 +817,7 @@ class TargetVersionApplyRequestSchema(BaseModel):
     model_config = ConfigDict(extra="forbid")
     changes: list[TargetVersionChangeSchema] = Field(min_length=1, max_length=500)
     idempotency_key: str | None = None
+    expected_pom_checksum: str = Field(min_length=64, max_length=64, pattern=r"^[a-fA-F0-9]{64}$")
 
 
 class PomRepairApplyRequestSchema(BaseModel):
@@ -968,6 +975,57 @@ def create_app(
     ) -> None:
         _orchestrator_diagnosis_callback(job_id, stage, command_id, event_type, payload)
         _maybe_create_repair_gate(job_id, stage, command_id, event_type, payload)
+
+    def _target_version_repair_handler(*, change: dict[str, Any], validation: dict[str, Any], context: Any, run_dir: str, sandbox: str, result: Any) -> dict[str, Any] | None:
+        job_id = str(change.get("job_id") or "")
+        if not _repair_gate_enabled_for_job(job_id):
+            return {"status": "unavailable", "reason": "build_repair_disabled"}
+        context_data = dict(getattr(context, "__dict__", {}) or {})
+        context_data.update({"run_dir": run_dir, "sandbox_path": sandbox})
+        record = SimpleNamespace(
+            command_id=str(change.get("command_id") or ""),
+            attempt_number=0,
+            affected_paths_json=json.dumps(["pom.xml"]),
+            diff_checksum=str(change.get("after_checksum") or ""),
+            reviewer_output_checksum=None,
+            policy_validation_checksum=None,
+        )
+        apply_context = {
+            "validation_execution_context": context_data,
+            "source_profile": context_data.get("source_profile", ""),
+            "target_profile": context_data.get("target_profile", ""),
+            "h2_required": bool(context_data.get("h2_required", False)),
+        }
+        with unit_of_work_factory() as uow:
+            repair_result = _create_next_direct_reviewed_repair_proposal_from_validation_failure(
+                uow=uow,
+                job_id=job_id,
+                record=record,
+                validation=result,
+                apply_context=apply_context,
+                run_dir=run_dir,
+                sandbox_path=sandbox,
+                model_client=getattr(app.state, "v2_assistant_model_client", None),
+                unit_of_work_factory=unit_of_work_factory,
+            )
+        return {
+            "status": str(getattr(repair_result, "status", "unknown")),
+            "proposal_id": str(getattr(repair_result, "proposal_id", "") or ""),
+            "reason": str(getattr(repair_result, "reason", "") or ""),
+        }
+
+    app.state.target_version_validation_coordinator = TargetVersionValidationCoordinator(
+        unit_of_work_factory=unit_of_work_factory,
+        event_sink=_diagnosis_event_sink,
+        repair_handler=_target_version_repair_handler,
+    )
+    # Re-submit durable queued validations after a controller restart.
+    try:
+        app.state.target_version_validation_coordinator.recover()
+    except Exception:
+        # Startup must remain available; the persisted status endpoint exposes
+        # the queued state for reconciliation on the next controller start.
+        pass
 
     app.state.v2_orchestrator_runner = v2_orchestrator_runner or V2OrchestratorRunner(
         unit_of_work_factory=unit_of_work_factory,
@@ -4663,26 +4721,37 @@ def create_app(
                         job = transition_uow.v2_jobs.get(job_id)
                         if job is None:
                             raise _error(status.HTTP_404_NOT_FOUND, "JOB_NOT_FOUND", "Migration job not found.")
-                        progression = V2StageProgressionService(
-                            setup_repo=transition_uow.v2_setups,
-                            command_repo=transition_uow.v2_commands,
-                            artifact_revision_repo=transition_uow.artifact_revisions,
-                            run_config_repo=transition_uow.run_configurations,
-                        )
-                        queued = progression.queue_next_stage(
-                            job_id=job_id,
-                            setup_id=job.setup_id,
-                            current_stage=int(stage_index_val),
-                            sandbox_path=sandbox_path,
-                            stage_continuation_policy=StageContinuationPolicy.AUTO_ON_GREEN,
-                            current_stage_result={
-                                "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
-                                "build_status": validation.build_status,
-                                "test_status": validation.test_status,
-                                "sandbox_path": sandbox_path,
-                            },
-                            current_route_step_index=validation_context.route_step_index or getattr(record, "route_step_index", None),
-                        )
+                        target_update = transition_uow.connection.execute(
+                            "SELECT change_id, validation_id FROM v2_pom_changes "
+                            "WHERE job_id = ? AND repair_proposal_id = ? "
+                            "AND operation = 'target_version_batch' AND status = 'repair_review_required' LIMIT 1",
+                            (job_id, proposal_id),
+                        ).fetchone()
+                        if target_update is not None:
+                            transition_uow.v2_pom_changes.update_status(str(target_update["change_id"]), "validated", validation_id=str(target_update["validation_id"] or ""))
+                            if target_update["validation_id"]:
+                                transition_uow.v2_pom_validations.update_result(
+                                    str(target_update["validation_id"]),
+                                    status="passed",
+                                    build_status=validation.build_status,
+                                    test_status=validation.test_status,
+                                    diagnosis_json=json.dumps({"source": "amf252_repair", "build_status": validation.build_status, "test_status": validation.test_status}, sort_keys=True),
+                                )
+                            queued = SimpleNamespace(command_id=None, status="target_version_update_completed")
+                            transition_uow.v2_events.save(
+                                job_id=job_id,
+                                stage=int(stage_index_val),
+                                event_type="target_version_update_validated",
+                                status="validated",
+                                message="Target-version update validated after AMF-252 repair.",
+                                payload={"change_id": str(target_update["change_id"]), "validation_id": str(target_update["validation_id"] or ""), "lifecycle_action": "complete_target_version_update"},
+                            )
+                        else:
+                            raise _error(
+                                status.HTTP_409_CONFLICT,
+                                "TARGET_VERSION_LINEAGE_MISSING",
+                                "The reviewed repair is not linked to an originating target-version update.",
+                            )
                 except Exception as exc:
                     continuation_error = f"migration continuation failed: {type(exc).__name__}"
                     _persist_apply_fields(
@@ -4737,14 +4806,15 @@ def create_app(
                     message=f"Repair validation passed for proposal {proposal_id}",
                     payload={"proposal_id": proposal_id, "rerun_status": rerun_status},
                 )
-                _persist_apply_event(
-                    job_id=job_id,
-                    stage=int(stage_index_val),
-                    event_type="migration_continuation_queued",
-                    status=str(next_gate_status or "queued"),
-                    message=f"Migration continuation queued for proposal {proposal_id}",
-                    payload={"proposal_id": proposal_id, "command_id": continuation_command_id},
-                )
+                if not target_update:
+                    _persist_apply_event(
+                        job_id=job_id,
+                        stage=int(stage_index_val),
+                        event_type="migration_continuation_queued",
+                        status=str(next_gate_status or "queued"),
+                        message=f"Migration continuation queued for proposal {proposal_id}",
+                        payload={"proposal_id": proposal_id, "command_id": continuation_command_id},
+                    )
                 if continuation_command_id:
                     app.state.v2_orchestrator_runner.start(job_id=job_id, command_id=continuation_command_id)
                 allowed_next_actions = ("view_result",)
@@ -4819,9 +4889,42 @@ def create_app(
                     next_gate_id = next_result.proposal_id or None
                     next_gate_status = next_result.status or None
                     remaining_attempts = next_result.remaining_attempts
+                    if next_result.proposal_id:
+                        with unit_of_work_factory() as lineage_uow:
+                            lineage_uow.connection.execute(
+                                "UPDATE v2_pom_changes SET repair_proposal_id = ?, updated_at = ? "
+                                "WHERE job_id = ? AND repair_proposal_id = ? AND operation = 'target_version_batch'",
+                                (str(next_result.proposal_id), utc_now_text(), job_id, proposal_id),
+                            )
                 else:
                     next_gate_status = "attempts_exhausted"
                     remaining_attempts = 0
+                    with unit_of_work_factory() as target_failure_uow:
+                        exhausted_update = target_failure_uow.connection.execute(
+                            "SELECT change_id, validation_id FROM v2_pom_changes "
+                            "WHERE job_id = ? AND repair_proposal_id = ? AND operation = 'target_version_batch' "
+                            "AND status = 'repair_review_required' LIMIT 1",
+                            (job_id, proposal_id),
+                        ).fetchone()
+                        if exhausted_update is not None:
+                            target_failure_uow.v2_pom_changes.update_status(
+                                str(exhausted_update["change_id"]), "repair_exhausted",
+                                validation_id=str(exhausted_update["validation_id"] or ""),
+                            )
+                            if exhausted_update["validation_id"]:
+                                target_failure_uow.v2_pom_validations.update_result(
+                                    str(exhausted_update["validation_id"]),
+                                    status="repair_exhausted",
+                                    repair_linkage_json=json.dumps({"proposal_id": proposal_id, "status": "attempts_exhausted"}, sort_keys=True),
+                                )
+                            target_failure_uow.v2_events.save(
+                                job_id=job_id,
+                                stage=int(stage_index_val),
+                                event_type="target_version_repair_exhausted",
+                                status="failed",
+                                message="Target-version repair attempts exhausted.",
+                                payload={"change_id": str(exhausted_update["change_id"]), "proposal_id": proposal_id},
+                            )
                     _persist_apply_event(
                         job_id=job_id,
                         stage=int(stage_index_val),
@@ -5032,31 +5135,244 @@ def create_app(
         except OSError as exc:
             raise _error(status.HTTP_400_BAD_REQUEST, "ROOT_POM_NOT_READABLE", str(exc)) from exc
 
+        normalized_changes = [
+            {
+                "group_id": change.group_id,
+                "artifact_id": change.artifact_id,
+                "target_version": change.target_version,
+            }
+            for change in payload.changes
+        ]
+        request_checksum = sha256_canonical_json({
+            "job_id": job_id,
+            "stage_index": stage_index,
+            "expected_pom_checksum": payload.expected_pom_checksum.lower(),
+            "changes": normalized_changes,
+        })
+        if not payload.idempotency_key:
+            raise _error(status.HTTP_400_BAD_REQUEST, "IDEMPOTENCY_KEY_REQUIRED", "idempotency_key is required.")
+        with unit_of_work_factory() as uow:
+            existing = uow.v2_pom_changes.find_by_idempotency(job_id, payload.idempotency_key)
+            if existing is not None:
+                existing_lineage = uow.v2_pom_changes.get_lineage(existing.change_id) or {}
+                if str(existing_lineage.get("request_checksum") or "") != request_checksum:
+                    raise _error(status.HTTP_409_CONFLICT, "IDEMPOTENCY_CONFLICT", "Idempotency key was reused for a different target-version request.")
+                validation = uow.v2_pom_validations.get_by_change(existing.change_id)
+                return {
+                    "job_id": job_id,
+                    "stage": int(existing_lineage.get("execution_stage_index") or stage_index),
+                    "change_id": existing.change_id,
+                    "validation_id": existing.validation_id,
+                    "status": existing.status,
+                    "idempotency_key": payload.idempotency_key,
+                    "message": "Existing target-version update returned idempotently.",
+                    "validation": validation,
+                }
+
+        actual_checksum = hashlib.sha256(pom_text.encode("utf-8")).hexdigest()
+        if actual_checksum != payload.expected_pom_checksum.lower():
+            raise _error(
+                status.HTTP_412_PRECONDITION_FAILED,
+                "STALE_POM_PREVIEW",
+                "The root POM changed after preview. Reload the comparison before applying changes.",
+            )
+
+        source_ref = preview.get("source_ref") or {}
+        command_id = str(source_ref.get("command_id") or "") if isinstance(source_ref, dict) else ""
+        context_data: dict[str, Any] = {}
+        execution_stage_index = stage_index
+        route_step_index: int | None = None
+        context_checksum = ""
+        context_ref = ""
+        with _read_unit_of_work(unit_of_work_factory) as context_uow:
+            command = context_uow.v2_commands.get(command_id) if command_id else None
+        if command is not None and command.result_json:
+            try:
+                command_result = json.loads(command.result_json)
+                context_data = command_result.get("validation_execution_context") or {}
+                execution_stage_index = int(context_data.get("stage_index") or command.stage_index or stage_index)
+                route_step_index = context_data.get("route_step_index")
+                context_checksum = sha256_canonical_json(context_data) if context_data else ""
+                context_ref = f"command:{command_id}:validation_execution_context" if context_data else ""
+            except (TypeError, ValueError, json.JSONDecodeError):
+                context_data = {}
+        if not context_data:
+            raise _error(status.HTTP_409_CONFLICT, "VALIDATION_CONTEXT_UNAVAILABLE", "The latest completed stage has no authoritative validation execution context.")
+
         result = apply_target_version_updates(
             pom_text,
-            [
-                PomTargetVersionChange(
-                    group_id=change.group_id,
-                    artifact_id=change.artifact_id,
-                    target_version=change.target_version,
-                )
-                for change in payload.changes
-            ],
+            [PomTargetVersionChange(**change) for change in normalized_changes],
         )
+        record = None
+        validation_id = None
         if result["applied_count"] > 0:
+            change_id = uuid4().hex
+            snapshot_dir = pom_path.parent / ".target_version_changes"
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+            before_ref = snapshot_dir / f"{change_id}.before.pom"
+            after_ref = snapshot_dir / f"{change_id}.after.pom"
+            before_ref.write_text(pom_text, encoding="utf-8")
+            after_ref.write_text(str(result["pom_content"]), encoding="utf-8")
+            diff_unified = "".join(difflib.unified_diff(
+                pom_text.splitlines(keepends=True),
+                str(result["pom_content"]).splitlines(keepends=True),
+                fromfile="pom.xml.before",
+                tofile="pom.xml.after",
+            ))
+            with unit_of_work_factory() as persist_uow:
+                record = persist_uow.v2_pom_changes.save(
+                    proposal_id=None,
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    operation="target_version_batch",
+                    target_json=json.dumps({
+                        "items": result["items"],
+                        "applied_count": result["applied_count"],
+                        "skipped_count": result["skipped_count"],
+                        "blocked_count": result["blocked_count"],
+                    }, sort_keys=True),
+                    requested_version="batch",
+                    before_checksum=result["before_checksum"],
+                    after_checksum=result["after_checksum"],
+                    before_content_ref=str(before_ref),
+                    after_content_ref=str(after_ref),
+                    diff_unified=diff_unified,
+                    idempotency_key=payload.idempotency_key,
+                    executor="target_version_span_patch",
+                    logical_stage_index=stage_index,
+                    execution_stage_index=execution_stage_index,
+                    route_step_index=route_step_index,
+                    expected_checksum=payload.expected_pom_checksum.lower(),
+                    request_checksum=request_checksum,
+                    command_id=command_id,
+                    validation_context_ref=context_ref,
+                    validation_context_checksum=context_checksum,
+                    status="apply_intent_persisted",
+                    pom_path_ref=str(pom_path),
+                )
+                validation_id = persist_uow.v2_pom_validations.save(
+                    change_id=record.change_id,
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command=str(context_data.get("validation_command") or "authoritative-stage-validation"),
+                    status="apply_intent_persisted",
+                    logical_stage_index=stage_index,
+                    execution_stage_index=execution_stage_index,
+                    route_step_index=route_step_index,
+                    command_id=command_id,
+                    validation_context_ref=context_ref,
+                    validation_context_checksum=context_checksum,
+                )
+                persist_uow.v2_pom_changes.update_status(record.change_id, "apply_intent_persisted", validation_id=validation_id)
+
             try:
-                pom_path.write_text(str(result["pom_content"]), encoding="utf-8")
+                if hashlib.sha256(pom_path.read_bytes()).hexdigest() != payload.expected_pom_checksum.lower():
+                    raise OSError("root POM changed after target-version intent was prepared")
+                atomic_replace_text(pom_path, str(result["pom_content"]))
+                if hashlib.sha256(pom_path.read_bytes()).hexdigest() != str(result["after_checksum"]):
+                    raise OSError("atomic POM replacement checksum verification failed")
             except OSError as exc:
+                with unit_of_work_factory() as fail_uow:
+                    fail_uow.v2_pom_changes.update_status(record.change_id, "apply_failed", validation_id=validation_id)
+                    fail_uow.v2_pom_validations.update_result(validation_id, status="apply_failed", failure_classification="POM_APPLY")
+                    fail_uow.v2_events.save(
+                        job_id=job_id, stage=execution_stage_index,
+                        event_type="target_version_apply_failed", status="failed",
+                        message="Target-version POM replacement failed closed.",
+                        payload={"change_id": record.change_id, "validation_id": validation_id},
+                    )
                 raise _error(status.HTTP_500_INTERNAL_SERVER_ERROR, "ROOT_POM_WRITE_FAILED", str(exc)) from exc
+
+            with unit_of_work_factory() as persist_uow:
+                persist_uow.v2_pom_changes.update_status(record.change_id, "validation_queued", validation_id=validation_id)
+                persist_uow.v2_pom_validations.update_result(validation_id, status="validation_queued")
+                persist_uow.v2_events.save(
+                    job_id=job_id, stage=execution_stage_index,
+                    event_type="target_version_change_applied", status="applied",
+                    message="Target-version POM changes applied.",
+                    payload={"change_id": record.change_id, "validation_id": validation_id, "applied_count": result["applied_count"]},
+                )
+                persist_uow.v2_events.save(
+                    job_id=job_id, stage=execution_stage_index,
+                    event_type="target_version_validation_queued", status="queued",
+                    message="Target-version validation queued.",
+                    payload={"change_id": record.change_id, "validation_id": validation_id},
+                )
+            app.state.target_version_validation_coordinator.enqueue(record.change_id, validation_id)
 
         public_result = {key: value for key, value in result.items() if key != "pom_content"}
         return {
             "job_id": job_id,
-            "stage": 4,
+            "stage": int(execution_stage_index),
+            "change_id": record.change_id if result["applied_count"] > 0 else None,
+            "validation_id": validation_id if result["applied_count"] > 0 else None,
+            "status": "validation_queued" if result["applied_count"] > 0 else "not_applied",
             "idempotency_key": payload.idempotency_key,
-            "message": "Target dependency versions applied to Stage 4 pom.xml." if result["applied_count"] else "No Stage 4 pom.xml changes were applied.",
+            "message": "Target dependency versions applied; validation queued." if result["applied_count"] else "No target-version POM changes were applied.",
             **public_result,
         }
+
+    @app.get("/v1/v2/jobs/{job_id}/target-version-update")
+    def get_latest_target_version_update(job_id: str) -> dict[str, Any]:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            row = uow.connection.execute(
+                "SELECT * FROM v2_pom_changes WHERE job_id = ? AND operation = 'target_version_batch' ORDER BY created_at DESC LIMIT 1",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                return {"job_id": job_id, "update": None}
+            update = dict(row)
+            validation = uow.v2_pom_validations.get_by_change(str(update["change_id"]))
+            repair_status = None
+            repair_proposal_id = str(update.get("repair_proposal_id") or "")
+            if repair_proposal_id:
+                proposal = uow.v2_repairs.get_proposal_for_job(job_id, repair_proposal_id)
+                if proposal is not None:
+                    proposal_state = str(getattr(proposal, "status", "") or "")
+                    apply_state = str(getattr(proposal, "apply_status", "") or "")
+                    rerun_state = str(getattr(proposal, "rerun_status", "") or "")
+                    proof_state = str(getattr(proposal, "validation_proof_status", "") or "")
+                    if proof_state in {"passed", "validated", "validated_after_repair"} or rerun_state == "passed":
+                        repair_status = "validated_after_repair"
+                    elif proposal_state in {"attempts_exhausted", "repair_exhausted"} or getattr(proposal, "next_gate_status", "") == "attempts_exhausted":
+                        repair_status = "repair_exhausted"
+                    elif rerun_state in {"running", "queued"} or apply_state in {"running", "in_progress"}:
+                        repair_status = "repair_validation_running" if rerun_state in {"running", "queued"} else "repair_applying"
+                    elif proposal_state in {"user_review_required", "reviewer_accepted", "approvable"}:
+                        repair_status = "user_review_required"
+                    elif proposal_state:
+                        repair_status = proposal_state
+        safe_update = {
+            key: update.get(key)
+            for key in (
+                "change_id", "job_id", "stage_index", "logical_stage_index",
+                "execution_stage_index", "route_step_index", "operation",
+                "before_checksum", "after_checksum", "status", "validation_id",
+                "idempotency_key", "created_at", "updated_at",
+                "repair_proposal_id",
+            )
+        }
+        try:
+            target_summary = json.loads(str(update.get("target_json") or "{}"))
+        except (TypeError, json.JSONDecodeError):
+            target_summary = {}
+        safe_update.update({
+            "applied_count": target_summary.get("applied_count", 0),
+            "skipped_count": target_summary.get("skipped_count", 0),
+            "blocked_count": target_summary.get("blocked_count", 0),
+            "repair_status": repair_status,
+        })
+        safe_validation = None if validation is None else {
+            key: validation.get(key)
+            for key in (
+                "validation_id", "change_id", "job_id", "stage_index", "logical_stage_index",
+                "execution_stage_index", "route_step_index", "status", "exit_code",
+                "duration_ms", "failure_classification", "build_status", "test_status",
+                "created_at", "completed_at",
+            )
+        }
+        return {"job_id": job_id, "update": safe_update, "validation": safe_validation}
 
     @app.get("/v1/v2/jobs/{job_id}/stage/3/pom/changes")
     def list_pom_changes(job_id: str) -> dict[str, Any]:
@@ -10059,6 +10375,7 @@ def _resolve_root_pom_file_alias_preview(
 
     try:
         file_size = candidate.stat().st_size
+        full_checksum = hashlib.sha256(candidate.read_bytes()).hexdigest()
         raw = candidate.read_bytes()[:max_bytes]
     except (OSError, RuntimeError, ValueError):
         response["reason"] = "file_unreadable"
@@ -10079,6 +10396,7 @@ def _resolve_root_pom_file_alias_preview(
         "reason": None,
         "label": "live Stage 3 sandbox POM during validation" if is_stage_running and stage_index == 3 else "root_pom",
         "_path": candidate,
+        "pom_checksum": full_checksum,
     })
     return response
 

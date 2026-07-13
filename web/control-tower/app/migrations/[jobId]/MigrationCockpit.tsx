@@ -1007,6 +1007,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const [liveRefreshWarning, setLiveRefreshWarning] = useState<string | null>(null);
   const [repairRefreshKey, setRepairRefreshKey] = useState(0);
+  const [targetVersionRefreshKey, setTargetVersionRefreshKey] = useState(0);
   const [gateState, setGateState] = useState<GatePanelState>({ status: "loading" });
   const [report, setReport] = useState<V2FinalReportResponse | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
@@ -1208,6 +1209,21 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       "repair_attempts_exhausted",
       "repair_validation_failed",
       "repair_validation_passed",
+      "target_version_change_applied",
+      "target_version_validation_queued",
+      "target_version_validation_started",
+      "target_version_build_started",
+      "target_version_build_passed",
+      "target_version_build_failed",
+      "target_version_tests_started",
+      "target_version_test_blocked",
+      "target_version_tests_passed",
+      "target_version_tests_failed",
+      "target_version_validation_passed",
+      "target_version_validation_failed",
+      "target_version_repair_required",
+      "target_version_repair_exhausted",
+      "target_version_update_validated",
     ]) {
       source.addEventListener(type, (event) => {
         appendEventFromSse((event as MessageEvent).data);
@@ -1264,6 +1280,9 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       }
       if (AMF252_REPAIR_EVENTS.has(event.type)) {
         setRepairRefreshKey((k) => k + 1);
+      }
+      if (TARGET_VERSION_EVENTS.has(event.type)) {
+        setTargetVersionRefreshKey((k) => k + 1);
       }
     } catch {
       setStreamState("reconnecting");
@@ -1980,6 +1999,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
             jobId={normalizedJobId || jobId || ""}
             comparisonAvailable={targetVersionComparisonStageIndex != null}
             rootPomStageIndex={targetVersionComparisonStageIndex ?? 1}
+            refreshKey={targetVersionRefreshKey}
           />
         </section>
       )}
@@ -2169,6 +2189,7 @@ export function formatStageStatusLabel(status: string): string {
 export function reduceStageStatus(events: V2JobEvent[], stageIndex?: number): string {
   let current = "pending";
   for (const event of events) {
+    if (event.type.startsWith("target_version_")) continue;
     if (event.type === "next_stage_queued" && stageIndex != null) {
       const payload = event.payload ?? {};
       const fromStage = Number(payload.from_stage ?? 0);
@@ -2259,6 +2280,21 @@ const IMPORTANT_SSE_TYPES = new Set([
   "repair_validation_failed",
   "repair_validation_passed",
   "repair_completed",
+  "target_version_change_applied",
+  "target_version_validation_queued",
+  "target_version_validation_started",
+  "target_version_build_started",
+  "target_version_build_passed",
+  "target_version_build_failed",
+  "target_version_tests_started",
+  "target_version_test_blocked",
+  "target_version_tests_passed",
+  "target_version_tests_failed",
+  "target_version_validation_passed",
+  "target_version_validation_failed",
+  "target_version_repair_required",
+  "target_version_repair_exhausted",
+  "target_version_update_validated",
 ]);
 
 const AMF252_REPAIR_EVENTS = new Set([
@@ -2282,4 +2318,22 @@ const AMF252_REPAIR_EVENTS = new Set([
   "repair_validation_failed",
   "repair_validation_passed",
   "repair_completed",
+]);
+
+const TARGET_VERSION_EVENTS = new Set([
+  "target_version_change_applied",
+  "target_version_validation_queued",
+  "target_version_validation_started",
+  "target_version_build_started",
+  "target_version_build_passed",
+  "target_version_build_failed",
+  "target_version_tests_started",
+  "target_version_test_blocked",
+  "target_version_tests_passed",
+  "target_version_tests_failed",
+  "target_version_validation_passed",
+  "target_version_validation_failed",
+  "target_version_repair_required",
+  "target_version_repair_exhausted",
+  "target_version_update_validated",
 ]);

@@ -8,7 +8,9 @@ and only targeted XML spans are patched.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import Any
@@ -17,6 +19,26 @@ _COORDINATE_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+\-]*$")
 _TAG_RE_TEMPLATE = r"<(?P<tag>{tag})\b[^>]*>\s*(?P<value>[\s\S]*?)\s*</(?P=tag)>"
 _PROPERTY_REF_RE = re.compile(r"^\$\{([^}]+)\}$")
+
+
+def atomic_replace_text(path: str | os.PathLike[str], content: str) -> None:
+    target = os.fspath(path)
+    directory = os.path.dirname(target) or "."
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=directory, delete=False) as handle:
+            temporary = handle.name
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+        temporary = None
+    finally:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 @dataclass(frozen=True)

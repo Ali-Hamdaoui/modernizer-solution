@@ -3,7 +3,7 @@
 # Windows PowerShell 5.1
 #
 # Flow:
-#   1. Validate repository branch and migration state
+#   1. Validate repository state and migration state
 #   2. Configure AMF-252 environment
 #   3. Make tiny proposer + reviewer connectivity smoke calls
 #   4. Print MODEL OK or MODEL WARNING per role
@@ -38,7 +38,7 @@ $ErrorActionPreference = "Stop"
 
 $RepoRoot = "C:\Users\abdelilah.mortaki\Desktop\modernizer-solution"
 
-$ExpectedBranch = "feature/superposition-llm-repair-mvp"
+
 
 $MigrationsDir = Join-Path `
     $RepoRoot `
@@ -330,36 +330,6 @@ function Add-PathIfExists {
     if ($parts -notcontains $PathToAdd) {
         $env:Path = "$PathToAdd;$env:Path"
     }
-}
-
-
-function Assert-ExpectedBranch {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Expected
-    )
-
-    $branchOutput = & git branch --show-current
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Could not determine current Git branch."
-    }
-
-    $current = [string]$branchOutput
-    $current = $current.Trim()
-
-    if ([string]::IsNullOrWhiteSpace($current)) {
-        throw "Current Git branch is empty or repository is in detached HEAD state."
-    }
-
-    if ($current -ne $Expected) {
-        throw (
-            "Wrong Git branch. " +
-            "Expected '$Expected', current '$current'."
-        )
-    }
-
-    return $current
 }
 
 
@@ -1254,8 +1224,14 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 
-$CurrentBranch = Assert-ExpectedBranch `
-    -Expected $ExpectedBranch
+$CurrentBranchOutput = & git branch --show-current
+if ($LASTEXITCODE -ne 0) {
+    throw "Could not determine current Git branch."
+}
+$CurrentBranch = ([string]$CurrentBranchOutput).Trim()
+if ([string]::IsNullOrWhiteSpace($CurrentBranch)) {
+    $CurrentBranch = "(detached HEAD)"
+}
 
 $CurrentCommitOutput = & git rev-parse HEAD
 if ($LASTEXITCODE -ne 0) {
