@@ -149,8 +149,9 @@ export function getTargetVersionComparisonStageIndex(
     const finalRouteStep = routeSteps.reduce((latest, routeStep) =>
       routeStep.route_step_index > latest.route_step_index ? routeStep : latest,
     );
-    const finalStageStatus = stageStatusByIndex.get(finalRouteStep.stage_index) ?? finalRouteStep.status;
-    return finalStageStatus === "completed" ? finalRouteStep.stage_index : null;
+    const executionStageIndex = finalRouteStep.execution_stage_index ?? finalRouteStep.stage_index;
+    const finalStageStatus = stageStatusByIndex.get(executionStageIndex) ?? finalRouteStep.status;
+    return finalStageStatus === "completed" ? executionStageIndex : null;
   }
 
   const completedStageIndexes = stages
