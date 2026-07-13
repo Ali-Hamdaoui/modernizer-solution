@@ -1,0 +1,2052 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 1 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+5 0 obj
+<< /Length 69901 >>
+stream
+q
+BT /FB 22 Tf 50 792 Td (Migration Report) Tj ET
+BT /FB 22 Tf 50 768 Td (Detailed Migration Report) Tj ET
+BT /FB 16 Tf 50 744 Td (Executive Summary) Tj ET
+BT /FH 10 Tf 50 720 Td (This migration moved the application from **Spring Boot 2.1 /) Tj ET
+BT /FH 10 Tf 50 706 Td ( Java 11** to **Spring Boot 2.7 / Java 11**.) Tj ET
+BT /FB 10 Tf 50 684 Td (Metric) Tj ET
+50 686 248 20 re S
+BT /FB 10 Tf 298 684 Td (Value) Tj ET
+298 686 248 20 re S
+BT /FH 9 Tf 52 664 Td (Outcome) Tj ET
+50 646 248 20 re S
+BT /FH 9 Tf 300 664 Td (completed) Tj ET
+298 646 248 20 re S
+BT /FH 9 Tf 52 644 Td (Duration) Tj ET
+50 626 248 20 re S
+BT /FH 9 Tf 300 644 Td (13m 12s) Tj ET
+298 626 248 20 re S
+BT /FH 9 Tf 52 624 Td (Migration stages) Tj ET
+50 606 248 20 re S
+BT /FH 9 Tf 300 624 Td (1) Tj ET
+298 606 248 20 re S
+BT /FH 9 Tf 52 604 Td (Files changed) Tj ET
+50 586 248 20 re S
+BT /FH 9 Tf 300 604 Td (0) Tj ET
+298 586 248 20 re S
+BT /FH 9 Tf 52 584 Td (Lines added) Tj ET
+50 566 248 20 re S
+BT /FH 9 Tf 300 584 Td (0) Tj ET
+298 566 248 20 re S
+BT /FH 9 Tf 52 564 Td (Lines deleted) Tj ET
+50 546 248 20 re S
+BT /FH 9 Tf 300 564 Td (0) Tj ET
+298 546 248 20 re S
+BT /FH 9 Tf 52 544 Td (Total lines changed) Tj ET
+50 526 248 20 re S
+BT /FH 9 Tf 300 544 Td (0) Tj ET
+298 526 248 20 re S
+BT /FH 9 Tf 52 524 Td (Tests executed) Tj ET
+50 506 248 20 re S
+BT /FH 9 Tf 300 524 Td (0) Tj ET
+298 506 248 20 re S
+BT /FH 9 Tf 52 504 Td (Tests passed) Tj ET
+50 486 248 20 re S
+BT /FH 9 Tf 300 504 Td (0) Tj ET
+298 486 248 20 re S
+BT /FH 9 Tf 52 484 Td (Repair attempts) Tj ET
+50 466 248 20 re S
+BT /FH 9 Tf 300 484 Td (0) Tj ET
+298 466 248 20 re S
+BT /FB 16 Tf 50 460 Td (Migration Story) Tj ET
+BT /FH 10 Tf 50 436 Td (The migration began with a Stage 1 job created at 2026-07-09T23:25:11.119886Z.) Tj ET
+BT /FH 10 Tf 50 422 Td ( Stage 1 was queued and started immediately; the orchestrator launched and ) Tj ET
+BT /FH 10 Tf 50 408 Td (entered an analysis phase at 2026-07-09T23:25:13Z.) Tj ET
+BT /FH 10 Tf 50 394 Td ( Analysis completed at 2026-07-) Tj ET
+BT /FH 10 Tf 50 380 Td (09T23:34:00Z and planning and assessment phases ran back-to-) Tj ET
+BT /FH 10 Tf 50 366 Td (back, completing within seconds. The stage run finished at 2026-07-09T23:38:23.) Tj ET
+BT /FH 10 Tf 50 352 Td (153216Z after a total recorded duration of ~792 seconds \(started 23:25:11.) Tj ET
+BT /FH 10 Tf 50 338 Td (181809Z, completed 23:38:23.153216Z\).) Tj ET
+BT /FH 10 Tf 50 318 Td (Technical work during Stage 1 focused on analysis, planning, and producing ) Tj ET
+BT /FH 10 Tf 50 304 Td (migration artifacts rather than on source edits.) Tj ET
+BT /FH 10 Tf 50 290 Td ( The process generated the analysis, assessment, dependency, and plan artifacts ) Tj ET
+BT /FH 10 Tf 50 276 Td (\(examples: analysis_report, assessment_report, dependency_graph, target_) Tj ET
+BT /FH 10 Tf 50 262 Td (dependency_plan, migration_plan.yaml, rewrite_preview and rewrite_patch\).) Tj ET
+BT /FH 10 Tf 50 248 Td ( A sandbox transform step was executed and completed \(sandbox_) Tj ET
+BT /FH 10 Tf 50 234 Td (transform started 23:34:06.683936Z, completed 23:38:18.) Tj ET
+BT /FH 10 Tf 50 220 Td (407528Z\), indicating code-) Tj ET
+BT /FH 10 Tf 50 206 Td (change previews and rewrite artifacts were produced, but the recorded change ) Tj ET
+BT /FH 10 Tf 50 192 Td (metrics show files_changed: 0 and zero lines added/changed/deleted.) Tj ET
+BT /FH 10 Tf 50 172 Td (Validation outcomes and approvals are recorded in the timeline.) Tj ET
+BT /FH 10 Tf 50 158 Td ( Auto Approval was enabled at 23:25:19.) Tj ET
+BT /FH 10 Tf 50 144 Td (730321Z, and the approval gate was auto-) Tj ET
+BT /FH 10 Tf 50 130 Td (approved shortly after artifact production; multiple human approval events were ) Tj ET
+BT /FH 10 Tf 50 116 Td (recorded \(two approval_blocked entries and three approval_) Tj ET
+BT /FH 10 Tf 50 102 Td (completed entries\), with an approval decision recorded and the human approval ) Tj ET
+BT /FH 10 Tf 50 88 Td (phase completing before the sandbox transform started.) Tj ET
+BT /FH 10 Tf 50 74 Td ( Artifacts capturing these decisions were written \(approval_request.) Tj ET
+BT /FH 10 Tf 50 792 Td (json, approval_decision, approved_plan_lock\).) Tj ET
+BT /FH 10 Tf 50 772 Td (Testing and build outcomes are not captured in the supplied evidence: test_) Tj ET
+BT /FH 10 Tf 50 758 Td (totals report zero tests run and test_status is listed as "not captured"; build_) Tj ET
+BT /FH 10 Tf 50 744 Td (status and proof_level are also "not captured".) Tj ET
+BT /FH 10 Tf 50 730 Td ( Repair attempts are recorded as 0.) Tj ET
+BT /FH 10 Tf 50 716 Td ( In short, the run produced planning and rewrite artifacts and passed the ) Tj ET
+BT /FH 10 Tf 50 702 Td (recorded approval gating, but there is no captured evidence of executed source ) Tj ET
+BT /FH 10 Tf 50 688 Td (changes, builds, or test validation in this dataset.) Tj ET
+BT /FH 10 Tf 50 668 Td (Line-) Tj ET
+BT /FH 10 Tf 50 654 Td (change impact and risk:) Tj ET
+BT /FH 10 Tf 50 640 Td ( the summary and stage change metrics both report zero files and zero lines ) Tj ET
+BT /FH 10 Tf 50 626 Td (changed, so no direct code modifications were applied in this Stage 1 run.) Tj ET
+BT /FH 10 Tf 50 612 Td ( The rewrite_preview and rewrite_) Tj ET
+BT /FH 10 Tf 50 598 Td (patch artifacts exist \(indicating proposed edits were generated\), but the ) Tj ET
+BT /FH 10 Tf 50 584 Td (evidence shows they were produced as artifacts rather than applied.) Tj ET
+BT /FH 10 Tf 50 570 Td ( Required downstream actions \(not captured here\) would be human review and ) Tj ET
+BT /FH 10 Tf 50 556 Td (gated application of the proposed rewrite) Tj ET
+BT /FB 16 Tf 50 536 Td (Migration Scope) Tj ET
+BT /FH 10 Tf 60 512 Td (? Source profile: Spring Boot 2.1 / Java 11) Tj ET
+BT /FH 10 Tf 60 498 Td (? Target profile: Spring Boot 2.7 / Java 11) Tj ET
+BT /FH 10 Tf 60 484 Td (? Included stages: 1) Tj ET
+BT /FH 10 Tf 60 470 Td (? Skipped earlier stages: none) Tj ET
+BT /FH 10 Tf 60 456 Td (? Excluded later stages: 2, 3, 4) Tj ET
+BT /FB 16 Tf 50 436 Td (Stage-by-Stage Technical Details) Tj ET
+BT /FB 13 Tf 50 412 Td (Stage 1: Spring Boot 2.1 / Java 11 to Spring Boot 2.7 / Java 11) Tj ET
+BT /FB 10 Tf 50 386 Td (Metric) Tj ET
+50 388 248 20 re S
+BT /FB 10 Tf 298 386 Td (Value) Tj ET
+298 388 248 20 re S
+BT /FH 9 Tf 52 366 Td (Status) Tj ET
+50 348 248 20 re S
+BT /FH 9 Tf 300 366 Td (manifest_ready) Tj ET
+298 348 248 20 re S
+BT /FH 9 Tf 52 346 Td (Duration) Tj ET
+50 328 248 20 re S
+BT /FH 9 Tf 300 346 Td (13m 12s) Tj ET
+298 328 248 20 re S
+BT /FH 9 Tf 52 326 Td (Files changed) Tj ET
+50 308 248 20 re S
+BT /FH 9 Tf 300 326 Td (0) Tj ET
+298 308 248 20 re S
+BT /FH 9 Tf 52 306 Td (Lines added) Tj ET
+50 288 248 20 re S
+BT /FH 9 Tf 300 306 Td (0) Tj ET
+298 288 248 20 re S
+BT /FH 9 Tf 52 286 Td (Lines deleted) Tj ET
+50 268 248 20 re S
+BT /FH 9 Tf 300 286 Td (0) Tj ET
+298 268 248 20 re S
+BT /FH 9 Tf 52 266 Td (Total lines changed) Tj ET
+50 248 248 20 re S
+BT /FH 9 Tf 300 266 Td (0) Tj ET
+298 248 248 20 re S
+BT /FH 9 Tf 52 246 Td (Transform) Tj ET
+50 228 248 20 re S
+BT /FH 9 Tf 300 246 Td (not captured) Tj ET
+298 228 248 20 re S
+BT /FH 9 Tf 52 226 Td (Build) Tj ET
+50 208 248 20 re S
+BT /FH 9 Tf 300 226 Td (not captured) Tj ET
+298 208 248 20 re S
+BT /FH 9 Tf 52 206 Td (Tests) Tj ET
+50 188 248 20 re S
+BT /FH 9 Tf 300 206 Td (not captured) Tj ET
+298 188 248 20 re S
+BT /FH 9 Tf 52 186 Td (Proof) Tj ET
+50 168 248 20 re S
+BT /FH 9 Tf 300 186 Td (not captured) Tj ET
+298 168 248 20 re S
+BT /FH 9 Tf 52 166 Td (Test total / passed / failed) Tj ET
+50 148 248 20 re S
+BT /FH 9 Tf 300 166 Td (0 / 0 / 0) Tj ET
+298 148 248 20 re S
+BT /FH 9 Tf 52 146 Td (Repair attempts) Tj ET
+50 128 248 20 re S
+BT /FH 9 Tf 300 146 Td (0) Tj ET
+298 128 248 20 re S
+BT /FB 16 Tf 50 122 Td (Migration Process Timeline) Tj ET
+BT /FB 10 Tf 50 790 Td (Time) Tj ET
+50 792 99 20 re S
+BT /FB 10 Tf 149 790 Td (Stage) Tj ET
+149 792 99 20 re S
+BT /FB 10 Tf 248 790 Td (Event) Tj ET
+248 792 99 20 re S
+BT /FB 10 Tf 347 790 Td (Status) Tj ET
+347 792 99 20 re S
+BT /FB 10 Tf 446 790 Td (Detail) Tj ET
+446 792 99 20 re S
+BT /FH 9 Tf 52 770 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 756 Td (09T23:25:11.) Tj ET
+BT /FH 9 Tf 52 742 Td (119886Z) Tj ET
+50 752 99 20 re S
+BT /FH 9 Tf 151 770 Td () Tj ET
+149 752 99 20 re S
+BT /FH 9 Tf 250 770 Td (Job Created) Tj ET
+248 752 99 20 re S
+BT /FH 9 Tf 349 770 Td (created) Tj ET
+347 752 99 20 re S
+BT /FH 9 Tf 448 770 Td (V2 migration job ) Tj ET
+BT /FH 9 Tf 448 756 Td (created.) Tj ET
+446 752 99 20 re S
+BT /FH 9 Tf 52 750 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 736 Td (09T23:25:11.) Tj ET
+BT /FH 9 Tf 52 722 Td (181809Z) Tj ET
+50 732 99 20 re S
+BT /FH 9 Tf 151 750 Td (1) Tj ET
+149 732 99 20 re S
+BT /FH 9 Tf 250 750 Td (Stage Queued) Tj ET
+248 732 99 20 re S
+BT /FH 9 Tf 349 750 Td (queued) Tj ET
+347 732 99 20 re S
+BT /FH 9 Tf 448 750 Td (Stage 1 command ) Tj ET
+BT /FH 9 Tf 448 736 Td (manifest queued ) Tj ET
+BT /FH 9 Tf 448 722 Td (for real ) Tj ET
+BT /FH 9 Tf 448 708 Td (orchestrator ) Tj ET
+BT /FH 9 Tf 448 694 Td (execution.) Tj ET
+446 732 99 20 re S
+BT /FH 9 Tf 52 730 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 716 Td (09T23:25:11.) Tj ET
+BT /FH 9 Tf 52 702 Td (265503Z) Tj ET
+50 712 99 20 re S
+BT /FH 9 Tf 151 730 Td (1) Tj ET
+149 712 99 20 re S
+BT /FH 9 Tf 250 730 Td (Stage Started) Tj ET
+248 712 99 20 re S
+BT /FH 9 Tf 349 730 Td (running) Tj ET
+347 712 99 20 re S
+BT /FH 9 Tf 448 730 Td (Stage 1 real ) Tj ET
+BT /FH 9 Tf 448 716 Td (orchestrator ) Tj ET
+BT /FH 9 Tf 448 702 Td (started.) Tj ET
+446 712 99 20 re S
+BT /FH 9 Tf 52 710 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 696 Td (09T23:25:11.) Tj ET
+BT /FH 9 Tf 52 682 Td (331596Z) Tj ET
+50 692 99 20 re S
+BT /FH 9 Tf 151 710 Td (1) Tj ET
+149 692 99 20 re S
+BT /FH 9 Tf 250 710 Td (Command Started) Tj ET
+248 692 99 20 re S
+BT /FH 9 Tf 349 710 Td (running) Tj ET
+347 692 99 20 re S
+BT /FH 9 Tf 448 710 Td (Backend-) Tj ET
+BT /FH 9 Tf 448 696 Td (owned ) Tj ET
+BT /FH 9 Tf 448 682 Td (orchestrator ) Tj ET
+BT /FH 9 Tf 448 668 Td (manifest launched.) Tj ET
+446 692 99 20 re S
+BT /FH 9 Tf 52 690 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 676 Td (09T23:25:11.) Tj ET
+BT /FH 9 Tf 52 662 Td (451236Z) Tj ET
+50 672 99 20 re S
+BT /FH 9 Tf 151 690 Td (1) Tj ET
+149 672 99 20 re S
+BT /FH 9 Tf 250 690 Td (Process Started) Tj ET
+248 672 99 20 re S
+BT /FH 9 Tf 349 690 Td (running) Tj ET
+347 672 99 20 re S
+BT /FH 9 Tf 448 690 Td (Orchestrator ) Tj ET
+BT /FH 9 Tf 448 676 Td (subprocess is ) Tj ET
+BT /FH 9 Tf 448 662 Td (running.) Tj ET
+446 672 99 20 re S
+BT /FH 9 Tf 52 670 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 656 Td (09T23:25:13.) Tj ET
+BT /FH 9 Tf 52 642 Td (427560Z) Tj ET
+50 652 99 20 re S
+BT /FH 9 Tf 151 670 Td (1) Tj ET
+149 652 99 20 re S
+BT /FH 9 Tf 250 670 Td (Analysis Started) Tj ET
+248 652 99 20 re S
+BT /FH 9 Tf 349 670 Td (running) Tj ET
+347 652 99 20 re S
+BT /FH 9 Tf 448 670 Td (analysis phase ) Tj ET
+BT /FH 9 Tf 448 656 Td (started.) Tj ET
+446 652 99 20 re S
+BT /FH 9 Tf 52 650 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 636 Td (09T23:25:19.) Tj ET
+BT /FH 9 Tf 52 622 Td (730321Z) Tj ET
+50 632 99 20 re S
+BT /FH 9 Tf 151 650 Td () Tj ET
+149 632 99 20 re S
+BT /FH 9 Tf 250 650 Td (Approval Mode ) Tj ET
+BT /FH 9 Tf 250 636 Td (Updated) Tj ET
+248 632 99 20 re S
+BT /FH 9 Tf 349 650 Td (updated) Tj ET
+347 632 99 20 re S
+BT /FH 9 Tf 448 650 Td (Auto Approval ) Tj ET
+BT /FH 9 Tf 448 636 Td (enabled.) Tj ET
+446 632 99 20 re S
+BT /FH 9 Tf 52 630 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 616 Td (09T23:34:00.) Tj ET
+BT /FH 9 Tf 52 602 Td (329268Z) Tj ET
+50 612 99 20 re S
+BT /FH 9 Tf 151 630 Td (1) Tj ET
+149 612 99 20 re S
+BT /FH 9 Tf 250 630 Td (Analysis Completed) Tj ET
+248 612 99 20 re S
+BT /FH 9 Tf 349 630 Td (completed) Tj ET
+347 612 99 20 re S
+BT /FH 9 Tf 448 630 Td (analysis phase ) Tj ET
+BT /FH 9 Tf 448 616 Td (completed.) Tj ET
+446 612 99 20 re S
+BT /FH 9 Tf 52 610 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 596 Td (09T23:34:00.) Tj ET
+BT /FH 9 Tf 52 582 Td (386683Z) Tj ET
+50 592 99 20 re S
+BT /FH 9 Tf 151 610 Td (1) Tj ET
+149 592 99 20 re S
+BT /FH 9 Tf 250 610 Td (Planning Started) Tj ET
+248 592 99 20 re S
+BT /FH 9 Tf 349 610 Td (running) Tj ET
+347 592 99 20 re S
+BT /FH 9 Tf 448 610 Td (planning phase ) Tj ET
+BT /FH 9 Tf 448 596 Td (started.) Tj ET
+446 592 99 20 re S
+BT /FH 9 Tf 52 590 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 576 Td (09T23:34:00.) Tj ET
+BT /FH 9 Tf 52 562 Td (624375Z) Tj ET
+50 572 99 20 re S
+BT /FH 9 Tf 151 590 Td (1) Tj ET
+149 572 99 20 re S
+BT /FH 9 Tf 250 590 Td (Planning Completed) Tj ET
+248 572 99 20 re S
+BT /FH 9 Tf 349 590 Td (completed) Tj ET
+347 572 99 20 re S
+BT /FH 9 Tf 448 590 Td (planning phase ) Tj ET
+BT /FH 9 Tf 448 576 Td (completed.) Tj ET
+446 572 99 20 re S
+BT /FH 9 Tf 52 570 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 556 Td (09T23:34:00.) Tj ET
+BT /FH 9 Tf 52 542 Td (741752Z) Tj ET
+50 552 99 20 re S
+BT /FH 9 Tf 151 570 Td (1) Tj ET
+149 552 99 20 re S
+BT /FH 9 Tf 250 570 Td (Assessment Started) Tj ET
+248 552 99 20 re S
+BT /FH 9 Tf 349 570 Td (running) Tj ET
+347 552 99 20 re S
+BT /FH 9 Tf 448 570 Td (assessment phase ) Tj ET
+BT /FH 9 Tf 448 556 Td (started.) Tj ET
+446 552 99 20 re S
+BT /FH 9 Tf 52 550 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 536 Td (09T23:34:00.) Tj ET
+BT /FH 9 Tf 52 522 Td (833873Z) Tj ET
+50 532 99 20 re S
+BT /FH 9 Tf 151 550 Td (1) Tj ET
+149 532 99 20 re S
+BT /FH 9 Tf 250 550 Td (Assessment ) Tj ET
+BT /FH 9 Tf 250 536 Td (Completed) Tj ET
+248 532 99 20 re S
+BT /FH 9 Tf 349 550 Td (completed) Tj ET
+347 532 99 20 re S
+BT /FH 9 Tf 448 550 Td (assessment phase ) Tj ET
+BT /FH 9 Tf 448 536 Td (completed.) Tj ET
+446 532 99 20 re S
+BT /FH 9 Tf 52 530 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 516 Td (09T23:34:00.) Tj ET
+BT /FH 9 Tf 52 502 Td (927944Z) Tj ET
+50 512 99 20 re S
+BT /FH 9 Tf 151 530 Td (1) Tj ET
+149 512 99 20 re S
+BT /FH 9 Tf 250 530 Td (Approval Blocked) Tj ET
+248 512 99 20 re S
+BT /FH 9 Tf 349 530 Td (blocked) Tj ET
+347 512 99 20 re S
+BT /FH 9 Tf 448 530 Td (Human approval ) Tj ET
+BT /FH 9 Tf 448 516 Td (required.) Tj ET
+446 512 99 20 re S
+BT /FH 9 Tf 52 510 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 496 Td (09T23:34:01.) Tj ET
+BT /FH 9 Tf 52 482 Td (467138Z) Tj ET
+50 492 99 20 re S
+BT /FH 9 Tf 151 510 Td (1) Tj ET
+149 492 99 20 re S
+BT /FH 9 Tf 250 510 Td (Artifact Written) Tj ET
+248 492 99 20 re S
+BT /FH 9 Tf 349 510 Td (completed) Tj ET
+347 492 99 20 re S
+BT /FH 9 Tf 448 510 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 496 Td ( analysis_report) Tj ET
+446 492 99 20 re S
+BT /FH 9 Tf 52 490 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 476 Td (09T23:34:01.) Tj ET
+BT /FH 9 Tf 52 462 Td (500826Z) Tj ET
+50 472 99 20 re S
+BT /FH 9 Tf 151 490 Td (1) Tj ET
+149 472 99 20 re S
+BT /FH 9 Tf 250 490 Td (Artifact Written) Tj ET
+248 472 99 20 re S
+BT /FH 9 Tf 349 490 Td (completed) Tj ET
+347 472 99 20 re S
+BT /FH 9 Tf 448 490 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 476 Td ( analysis_report.) Tj ET
+BT /FH 9 Tf 448 462 Td (json) Tj ET
+446 472 99 20 re S
+BT /FH 9 Tf 52 470 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 456 Td (09T23:34:01.) Tj ET
+BT /FH 9 Tf 52 442 Td (536050Z) Tj ET
+50 452 99 20 re S
+BT /FH 9 Tf 151 470 Td (1) Tj ET
+149 452 99 20 re S
+BT /FH 9 Tf 250 470 Td (Artifact Written) Tj ET
+248 452 99 20 re S
+BT /FH 9 Tf 349 470 Td (completed) Tj ET
+347 452 99 20 re S
+BT /FH 9 Tf 448 470 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 456 Td ( analysis_summary) Tj ET
+446 452 99 20 re S
+BT /FH 9 Tf 52 450 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 436 Td (09T23:34:01.) Tj ET
+BT /FH 9 Tf 52 422 Td (587971Z) Tj ET
+50 432 99 20 re S
+BT /FH 9 Tf 151 450 Td (1) Tj ET
+149 432 99 20 re S
+BT /FH 9 Tf 250 450 Td (Artifact Written) Tj ET
+248 432 99 20 re S
+BT /FH 9 Tf 349 450 Td (completed) Tj ET
+347 432 99 20 re S
+BT /FH 9 Tf 448 450 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 436 Td ( analysis_summary.) Tj ET
+BT /FH 9 Tf 448 422 Td (md) Tj ET
+446 432 99 20 re S
+BT /FH 9 Tf 52 430 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 416 Td (09T23:34:01.) Tj ET
+BT /FH 9 Tf 52 402 Td (670673Z) Tj ET
+50 412 99 20 re S
+BT /FH 9 Tf 151 430 Td (1) Tj ET
+149 412 99 20 re S
+BT /FH 9 Tf 250 430 Td (Artifact Written) Tj ET
+248 412 99 20 re S
+BT /FH 9 Tf 349 430 Td (completed) Tj ET
+347 412 99 20 re S
+BT /FH 9 Tf 448 430 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 416 Td ( approval_request.) Tj ET
+BT /FH 9 Tf 448 402 Td (json) Tj ET
+446 412 99 20 re S
+BT /FH 9 Tf 52 410 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 396 Td (09T23:34:01.) Tj ET
+BT /FH 9 Tf 52 382 Td (731822Z) Tj ET
+50 392 99 20 re S
+BT /FH 9 Tf 151 410 Td (1) Tj ET
+149 392 99 20 re S
+BT /FH 9 Tf 250 410 Td (Artifact Written) Tj ET
+248 392 99 20 re S
+BT /FH 9 Tf 349 410 Td (completed) Tj ET
+347 392 99 20 re S
+BT /FH 9 Tf 448 410 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 396 Td ( assessment_report) Tj ET
+446 392 99 20 re S
+BT /FH 9 Tf 52 390 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 376 Td (09T23:34:01.) Tj ET
+BT /FH 9 Tf 52 362 Td (789609Z) Tj ET
+50 372 99 20 re S
+BT /FH 9 Tf 151 390 Td (1) Tj ET
+149 372 99 20 re S
+BT /FH 9 Tf 250 390 Td (Artifact Written) Tj ET
+248 372 99 20 re S
+BT /FH 9 Tf 349 390 Td (completed) Tj ET
+347 372 99 20 re S
+BT /FH 9 Tf 448 390 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 376 Td ( assessment_) Tj ET
+BT /FH 9 Tf 448 362 Td (report.json) Tj ET
+446 372 99 20 re S
+BT /FH 9 Tf 52 370 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 356 Td (09T23:34:01.) Tj ET
+BT /FH 9 Tf 52 342 Td (849466Z) Tj ET
+50 352 99 20 re S
+BT /FH 9 Tf 151 370 Td (1) Tj ET
+149 352 99 20 re S
+BT /FH 9 Tf 250 370 Td (Artifact Written) Tj ET
+248 352 99 20 re S
+BT /FH 9 Tf 349 370 Td (completed) Tj ET
+347 352 99 20 re S
+BT /FH 9 Tf 448 370 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 356 Td ( assessment_) Tj ET
+BT /FH 9 Tf 448 342 Td (summary) Tj ET
+446 352 99 20 re S
+BT /FH 9 Tf 52 350 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 336 Td (09T23:34:01.) Tj ET
+BT /FH 9 Tf 52 322 Td (907325Z) Tj ET
+50 332 99 20 re S
+BT /FH 9 Tf 151 350 Td (1) Tj ET
+149 332 99 20 re S
+BT /FH 9 Tf 250 350 Td (Artifact Written) Tj ET
+248 332 99 20 re S
+BT /FH 9 Tf 349 350 Td (completed) Tj ET
+347 332 99 20 re S
+BT /FH 9 Tf 448 350 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 336 Td ( assessment_) Tj ET
+BT /FH 9 Tf 448 322 Td (summary.md) Tj ET
+446 332 99 20 re S
+BT /FH 9 Tf 52 330 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 316 Td (09T23:34:01.) Tj ET
+BT /FH 9 Tf 52 302 Td (951745Z) Tj ET
+50 312 99 20 re S
+BT /FH 9 Tf 151 330 Td (1) Tj ET
+149 312 99 20 re S
+BT /FH 9 Tf 250 330 Td (Artifact Written) Tj ET
+248 312 99 20 re S
+BT /FH 9 Tf 349 330 Td (completed) Tj ET
+347 312 99 20 re S
+BT /FH 9 Tf 448 330 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 316 Td ( config_inventory) Tj ET
+446 312 99 20 re S
+BT /FH 9 Tf 52 310 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 296 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 282 Td (007601Z) Tj ET
+50 292 99 20 re S
+BT /FH 9 Tf 151 310 Td (1) Tj ET
+149 292 99 20 re S
+BT /FH 9 Tf 250 310 Td (Artifact Written) Tj ET
+248 292 99 20 re S
+BT /FH 9 Tf 349 310 Td (completed) Tj ET
+347 292 99 20 re S
+BT /FH 9 Tf 448 310 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 296 Td ( config_inventory.) Tj ET
+BT /FH 9 Tf 448 282 Td (json) Tj ET
+446 292 99 20 re S
+BT /FH 9 Tf 52 290 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 276 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 262 Td (061356Z) Tj ET
+50 272 99 20 re S
+BT /FH 9 Tf 151 290 Td (1) Tj ET
+149 272 99 20 re S
+BT /FH 9 Tf 250 290 Td (Artifact Written) Tj ET
+248 272 99 20 re S
+BT /FH 9 Tf 349 290 Td (completed) Tj ET
+347 272 99 20 re S
+BT /FH 9 Tf 448 290 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 276 Td ( copilot_assist) Tj ET
+446 272 99 20 re S
+BT /FH 9 Tf 52 270 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 256 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 242 Td (114607Z) Tj ET
+50 252 99 20 re S
+BT /FH 9 Tf 151 270 Td (1) Tj ET
+149 252 99 20 re S
+BT /FH 9 Tf 250 270 Td (Artifact Written) Tj ET
+248 252 99 20 re S
+BT /FH 9 Tf 349 270 Td (completed) Tj ET
+347 252 99 20 re S
+BT /FH 9 Tf 448 270 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 256 Td ( copilot_assist.) Tj ET
+BT /FH 9 Tf 448 242 Td (json) Tj ET
+446 252 99 20 re S
+BT /FH 9 Tf 52 250 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 236 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 222 Td (183008Z) Tj ET
+50 232 99 20 re S
+BT /FH 9 Tf 151 250 Td (1) Tj ET
+149 232 99 20 re S
+BT /FH 9 Tf 250 250 Td (Artifact Written) Tj ET
+248 232 99 20 re S
+BT /FH 9 Tf 349 250 Td (completed) Tj ET
+347 232 99 20 re S
+BT /FH 9 Tf 448 250 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 236 Td ( dependency_graph) Tj ET
+446 232 99 20 re S
+BT /FH 9 Tf 52 230 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 216 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 202 Td (228930Z) Tj ET
+50 212 99 20 re S
+BT /FH 9 Tf 151 230 Td (1) Tj ET
+149 212 99 20 re S
+BT /FH 9 Tf 250 230 Td (Artifact Written) Tj ET
+248 212 99 20 re S
+BT /FH 9 Tf 349 230 Td (completed) Tj ET
+347 212 99 20 re S
+BT /FH 9 Tf 448 230 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 216 Td ( dependency_graph.) Tj ET
+BT /FH 9 Tf 448 202 Td (json) Tj ET
+446 212 99 20 re S
+BT /FH 9 Tf 52 210 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 196 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 182 Td (301381Z) Tj ET
+50 192 99 20 re S
+BT /FH 9 Tf 151 210 Td (1) Tj ET
+149 192 99 20 re S
+BT /FH 9 Tf 250 210 Td (Artifact Written) Tj ET
+248 192 99 20 re S
+BT /FH 9 Tf 349 210 Td (completed) Tj ET
+347 192 99 20 re S
+BT /FH 9 Tf 448 210 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 196 Td ( migration_plan.) Tj ET
+BT /FH 9 Tf 448 182 Td (yaml) Tj ET
+446 192 99 20 re S
+BT /FH 9 Tf 52 190 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 176 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 162 Td (359313Z) Tj ET
+50 172 99 20 re S
+BT /FH 9 Tf 151 190 Td (1) Tj ET
+149 172 99 20 re S
+BT /FH 9 Tf 250 190 Td (Artifact Written) Tj ET
+248 172 99 20 re S
+BT /FH 9 Tf 349 190 Td (completed) Tj ET
+347 172 99 20 re S
+BT /FH 9 Tf 448 190 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 176 Td ( migration_units.) Tj ET
+BT /FH 9 Tf 448 162 Td (yaml) Tj ET
+446 172 99 20 re S
+BT /FH 9 Tf 52 170 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 156 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 142 Td (425969Z) Tj ET
+50 152 99 20 re S
+BT /FH 9 Tf 151 170 Td (1) Tj ET
+149 152 99 20 re S
+BT /FH 9 Tf 250 170 Td (Artifact Written) Tj ET
+248 152 99 20 re S
+BT /FH 9 Tf 349 170 Td (completed) Tj ET
+347 152 99 20 re S
+BT /FH 9 Tf 448 170 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 156 Td ( plan_summary.md) Tj ET
+446 152 99 20 re S
+BT /FH 9 Tf 52 150 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 136 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 122 Td (487449Z) Tj ET
+50 132 99 20 re S
+BT /FH 9 Tf 151 150 Td (1) Tj ET
+149 132 99 20 re S
+BT /FH 9 Tf 250 150 Td (Artifact Written) Tj ET
+248 132 99 20 re S
+BT /FH 9 Tf 349 150 Td (completed) Tj ET
+347 132 99 20 re S
+BT /FH 9 Tf 448 150 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 136 Td ( plan_validation_) Tj ET
+BT /FH 9 Tf 448 122 Td (report.json) Tj ET
+446 132 99 20 re S
+BT /FH 9 Tf 52 130 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 116 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 102 Td (523216Z) Tj ET
+50 112 99 20 re S
+BT /FH 9 Tf 151 130 Td (1) Tj ET
+149 112 99 20 re S
+BT /FH 9 Tf 250 130 Td (Artifact Written) Tj ET
+248 112 99 20 re S
+BT /FH 9 Tf 349 130 Td (completed) Tj ET
+347 112 99 20 re S
+BT /FH 9 Tf 448 130 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 116 Td ( read_only_) Tj ET
+BT /FH 9 Tf 448 102 Td (verification) Tj ET
+446 112 99 20 re S
+BT /FH 9 Tf 52 110 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 96 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 82 Td (576377Z) Tj ET
+50 92 99 20 re S
+BT /FH 9 Tf 151 110 Td (1) Tj ET
+149 92 99 20 re S
+BT /FH 9 Tf 250 110 Td (Artifact Written) Tj ET
+248 92 99 20 re S
+BT /FH 9 Tf 349 110 Td (completed) Tj ET
+347 92 99 20 re S
+BT /FH 9 Tf 448 110 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 96 Td ( read_only_) Tj ET
+BT /FH 9 Tf 448 82 Td (verification.json) Tj ET
+446 92 99 20 re S
+BT /FH 9 Tf 52 90 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 76 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 62 Td (640488Z) Tj ET
+50 72 99 20 re S
+BT /FH 9 Tf 151 90 Td (1) Tj ET
+149 72 99 20 re S
+BT /FH 9 Tf 250 90 Td (Artifact Written) Tj ET
+248 72 99 20 re S
+BT /FH 9 Tf 349 90 Td (completed) Tj ET
+347 72 99 20 re S
+BT /FH 9 Tf 448 90 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 76 Td ( rewrite_dry_run.) Tj ET
+BT /FH 9 Tf 448 62 Td (patch) Tj ET
+446 72 99 20 re S
+BT /FH 9 Tf 52 70 Td (2026-07-) Tj ET
+50 52 99 20 re S
+BT /FH 9 Tf 151 70 Td (1) Tj ET
+149 52 99 20 re S
+BT /FH 9 Tf 250 70 Td (Artifact Written) Tj ET
+248 52 99 20 re S
+BT /FH 9 Tf 349 70 Td (completed) Tj ET
+347 52 99 20 re S
+BT /FH 9 Tf 448 70 Td (Artifact written:) Tj ET
+446 52 99 20 re S
+BT /FH 9 Tf 52 790 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 776 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 762 Td (757646Z) Tj ET
+50 772 99 20 re S
+BT /FH 9 Tf 151 790 Td (1) Tj ET
+149 772 99 20 re S
+BT /FH 9 Tf 250 790 Td (Artifact Written) Tj ET
+248 772 99 20 re S
+BT /FH 9 Tf 349 790 Td (completed) Tj ET
+347 772 99 20 re S
+BT /FH 9 Tf 448 790 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 776 Td ( rewrite_impact_) Tj ET
+BT /FH 9 Tf 448 762 Td (summary.json) Tj ET
+446 772 99 20 re S
+BT /FH 9 Tf 52 770 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 756 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 742 Td (827235Z) Tj ET
+50 752 99 20 re S
+BT /FH 9 Tf 151 770 Td (1) Tj ET
+149 752 99 20 re S
+BT /FH 9 Tf 250 770 Td (Artifact Written) Tj ET
+248 752 99 20 re S
+BT /FH 9 Tf 349 770 Td (completed) Tj ET
+347 752 99 20 re S
+BT /FH 9 Tf 448 770 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 756 Td ( rewrite_patch) Tj ET
+446 752 99 20 re S
+BT /FH 9 Tf 52 750 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 736 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 722 Td (879374Z) Tj ET
+50 732 99 20 re S
+BT /FH 9 Tf 151 750 Td (1) Tj ET
+149 732 99 20 re S
+BT /FH 9 Tf 250 750 Td (Artifact Written) Tj ET
+248 732 99 20 re S
+BT /FH 9 Tf 349 750 Td (completed) Tj ET
+347 732 99 20 re S
+BT /FH 9 Tf 448 750 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 736 Td ( rewrite_plugin_) Tj ET
+BT /FH 9 Tf 448 722 Td (plan) Tj ET
+446 732 99 20 re S
+BT /FH 9 Tf 52 730 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 716 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 702 Td (930793Z) Tj ET
+50 712 99 20 re S
+BT /FH 9 Tf 151 730 Td (1) Tj ET
+149 712 99 20 re S
+BT /FH 9 Tf 250 730 Td (Artifact Written) Tj ET
+248 712 99 20 re S
+BT /FH 9 Tf 349 730 Td (completed) Tj ET
+347 712 99 20 re S
+BT /FH 9 Tf 448 730 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 716 Td ( rewrite_plugin_) Tj ET
+BT /FH 9 Tf 448 702 Td (plan.json) Tj ET
+446 712 99 20 re S
+BT /FH 9 Tf 52 710 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 696 Td (09T23:34:02.) Tj ET
+BT /FH 9 Tf 52 682 Td (988519Z) Tj ET
+50 692 99 20 re S
+BT /FH 9 Tf 151 710 Td (1) Tj ET
+149 692 99 20 re S
+BT /FH 9 Tf 250 710 Td (Artifact Written) Tj ET
+248 692 99 20 re S
+BT /FH 9 Tf 349 710 Td (completed) Tj ET
+347 692 99 20 re S
+BT /FH 9 Tf 448 710 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 696 Td ( rewrite_preview) Tj ET
+446 692 99 20 re S
+BT /FH 9 Tf 52 690 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 676 Td (09T23:34:03.) Tj ET
+BT /FH 9 Tf 52 662 Td (036269Z) Tj ET
+50 672 99 20 re S
+BT /FH 9 Tf 151 690 Td (1) Tj ET
+149 672 99 20 re S
+BT /FH 9 Tf 250 690 Td (Artifact Written) Tj ET
+248 672 99 20 re S
+BT /FH 9 Tf 349 690 Td (completed) Tj ET
+347 672 99 20 re S
+BT /FH 9 Tf 448 690 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 676 Td ( rewrite_preview.) Tj ET
+BT /FH 9 Tf 448 662 Td (json) Tj ET
+446 672 99 20 re S
+BT /FH 9 Tf 52 670 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 656 Td (09T23:34:03.) Tj ET
+BT /FH 9 Tf 52 642 Td (102496Z) Tj ET
+50 652 99 20 re S
+BT /FH 9 Tf 151 670 Td (1) Tj ET
+149 652 99 20 re S
+BT /FH 9 Tf 250 670 Td (Artifact Written) Tj ET
+248 652 99 20 re S
+BT /FH 9 Tf 349 670 Td (completed) Tj ET
+347 652 99 20 re S
+BT /FH 9 Tf 448 670 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 656 Td ( source_profile_) Tj ET
+BT /FH 9 Tf 448 642 Td (detection) Tj ET
+446 652 99 20 re S
+BT /FH 9 Tf 52 650 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 636 Td (09T23:34:03.) Tj ET
+BT /FH 9 Tf 52 622 Td (161192Z) Tj ET
+50 632 99 20 re S
+BT /FH 9 Tf 151 650 Td (1) Tj ET
+149 632 99 20 re S
+BT /FH 9 Tf 250 650 Td (Artifact Written) Tj ET
+248 632 99 20 re S
+BT /FH 9 Tf 349 650 Td (completed) Tj ET
+347 632 99 20 re S
+BT /FH 9 Tf 448 650 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 636 Td ( target_) Tj ET
+BT /FH 9 Tf 448 622 Td (dependency_plan) Tj ET
+446 632 99 20 re S
+BT /FH 9 Tf 52 630 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 616 Td (09T23:34:03.) Tj ET
+BT /FH 9 Tf 52 602 Td (218509Z) Tj ET
+50 612 99 20 re S
+BT /FH 9 Tf 151 630 Td (1) Tj ET
+149 612 99 20 re S
+BT /FH 9 Tf 250 630 Td (Artifact Written) Tj ET
+248 612 99 20 re S
+BT /FH 9 Tf 349 630 Td (completed) Tj ET
+347 612 99 20 re S
+BT /FH 9 Tf 448 630 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 616 Td ( target_) Tj ET
+BT /FH 9 Tf 448 602 Td (dependency_plan.) Tj ET
+BT /FH 9 Tf 448 588 Td (json) Tj ET
+446 612 99 20 re S
+BT /FH 9 Tf 52 610 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 596 Td (09T23:34:03.) Tj ET
+BT /FH 9 Tf 52 582 Td (280254Z) Tj ET
+50 592 99 20 re S
+BT /FH 9 Tf 151 610 Td (1) Tj ET
+149 592 99 20 re S
+BT /FH 9 Tf 250 610 Td (Artifact Written) Tj ET
+248 592 99 20 re S
+BT /FH 9 Tf 349 610 Td (completed) Tj ET
+347 592 99 20 re S
+BT /FH 9 Tf 448 610 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 596 Td ( test_inventory) Tj ET
+446 592 99 20 re S
+BT /FH 9 Tf 52 590 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 576 Td (09T23:34:03.) Tj ET
+BT /FH 9 Tf 52 562 Td (340387Z) Tj ET
+50 572 99 20 re S
+BT /FH 9 Tf 151 590 Td (1) Tj ET
+149 572 99 20 re S
+BT /FH 9 Tf 250 590 Td (Artifact Written) Tj ET
+248 572 99 20 re S
+BT /FH 9 Tf 349 590 Td (completed) Tj ET
+347 572 99 20 re S
+BT /FH 9 Tf 448 590 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 576 Td ( test_inventory.) Tj ET
+BT /FH 9 Tf 448 562 Td (json) Tj ET
+446 572 99 20 re S
+BT /FH 9 Tf 52 570 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 556 Td (09T23:34:03.) Tj ET
+BT /FH 9 Tf 52 542 Td (464837Z) Tj ET
+50 552 99 20 re S
+BT /FH 9 Tf 151 570 Td (1) Tj ET
+149 552 99 20 re S
+BT /FH 9 Tf 250 570 Td (Approval Auto ) Tj ET
+BT /FH 9 Tf 250 556 Td (Approved) Tj ET
+248 552 99 20 re S
+BT /FH 9 Tf 349 570 Td (completed) Tj ET
+347 552 99 20 re S
+BT /FH 9 Tf 448 570 Td (Approval gate ) Tj ET
+BT /FH 9 Tf 448 556 Td (auto-) Tj ET
+BT /FH 9 Tf 448 542 Td (approved because ) Tj ET
+BT /FH 9 Tf 448 528 Td (Auto Approval is ) Tj ET
+BT /FH 9 Tf 448 514 Td (enabled.) Tj ET
+446 552 99 20 re S
+BT /FH 9 Tf 52 550 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 536 Td (09T23:34:03.) Tj ET
+BT /FH 9 Tf 52 522 Td (548514Z) Tj ET
+50 532 99 20 re S
+BT /FH 9 Tf 151 550 Td (1) Tj ET
+149 532 99 20 re S
+BT /FH 9 Tf 250 550 Td (Approval Started) Tj ET
+248 532 99 20 re S
+BT /FH 9 Tf 349 550 Td (running) Tj ET
+347 532 99 20 re S
+BT /FH 9 Tf 448 550 Td (Approval ) Tj ET
+BT /FH 9 Tf 448 536 Td (accepted; ) Tj ET
+BT /FH 9 Tf 448 522 Td (orchestrator ) Tj ET
+BT /FH 9 Tf 448 508 Td (resume process ) Tj ET
+BT /FH 9 Tf 448 494 Td (starting.) Tj ET
+446 532 99 20 re S
+BT /FH 9 Tf 52 530 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 516 Td (09T23:34:03.) Tj ET
+BT /FH 9 Tf 52 502 Td (641315Z) Tj ET
+50 512 99 20 re S
+BT /FH 9 Tf 151 530 Td (1) Tj ET
+149 512 99 20 re S
+BT /FH 9 Tf 250 530 Td (Resume Started) Tj ET
+248 512 99 20 re S
+BT /FH 9 Tf 349 530 Td (running) Tj ET
+347 512 99 20 re S
+BT /FH 9 Tf 448 530 Td (Stage 1 real ) Tj ET
+BT /FH 9 Tf 448 516 Td (orchestrator ) Tj ET
+BT /FH 9 Tf 448 502 Td (resume started.) Tj ET
+446 512 99 20 re S
+BT /FH 9 Tf 52 510 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 496 Td (09T23:34:03.) Tj ET
+BT /FH 9 Tf 52 482 Td (754263Z) Tj ET
+50 492 99 20 re S
+BT /FH 9 Tf 151 510 Td (1) Tj ET
+149 492 99 20 re S
+BT /FH 9 Tf 250 510 Td (Command Started) Tj ET
+248 492 99 20 re S
+BT /FH 9 Tf 349 510 Td (running) Tj ET
+347 492 99 20 re S
+BT /FH 9 Tf 448 510 Td (Backend-) Tj ET
+BT /FH 9 Tf 448 496 Td (owned approval ) Tj ET
+BT /FH 9 Tf 448 482 Td (resume command ) Tj ET
+BT /FH 9 Tf 448 468 Td (launched.) Tj ET
+446 492 99 20 re S
+BT /FH 9 Tf 52 490 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 476 Td (09T23:34:03.) Tj ET
+BT /FH 9 Tf 52 462 Td (976596Z) Tj ET
+50 472 99 20 re S
+BT /FH 9 Tf 151 490 Td (1) Tj ET
+149 472 99 20 re S
+BT /FH 9 Tf 250 490 Td (Process Started) Tj ET
+248 472 99 20 re S
+BT /FH 9 Tf 349 490 Td (running) Tj ET
+347 472 99 20 re S
+BT /FH 9 Tf 448 490 Td (Orchestrator ) Tj ET
+BT /FH 9 Tf 448 476 Td (subprocess is ) Tj ET
+BT /FH 9 Tf 448 462 Td (running.) Tj ET
+446 472 99 20 re S
+BT /FH 9 Tf 52 470 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 456 Td (09T23:34:06.) Tj ET
+BT /FH 9 Tf 52 442 Td (048737Z) Tj ET
+50 452 99 20 re S
+BT /FH 9 Tf 151 470 Td (1) Tj ET
+149 452 99 20 re S
+BT /FH 9 Tf 250 470 Td (Approval Started) Tj ET
+248 452 99 20 re S
+BT /FH 9 Tf 349 470 Td (running) Tj ET
+347 452 99 20 re S
+BT /FH 9 Tf 448 470 Td (Recording ) Tj ET
+BT /FH 9 Tf 448 456 Td (approval decision.) Tj ET
+446 452 99 20 re S
+BT /FH 9 Tf 52 450 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 436 Td (09T23:34:06.) Tj ET
+BT /FH 9 Tf 52 422 Td (108101Z) Tj ET
+50 432 99 20 re S
+BT /FH 9 Tf 151 450 Td (1) Tj ET
+149 432 99 20 re S
+BT /FH 9 Tf 250 450 Td (Approval Completed) Tj ET
+248 432 99 20 re S
+BT /FH 9 Tf 349 450 Td (completed) Tj ET
+347 432 99 20 re S
+BT /FH 9 Tf 448 450 Td (Approval decision ) Tj ET
+BT /FH 9 Tf 448 436 Td (recorded.) Tj ET
+446 432 99 20 re S
+BT /FH 9 Tf 52 430 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 416 Td (09T23:34:06.) Tj ET
+BT /FH 9 Tf 52 402 Td (162160Z) Tj ET
+50 412 99 20 re S
+BT /FH 9 Tf 151 430 Td (1) Tj ET
+149 412 99 20 re S
+BT /FH 9 Tf 250 430 Td (Approval Blocked) Tj ET
+248 412 99 20 re S
+BT /FH 9 Tf 349 430 Td (blocked) Tj ET
+347 412 99 20 re S
+BT /FH 9 Tf 448 430 Td (Human approval ) Tj ET
+BT /FH 9 Tf 448 416 Td (required.) Tj ET
+446 412 99 20 re S
+BT /FH 9 Tf 52 410 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 396 Td (09T23:34:06.) Tj ET
+BT /FH 9 Tf 52 382 Td (230518Z) Tj ET
+50 392 99 20 re S
+BT /FH 9 Tf 151 410 Td (1) Tj ET
+149 392 99 20 re S
+BT /FH 9 Tf 250 410 Td (Approval Started) Tj ET
+248 392 99 20 re S
+BT /FH 9 Tf 349 410 Td (running) Tj ET
+347 392 99 20 re S
+BT /FH 9 Tf 448 410 Td (Recording ) Tj ET
+BT /FH 9 Tf 448 396 Td (approval decision.) Tj ET
+446 392 99 20 re S
+BT /FH 9 Tf 52 390 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 376 Td (09T23:34:06.) Tj ET
+BT /FH 9 Tf 52 362 Td (285894Z) Tj ET
+50 372 99 20 re S
+BT /FH 9 Tf 151 390 Td (1) Tj ET
+149 372 99 20 re S
+BT /FH 9 Tf 250 390 Td (Approval Completed) Tj ET
+248 372 99 20 re S
+BT /FH 9 Tf 349 390 Td (completed) Tj ET
+347 372 99 20 re S
+BT /FH 9 Tf 448 390 Td (Approval decision ) Tj ET
+BT /FH 9 Tf 448 376 Td (recorded.) Tj ET
+446 372 99 20 re S
+BT /FH 9 Tf 52 370 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 356 Td (09T23:34:06.) Tj ET
+BT /FH 9 Tf 52 342 Td (633990Z) Tj ET
+50 352 99 20 re S
+BT /FH 9 Tf 151 370 Td (1) Tj ET
+149 352 99 20 re S
+BT /FH 9 Tf 250 370 Td (Approval Completed) Tj ET
+248 352 99 20 re S
+BT /FH 9 Tf 349 370 Td (completed) Tj ET
+347 352 99 20 re S
+BT /FH 9 Tf 448 370 Td (Human approval ) Tj ET
+BT /FH 9 Tf 448 356 Td (phase complete; ) Tj ET
+BT /FH 9 Tf 448 342 Td (sandbox transform ) Tj ET
+BT /FH 9 Tf 448 328 Td (has started.) Tj ET
+446 352 99 20 re S
+BT /FH 9 Tf 52 350 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 336 Td (09T23:34:06.) Tj ET
+BT /FH 9 Tf 52 322 Td (683936Z) Tj ET
+50 332 99 20 re S
+BT /FH 9 Tf 151 350 Td (1) Tj ET
+149 332 99 20 re S
+BT /FH 9 Tf 250 350 Td (Sandbox Transform ) Tj ET
+BT /FH 9 Tf 250 336 Td (Started) Tj ET
+248 332 99 20 re S
+BT /FH 9 Tf 349 350 Td (running) Tj ET
+347 332 99 20 re S
+BT /FH 9 Tf 448 350 Td (Sandbox transform ) Tj ET
+BT /FH 9 Tf 448 336 Td (started.) Tj ET
+446 332 99 20 re S
+BT /FH 9 Tf 52 330 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 316 Td (09T23:38:18.) Tj ET
+BT /FH 9 Tf 52 302 Td (407528Z) Tj ET
+50 312 99 20 re S
+BT /FH 9 Tf 151 330 Td (1) Tj ET
+149 312 99 20 re S
+BT /FH 9 Tf 250 330 Td (Sandbox Transform ) Tj ET
+BT /FH 9 Tf 250 316 Td (Completed) Tj ET
+248 312 99 20 re S
+BT /FH 9 Tf 349 330 Td (completed) Tj ET
+347 312 99 20 re S
+BT /FH 9 Tf 448 330 Td (Sandbox transform ) Tj ET
+BT /FH 9 Tf 448 316 Td (completed.) Tj ET
+446 312 99 20 re S
+BT /FH 9 Tf 52 310 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 296 Td (09T23:38:18.) Tj ET
+BT /FH 9 Tf 52 282 Td (460994Z) Tj ET
+50 292 99 20 re S
+BT /FH 9 Tf 151 310 Td (1) Tj ET
+149 292 99 20 re S
+BT /FH 9 Tf 250 310 Td (Stage Report ) Tj ET
+BT /FH 9 Tf 250 296 Td (Started) Tj ET
+248 292 99 20 re S
+BT /FH 9 Tf 349 310 Td (running) Tj ET
+347 292 99 20 re S
+BT /FH 9 Tf 448 310 Td (Final report ) Tj ET
+BT /FH 9 Tf 448 296 Td (generation ) Tj ET
+BT /FH 9 Tf 448 282 Td (started.) Tj ET
+446 292 99 20 re S
+BT /FH 9 Tf 52 290 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 276 Td (09T23:38:18.) Tj ET
+BT /FH 9 Tf 52 262 Td (505504Z) Tj ET
+50 272 99 20 re S
+BT /FH 9 Tf 151 290 Td (1) Tj ET
+149 272 99 20 re S
+BT /FH 9 Tf 250 290 Td (Stage Report ) Tj ET
+BT /FH 9 Tf 250 276 Td (Completed) Tj ET
+248 272 99 20 re S
+BT /FH 9 Tf 349 290 Td (completed) Tj ET
+347 272 99 20 re S
+BT /FH 9 Tf 448 290 Td (Final report ) Tj ET
+BT /FH 9 Tf 448 276 Td (written.) Tj ET
+446 272 99 20 re S
+BT /FH 9 Tf 52 270 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 256 Td (09T23:38:18.) Tj ET
+BT /FH 9 Tf 52 242 Td (995174Z) Tj ET
+50 252 99 20 re S
+BT /FH 9 Tf 151 270 Td (1) Tj ET
+149 252 99 20 re S
+BT /FH 9 Tf 250 270 Td (Artifact Written) Tj ET
+248 252 99 20 re S
+BT /FH 9 Tf 349 270 Td (completed) Tj ET
+347 252 99 20 re S
+BT /FH 9 Tf 448 270 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 256 Td ( analysis_report) Tj ET
+446 252 99 20 re S
+BT /FH 9 Tf 52 250 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 236 Td (09T23:38:19.) Tj ET
+BT /FH 9 Tf 52 222 Td (054185Z) Tj ET
+50 232 99 20 re S
+BT /FH 9 Tf 151 250 Td (1) Tj ET
+149 232 99 20 re S
+BT /FH 9 Tf 250 250 Td (Artifact Written) Tj ET
+248 232 99 20 re S
+BT /FH 9 Tf 349 250 Td (completed) Tj ET
+347 232 99 20 re S
+BT /FH 9 Tf 448 250 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 236 Td ( analysis_report.) Tj ET
+BT /FH 9 Tf 448 222 Td (json) Tj ET
+446 232 99 20 re S
+BT /FH 9 Tf 52 230 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 216 Td (09T23:38:19.) Tj ET
+BT /FH 9 Tf 52 202 Td (118934Z) Tj ET
+50 212 99 20 re S
+BT /FH 9 Tf 151 230 Td (1) Tj ET
+149 212 99 20 re S
+BT /FH 9 Tf 250 230 Td (Artifact Written) Tj ET
+248 212 99 20 re S
+BT /FH 9 Tf 349 230 Td (completed) Tj ET
+347 212 99 20 re S
+BT /FH 9 Tf 448 230 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 216 Td ( analysis_summary) Tj ET
+446 212 99 20 re S
+BT /FH 9 Tf 52 210 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 196 Td (09T23:38:19.) Tj ET
+BT /FH 9 Tf 52 182 Td (182892Z) Tj ET
+50 192 99 20 re S
+BT /FH 9 Tf 151 210 Td (1) Tj ET
+149 192 99 20 re S
+BT /FH 9 Tf 250 210 Td (Artifact Written) Tj ET
+248 192 99 20 re S
+BT /FH 9 Tf 349 210 Td (completed) Tj ET
+347 192 99 20 re S
+BT /FH 9 Tf 448 210 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 196 Td ( analysis_summary.) Tj ET
+BT /FH 9 Tf 448 182 Td (md) Tj ET
+446 192 99 20 re S
+BT /FH 9 Tf 52 190 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 176 Td (09T23:38:19.) Tj ET
+BT /FH 9 Tf 52 162 Td (242469Z) Tj ET
+50 172 99 20 re S
+BT /FH 9 Tf 151 190 Td (1) Tj ET
+149 172 99 20 re S
+BT /FH 9 Tf 250 190 Td (Artifact Written) Tj ET
+248 172 99 20 re S
+BT /FH 9 Tf 349 190 Td (completed) Tj ET
+347 172 99 20 re S
+BT /FH 9 Tf 448 190 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 176 Td ( approval_decision) Tj ET
+446 172 99 20 re S
+BT /FH 9 Tf 52 170 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 156 Td (09T23:38:19.) Tj ET
+BT /FH 9 Tf 52 142 Td (305829Z) Tj ET
+50 152 99 20 re S
+BT /FH 9 Tf 151 170 Td (1) Tj ET
+149 152 99 20 re S
+BT /FH 9 Tf 250 170 Td (Artifact Written) Tj ET
+248 152 99 20 re S
+BT /FH 9 Tf 349 170 Td (completed) Tj ET
+347 152 99 20 re S
+BT /FH 9 Tf 448 170 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 156 Td ( approval_request.) Tj ET
+BT /FH 9 Tf 448 142 Td (json) Tj ET
+446 152 99 20 re S
+BT /FH 9 Tf 52 150 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 136 Td (09T23:38:19.) Tj ET
+BT /FH 9 Tf 52 122 Td (349186Z) Tj ET
+50 132 99 20 re S
+BT /FH 9 Tf 151 150 Td (1) Tj ET
+149 132 99 20 re S
+BT /FH 9 Tf 250 150 Td (Artifact Written) Tj ET
+248 132 99 20 re S
+BT /FH 9 Tf 349 150 Td (completed) Tj ET
+347 132 99 20 re S
+BT /FH 9 Tf 448 150 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 136 Td ( approved_plan_) Tj ET
+BT /FH 9 Tf 448 122 Td (lock) Tj ET
+446 132 99 20 re S
+BT /FH 9 Tf 52 130 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 116 Td (09T23:38:19.) Tj ET
+BT /FH 9 Tf 52 102 Td (408951Z) Tj ET
+50 112 99 20 re S
+BT /FH 9 Tf 151 130 Td (1) Tj ET
+149 112 99 20 re S
+BT /FH 9 Tf 250 130 Td (Artifact Written) Tj ET
+248 112 99 20 re S
+BT /FH 9 Tf 349 130 Td (completed) Tj ET
+347 112 99 20 re S
+BT /FH 9 Tf 448 130 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 116 Td ( assessment_report) Tj ET
+446 112 99 20 re S
+BT /FH 9 Tf 52 110 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 96 Td (09T23:38:19.) Tj ET
+BT /FH 9 Tf 52 82 Td (468935Z) Tj ET
+50 92 99 20 re S
+BT /FH 9 Tf 151 110 Td (1) Tj ET
+149 92 99 20 re S
+BT /FH 9 Tf 250 110 Td (Artifact Written) Tj ET
+248 92 99 20 re S
+BT /FH 9 Tf 349 110 Td (completed) Tj ET
+347 92 99 20 re S
+BT /FH 9 Tf 448 110 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 96 Td ( assessment_) Tj ET
+BT /FH 9 Tf 448 82 Td (report.json) Tj ET
+446 92 99 20 re S
+BT /FH 9 Tf 52 90 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 76 Td (09T23:38:19.) Tj ET
+BT /FH 9 Tf 52 62 Td (525326Z) Tj ET
+50 72 99 20 re S
+BT /FH 9 Tf 151 90 Td (1) Tj ET
+149 72 99 20 re S
+BT /FH 9 Tf 250 90 Td (Artifact Written) Tj ET
+248 72 99 20 re S
+BT /FH 9 Tf 349 90 Td (completed) Tj ET
+347 72 99 20 re S
+BT /FH 9 Tf 448 90 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 76 Td ( assessment_) Tj ET
+BT /FH 9 Tf 448 62 Td (summary) Tj ET
+446 72 99 20 re S
+BT /FH 9 Tf 52 70 Td (2026-07-) Tj ET
+50 52 99 20 re S
+BT /FH 9 Tf 151 70 Td (1) Tj ET
+149 52 99 20 re S
+BT /FH 9 Tf 250 70 Td (Artifact Written) Tj ET
+248 52 99 20 re S
+BT /FH 9 Tf 349 70 Td (completed) Tj ET
+347 52 99 20 re S
+BT /FH 9 Tf 448 70 Td (Artifact written:) Tj ET
+446 52 99 20 re S
+BT /FH 9 Tf 52 790 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 776 Td (09T23:38:19.) Tj ET
+BT /FH 9 Tf 52 762 Td (626027Z) Tj ET
+50 772 99 20 re S
+BT /FH 9 Tf 151 790 Td (1) Tj ET
+149 772 99 20 re S
+BT /FH 9 Tf 250 790 Td (Artifact Written) Tj ET
+248 772 99 20 re S
+BT /FH 9 Tf 349 790 Td (completed) Tj ET
+347 772 99 20 re S
+BT /FH 9 Tf 448 790 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 776 Td ( config_inventory) Tj ET
+446 772 99 20 re S
+BT /FH 9 Tf 52 770 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 756 Td (09T23:38:19.) Tj ET
+BT /FH 9 Tf 52 742 Td (693126Z) Tj ET
+50 752 99 20 re S
+BT /FH 9 Tf 151 770 Td (1) Tj ET
+149 752 99 20 re S
+BT /FH 9 Tf 250 770 Td (Artifact Written) Tj ET
+248 752 99 20 re S
+BT /FH 9 Tf 349 770 Td (completed) Tj ET
+347 752 99 20 re S
+BT /FH 9 Tf 448 770 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 756 Td ( config_inventory.) Tj ET
+BT /FH 9 Tf 448 742 Td (json) Tj ET
+446 752 99 20 re S
+BT /FH 9 Tf 52 750 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 736 Td (09T23:38:19.) Tj ET
+BT /FH 9 Tf 52 722 Td (750446Z) Tj ET
+50 732 99 20 re S
+BT /FH 9 Tf 151 750 Td (1) Tj ET
+149 732 99 20 re S
+BT /FH 9 Tf 250 750 Td (Artifact Written) Tj ET
+248 732 99 20 re S
+BT /FH 9 Tf 349 750 Td (completed) Tj ET
+347 732 99 20 re S
+BT /FH 9 Tf 448 750 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 736 Td ( copilot_assist) Tj ET
+446 732 99 20 re S
+BT /FH 9 Tf 52 730 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 716 Td (09T23:38:19.) Tj ET
+BT /FH 9 Tf 52 702 Td (802362Z) Tj ET
+50 712 99 20 re S
+BT /FH 9 Tf 151 730 Td (1) Tj ET
+149 712 99 20 re S
+BT /FH 9 Tf 250 730 Td (Artifact Written) Tj ET
+248 712 99 20 re S
+BT /FH 9 Tf 349 730 Td (completed) Tj ET
+347 712 99 20 re S
+BT /FH 9 Tf 448 730 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 716 Td ( copilot_assist.) Tj ET
+BT /FH 9 Tf 448 702 Td (json) Tj ET
+446 712 99 20 re S
+BT /FH 9 Tf 52 710 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 696 Td (09T23:38:19.) Tj ET
+BT /FH 9 Tf 52 682 Td (856683Z) Tj ET
+50 692 99 20 re S
+BT /FH 9 Tf 151 710 Td (1) Tj ET
+149 692 99 20 re S
+BT /FH 9 Tf 250 710 Td (Artifact Written) Tj ET
+248 692 99 20 re S
+BT /FH 9 Tf 349 710 Td (completed) Tj ET
+347 692 99 20 re S
+BT /FH 9 Tf 448 710 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 696 Td ( dependency_) Tj ET
+BT /FH 9 Tf 448 682 Td (copilot_request) Tj ET
+446 692 99 20 re S
+BT /FH 9 Tf 52 690 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 676 Td (09T23:38:19.) Tj ET
+BT /FH 9 Tf 52 662 Td (950719Z) Tj ET
+50 672 99 20 re S
+BT /FH 9 Tf 151 690 Td (1) Tj ET
+149 672 99 20 re S
+BT /FH 9 Tf 250 690 Td (Artifact Written) Tj ET
+248 672 99 20 re S
+BT /FH 9 Tf 349 690 Td (completed) Tj ET
+347 672 99 20 re S
+BT /FH 9 Tf 448 690 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 676 Td ( dependency_) Tj ET
+BT /FH 9 Tf 448 662 Td (copilot_response) Tj ET
+446 672 99 20 re S
+BT /FH 9 Tf 52 670 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 656 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 642 Td (014986Z) Tj ET
+50 652 99 20 re S
+BT /FH 9 Tf 151 670 Td (1) Tj ET
+149 652 99 20 re S
+BT /FH 9 Tf 250 670 Td (Artifact Written) Tj ET
+248 652 99 20 re S
+BT /FH 9 Tf 349 670 Td (completed) Tj ET
+347 652 99 20 re S
+BT /FH 9 Tf 448 670 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 656 Td ( dependency_graph) Tj ET
+446 652 99 20 re S
+BT /FH 9 Tf 52 650 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 636 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 622 Td (068636Z) Tj ET
+50 632 99 20 re S
+BT /FH 9 Tf 151 650 Td (1) Tj ET
+149 632 99 20 re S
+BT /FH 9 Tf 250 650 Td (Artifact Written) Tj ET
+248 632 99 20 re S
+BT /FH 9 Tf 349 650 Td (completed) Tj ET
+347 632 99 20 re S
+BT /FH 9 Tf 448 650 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 636 Td ( dependency_graph.) Tj ET
+BT /FH 9 Tf 448 622 Td (json) Tj ET
+446 632 99 20 re S
+BT /FH 9 Tf 52 630 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 616 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 602 Td (139041Z) Tj ET
+50 612 99 20 re S
+BT /FH 9 Tf 151 630 Td (1) Tj ET
+149 612 99 20 re S
+BT /FH 9 Tf 250 630 Td (Artifact Written) Tj ET
+248 612 99 20 re S
+BT /FH 9 Tf 349 630 Td (completed) Tj ET
+347 612 99 20 re S
+BT /FH 9 Tf 448 630 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 616 Td ( dependency_) Tj ET
+BT /FH 9 Tf 448 602 Td (policy_report) Tj ET
+446 612 99 20 re S
+BT /FH 9 Tf 52 610 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 596 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 582 Td (198996Z) Tj ET
+50 592 99 20 re S
+BT /FH 9 Tf 151 610 Td (1) Tj ET
+149 592 99 20 re S
+BT /FH 9 Tf 250 610 Td (Artifact Written) Tj ET
+248 592 99 20 re S
+BT /FH 9 Tf 349 610 Td (completed) Tj ET
+347 592 99 20 re S
+BT /FH 9 Tf 448 610 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 596 Td ( dependency_) Tj ET
+BT /FH 9 Tf 448 582 Td (policy_summary) Tj ET
+446 592 99 20 re S
+BT /FH 9 Tf 52 590 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 576 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 562 Td (256358Z) Tj ET
+50 572 99 20 re S
+BT /FH 9 Tf 151 590 Td (1) Tj ET
+149 572 99 20 re S
+BT /FH 9 Tf 250 590 Td (Artifact Written) Tj ET
+248 572 99 20 re S
+BT /FH 9 Tf 349 590 Td (completed) Tj ET
+347 572 99 20 re S
+BT /FH 9 Tf 448 590 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 576 Td ( dependency_) Tj ET
+BT /FH 9 Tf 448 562 Td (repair_plan) Tj ET
+446 572 99 20 re S
+BT /FH 9 Tf 52 570 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 556 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 542 Td (316290Z) Tj ET
+50 552 99 20 re S
+BT /FH 9 Tf 151 570 Td (1) Tj ET
+149 552 99 20 re S
+BT /FH 9 Tf 250 570 Td (Artifact Written) Tj ET
+248 552 99 20 re S
+BT /FH 9 Tf 349 570 Td (completed) Tj ET
+347 552 99 20 re S
+BT /FH 9 Tf 448 570 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 556 Td ( migration_ledger) Tj ET
+446 552 99 20 re S
+BT /FH 9 Tf 52 550 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 536 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 522 Td (372914Z) Tj ET
+50 532 99 20 re S
+BT /FH 9 Tf 151 550 Td (1) Tj ET
+149 532 99 20 re S
+BT /FH 9 Tf 250 550 Td (Artifact Written) Tj ET
+248 532 99 20 re S
+BT /FH 9 Tf 349 550 Td (completed) Tj ET
+347 532 99 20 re S
+BT /FH 9 Tf 448 550 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 536 Td ( migration_plan.) Tj ET
+BT /FH 9 Tf 448 522 Td (yaml) Tj ET
+446 532 99 20 re S
+BT /FH 9 Tf 52 530 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 516 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 502 Td (440014Z) Tj ET
+50 512 99 20 re S
+BT /FH 9 Tf 151 530 Td (1) Tj ET
+149 512 99 20 re S
+BT /FH 9 Tf 250 530 Td (Artifact Written) Tj ET
+248 512 99 20 re S
+BT /FH 9 Tf 349 530 Td (completed) Tj ET
+347 512 99 20 re S
+BT /FH 9 Tf 448 530 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 516 Td ( migration_units.) Tj ET
+BT /FH 9 Tf 448 502 Td (yaml) Tj ET
+446 512 99 20 re S
+BT /FH 9 Tf 52 510 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 496 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 482 Td (496996Z) Tj ET
+50 492 99 20 re S
+BT /FH 9 Tf 151 510 Td (1) Tj ET
+149 492 99 20 re S
+BT /FH 9 Tf 250 510 Td (Artifact Written) Tj ET
+248 492 99 20 re S
+BT /FH 9 Tf 349 510 Td (completed) Tj ET
+347 492 99 20 re S
+BT /FH 9 Tf 448 510 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 496 Td ( openrewrite_) Tj ET
+BT /FH 9 Tf 448 482 Td (plugin_xml) Tj ET
+446 492 99 20 re S
+BT /FH 9 Tf 52 490 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 476 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 462 Td (571961Z) Tj ET
+50 472 99 20 re S
+BT /FH 9 Tf 151 490 Td (1) Tj ET
+149 472 99 20 re S
+BT /FH 9 Tf 250 490 Td (Artifact Written) Tj ET
+248 472 99 20 re S
+BT /FH 9 Tf 349 490 Td (completed) Tj ET
+347 472 99 20 re S
+BT /FH 9 Tf 448 490 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 476 Td ( orchestration_) Tj ET
+BT /FH 9 Tf 448 462 Td (summary) Tj ET
+446 472 99 20 re S
+BT /FH 9 Tf 52 470 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 456 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 442 Td (631743Z) Tj ET
+50 452 99 20 re S
+BT /FH 9 Tf 151 470 Td (1) Tj ET
+149 452 99 20 re S
+BT /FH 9 Tf 250 470 Td (Artifact Written) Tj ET
+248 452 99 20 re S
+BT /FH 9 Tf 349 470 Td (completed) Tj ET
+347 452 99 20 re S
+BT /FH 9 Tf 448 470 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 456 Td ( phase2_log) Tj ET
+446 452 99 20 re S
+BT /FH 9 Tf 52 450 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 436 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 422 Td (680489Z) Tj ET
+50 432 99 20 re S
+BT /FH 9 Tf 151 450 Td (1) Tj ET
+149 432 99 20 re S
+BT /FH 9 Tf 250 450 Td (Artifact Written) Tj ET
+248 432 99 20 re S
+BT /FH 9 Tf 349 450 Td (completed) Tj ET
+347 432 99 20 re S
+BT /FH 9 Tf 448 450 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 436 Td ( plan_summary.md) Tj ET
+446 432 99 20 re S
+BT /FH 9 Tf 52 430 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 416 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 402 Td (744250Z) Tj ET
+50 412 99 20 re S
+BT /FH 9 Tf 151 430 Td (1) Tj ET
+149 412 99 20 re S
+BT /FH 9 Tf 250 430 Td (Artifact Written) Tj ET
+248 412 99 20 re S
+BT /FH 9 Tf 349 430 Td (completed) Tj ET
+347 412 99 20 re S
+BT /FH 9 Tf 448 430 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 416 Td ( plan_validation_) Tj ET
+BT /FH 9 Tf 448 402 Td (report.json) Tj ET
+446 412 99 20 re S
+BT /FH 9 Tf 52 410 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 396 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 382 Td (802084Z) Tj ET
+50 392 99 20 re S
+BT /FH 9 Tf 151 410 Td (1) Tj ET
+149 392 99 20 re S
+BT /FH 9 Tf 250 410 Td (Artifact Written) Tj ET
+248 392 99 20 re S
+BT /FH 9 Tf 349 410 Td (completed) Tj ET
+347 392 99 20 re S
+BT /FH 9 Tf 448 410 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 396 Td ( policy_patch_plan) Tj ET
+446 392 99 20 re S
+BT /FH 9 Tf 52 390 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 376 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 362 Td (879154Z) Tj ET
+50 372 99 20 re S
+BT /FH 9 Tf 151 390 Td (1) Tj ET
+149 372 99 20 re S
+BT /FH 9 Tf 250 390 Td (Artifact Written) Tj ET
+248 372 99 20 re S
+BT /FH 9 Tf 349 390 Td (completed) Tj ET
+347 372 99 20 re S
+BT /FH 9 Tf 448 390 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 376 Td ( policy_patch_) Tj ET
+BT /FH 9 Tf 448 362 Td (result) Tj ET
+446 372 99 20 re S
+BT /FH 9 Tf 52 370 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 356 Td (09T23:38:20.) Tj ET
+BT /FH 9 Tf 52 342 Td (938356Z) Tj ET
+50 352 99 20 re S
+BT /FH 9 Tf 151 370 Td (1) Tj ET
+149 352 99 20 re S
+BT /FH 9 Tf 250 370 Td (Artifact Written) Tj ET
+248 352 99 20 re S
+BT /FH 9 Tf 349 370 Td (completed) Tj ET
+347 352 99 20 re S
+BT /FH 9 Tf 448 370 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 356 Td ( post_transform_) Tj ET
+BT /FH 9 Tf 448 342 Td (test_log) Tj ET
+446 352 99 20 re S
+BT /FH 9 Tf 52 350 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 336 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 322 Td (005652Z) Tj ET
+50 332 99 20 re S
+BT /FH 9 Tf 151 350 Td (1) Tj ET
+149 332 99 20 re S
+BT /FH 9 Tf 250 350 Td (Artifact Written) Tj ET
+248 332 99 20 re S
+BT /FH 9 Tf 349 350 Td (completed) Tj ET
+347 332 99 20 re S
+BT /FH 9 Tf 448 350 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 336 Td ( post_transform_) Tj ET
+BT /FH 9 Tf 448 322 Td (test_report) Tj ET
+446 332 99 20 re S
+BT /FH 9 Tf 52 330 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 316 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 302 Td (061977Z) Tj ET
+50 312 99 20 re S
+BT /FH 9 Tf 151 330 Td (1) Tj ET
+149 312 99 20 re S
+BT /FH 9 Tf 250 330 Td (Artifact Written) Tj ET
+248 312 99 20 re S
+BT /FH 9 Tf 349 330 Td (completed) Tj ET
+347 312 99 20 re S
+BT /FH 9 Tf 448 330 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 316 Td ( post_transform_) Tj ET
+BT /FH 9 Tf 448 302 Td (test_summary) Tj ET
+446 312 99 20 re S
+BT /FH 9 Tf 52 310 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 296 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 282 Td (125531Z) Tj ET
+50 292 99 20 re S
+BT /FH 9 Tf 151 310 Td (1) Tj ET
+149 292 99 20 re S
+BT /FH 9 Tf 250 310 Td (Artifact Written) Tj ET
+248 292 99 20 re S
+BT /FH 9 Tf 349 310 Td (completed) Tj ET
+347 292 99 20 re S
+BT /FH 9 Tf 448 310 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 296 Td ( read_only_) Tj ET
+BT /FH 9 Tf 448 282 Td (verification) Tj ET
+446 292 99 20 re S
+BT /FH 9 Tf 52 290 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 276 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 262 Td (194988Z) Tj ET
+50 272 99 20 re S
+BT /FH 9 Tf 151 290 Td (1) Tj ET
+149 272 99 20 re S
+BT /FH 9 Tf 250 290 Td (Artifact Written) Tj ET
+248 272 99 20 re S
+BT /FH 9 Tf 349 290 Td (completed) Tj ET
+347 272 99 20 re S
+BT /FH 9 Tf 448 290 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 276 Td ( read_only_) Tj ET
+BT /FH 9 Tf 448 262 Td (verification.json) Tj ET
+446 272 99 20 re S
+BT /FH 9 Tf 52 270 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 256 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 242 Td (253149Z) Tj ET
+50 252 99 20 re S
+BT /FH 9 Tf 151 270 Td (1) Tj ET
+149 252 99 20 re S
+BT /FH 9 Tf 250 270 Td (Artifact Written) Tj ET
+248 252 99 20 re S
+BT /FH 9 Tf 349 270 Td (completed) Tj ET
+347 252 99 20 re S
+BT /FH 9 Tf 448 270 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 256 Td ( rewrite_dry_run.) Tj ET
+BT /FH 9 Tf 448 242 Td (patch) Tj ET
+446 252 99 20 re S
+BT /FH 9 Tf 52 250 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 236 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 222 Td (323141Z) Tj ET
+50 232 99 20 re S
+BT /FH 9 Tf 151 250 Td (1) Tj ET
+149 232 99 20 re S
+BT /FH 9 Tf 250 250 Td (Artifact Written) Tj ET
+248 232 99 20 re S
+BT /FH 9 Tf 349 250 Td (completed) Tj ET
+347 232 99 20 re S
+BT /FH 9 Tf 448 250 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 236 Td ( rewrite_impact_) Tj ET
+BT /FH 9 Tf 448 222 Td (summary) Tj ET
+446 232 99 20 re S
+BT /FH 9 Tf 52 230 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 216 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 202 Td (376906Z) Tj ET
+50 212 99 20 re S
+BT /FH 9 Tf 151 230 Td (1) Tj ET
+149 212 99 20 re S
+BT /FH 9 Tf 250 230 Td (Artifact Written) Tj ET
+248 212 99 20 re S
+BT /FH 9 Tf 349 230 Td (completed) Tj ET
+347 212 99 20 re S
+BT /FH 9 Tf 448 230 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 216 Td ( rewrite_impact_) Tj ET
+BT /FH 9 Tf 448 202 Td (summary.json) Tj ET
+446 212 99 20 re S
+BT /FH 9 Tf 52 210 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 196 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 182 Td (436628Z) Tj ET
+50 192 99 20 re S
+BT /FH 9 Tf 151 210 Td (1) Tj ET
+149 192 99 20 re S
+BT /FH 9 Tf 250 210 Td (Artifact Written) Tj ET
+248 192 99 20 re S
+BT /FH 9 Tf 349 210 Td (completed) Tj ET
+347 192 99 20 re S
+BT /FH 9 Tf 448 210 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 196 Td ( rewrite_patch) Tj ET
+446 192 99 20 re S
+BT /FH 9 Tf 52 190 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 176 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 162 Td (503044Z) Tj ET
+50 172 99 20 re S
+BT /FH 9 Tf 151 190 Td (1) Tj ET
+149 172 99 20 re S
+BT /FH 9 Tf 250 190 Td (Artifact Written) Tj ET
+248 172 99 20 re S
+BT /FH 9 Tf 349 190 Td (completed) Tj ET
+347 172 99 20 re S
+BT /FH 9 Tf 448 190 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 176 Td ( rewrite_plugin_) Tj ET
+BT /FH 9 Tf 448 162 Td (plan) Tj ET
+446 172 99 20 re S
+BT /FH 9 Tf 52 170 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 156 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 142 Td (560025Z) Tj ET
+50 152 99 20 re S
+BT /FH 9 Tf 151 170 Td (1) Tj ET
+149 152 99 20 re S
+BT /FH 9 Tf 250 170 Td (Artifact Written) Tj ET
+248 152 99 20 re S
+BT /FH 9 Tf 349 170 Td (completed) Tj ET
+347 152 99 20 re S
+BT /FH 9 Tf 448 170 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 156 Td ( rewrite_plugin_) Tj ET
+BT /FH 9 Tf 448 142 Td (plan.json) Tj ET
+446 152 99 20 re S
+BT /FH 9 Tf 52 150 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 136 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 122 Td (613733Z) Tj ET
+50 132 99 20 re S
+BT /FH 9 Tf 151 150 Td (1) Tj ET
+149 132 99 20 re S
+BT /FH 9 Tf 250 150 Td (Artifact Written) Tj ET
+248 132 99 20 re S
+BT /FH 9 Tf 349 150 Td (completed) Tj ET
+347 132 99 20 re S
+BT /FH 9 Tf 448 150 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 136 Td ( rewrite_preview) Tj ET
+446 132 99 20 re S
+BT /FH 9 Tf 52 130 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 116 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 102 Td (675804Z) Tj ET
+50 112 99 20 re S
+BT /FH 9 Tf 151 130 Td (1) Tj ET
+149 112 99 20 re S
+BT /FH 9 Tf 250 130 Td (Artifact Written) Tj ET
+248 112 99 20 re S
+BT /FH 9 Tf 349 130 Td (completed) Tj ET
+347 112 99 20 re S
+BT /FH 9 Tf 448 130 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 116 Td ( rewrite_preview.) Tj ET
+BT /FH 9 Tf 448 102 Td (json) Tj ET
+446 112 99 20 re S
+BT /FH 9 Tf 52 110 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 96 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 82 Td (735753Z) Tj ET
+50 92 99 20 re S
+BT /FH 9 Tf 151 110 Td (1) Tj ET
+149 92 99 20 re S
+BT /FH 9 Tf 250 110 Td (Artifact Written) Tj ET
+248 92 99 20 re S
+BT /FH 9 Tf 349 110 Td (completed) Tj ET
+347 92 99 20 re S
+BT /FH 9 Tf 448 110 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 96 Td ( sandbox) Tj ET
+446 92 99 20 re S
+BT /FH 9 Tf 52 90 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 76 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 62 Td (790903Z) Tj ET
+50 72 99 20 re S
+BT /FH 9 Tf 151 90 Td (1) Tj ET
+149 72 99 20 re S
+BT /FH 9 Tf 250 90 Td (Artifact Written) Tj ET
+248 72 99 20 re S
+BT /FH 9 Tf 349 90 Td (completed) Tj ET
+347 72 99 20 re S
+BT /FH 9 Tf 448 90 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 76 Td ( source_profile_) Tj ET
+BT /FH 9 Tf 448 62 Td (detection) Tj ET
+446 72 99 20 re S
+BT /FH 9 Tf 52 70 Td (2026-07-) Tj ET
+50 52 99 20 re S
+BT /FH 9 Tf 151 70 Td (1) Tj ET
+149 52 99 20 re S
+BT /FH 9 Tf 250 70 Td (Artifact Written) Tj ET
+248 52 99 20 re S
+BT /FH 9 Tf 349 70 Td (completed) Tj ET
+347 52 99 20 re S
+BT /FH 9 Tf 448 70 Td (Artifact written:) Tj ET
+446 52 99 20 re S
+BT /FH 9 Tf 52 790 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 776 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 762 Td (899884Z) Tj ET
+50 772 99 20 re S
+BT /FH 9 Tf 151 790 Td (1) Tj ET
+149 772 99 20 re S
+BT /FH 9 Tf 250 790 Td (Artifact Written) Tj ET
+248 772 99 20 re S
+BT /FH 9 Tf 349 790 Td (completed) Tj ET
+347 772 99 20 re S
+BT /FH 9 Tf 448 790 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 776 Td ( target_) Tj ET
+BT /FH 9 Tf 448 762 Td (dependency_plan.) Tj ET
+BT /FH 9 Tf 448 748 Td (json) Tj ET
+446 772 99 20 re S
+BT /FH 9 Tf 52 770 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 756 Td (09T23:38:21.) Tj ET
+BT /FH 9 Tf 52 742 Td (950627Z) Tj ET
+50 752 99 20 re S
+BT /FH 9 Tf 151 770 Td (1) Tj ET
+149 752 99 20 re S
+BT /FH 9 Tf 250 770 Td (Artifact Written) Tj ET
+248 752 99 20 re S
+BT /FH 9 Tf 349 770 Td (completed) Tj ET
+347 752 99 20 re S
+BT /FH 9 Tf 448 770 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 756 Td ( test_inventory) Tj ET
+446 752 99 20 re S
+BT /FH 9 Tf 52 750 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 736 Td (09T23:38:22.) Tj ET
+BT /FH 9 Tf 52 722 Td (005923Z) Tj ET
+50 732 99 20 re S
+BT /FH 9 Tf 151 750 Td (1) Tj ET
+149 732 99 20 re S
+BT /FH 9 Tf 250 750 Td (Artifact Written) Tj ET
+248 732 99 20 re S
+BT /FH 9 Tf 349 750 Td (completed) Tj ET
+347 732 99 20 re S
+BT /FH 9 Tf 448 750 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 736 Td ( test_inventory.) Tj ET
+BT /FH 9 Tf 448 722 Td (json) Tj ET
+446 732 99 20 re S
+BT /FH 9 Tf 52 730 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 716 Td (09T23:38:22.) Tj ET
+BT /FH 9 Tf 52 702 Td (066750Z) Tj ET
+50 712 99 20 re S
+BT /FH 9 Tf 151 730 Td (1) Tj ET
+149 712 99 20 re S
+BT /FH 9 Tf 250 730 Td (Artifact Written) Tj ET
+248 712 99 20 re S
+BT /FH 9 Tf 349 730 Td (completed) Tj ET
+347 712 99 20 re S
+BT /FH 9 Tf 448 730 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 716 Td ( timing_report) Tj ET
+446 712 99 20 re S
+BT /FH 9 Tf 52 710 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 696 Td (09T23:38:22.) Tj ET
+BT /FH 9 Tf 52 682 Td (125494Z) Tj ET
+50 692 99 20 re S
+BT /FH 9 Tf 151 710 Td (1) Tj ET
+149 692 99 20 re S
+BT /FH 9 Tf 250 710 Td (Artifact Written) Tj ET
+248 692 99 20 re S
+BT /FH 9 Tf 349 710 Td (completed) Tj ET
+347 692 99 20 re S
+BT /FH 9 Tf 448 710 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 696 Td ( timing_summary) Tj ET
+446 692 99 20 re S
+BT /FH 9 Tf 52 690 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 676 Td (09T23:38:22.) Tj ET
+BT /FH 9 Tf 52 662 Td (181404Z) Tj ET
+50 672 99 20 re S
+BT /FH 9 Tf 151 690 Td (1) Tj ET
+149 672 99 20 re S
+BT /FH 9 Tf 250 690 Td (Artifact Written) Tj ET
+248 672 99 20 re S
+BT /FH 9 Tf 349 690 Td (completed) Tj ET
+347 672 99 20 re S
+BT /FH 9 Tf 448 690 Td (Artifact written:) Tj ET
+BT /FH 9 Tf 448 676 Td ( transformation_) Tj ET
+BT /FH 9 Tf 448 662 Td (execution_plan) Tj ET
+446 672 99 20 re S
+BT /FH 9 Tf 52 670 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 656 Td (09T23:38:22.) Tj ET
+BT /FH 9 Tf 52 642 Td (248846Z) Tj ET
+50 652 99 20 re S
+BT /FH 9 Tf 151 670 Td (1) Tj ET
+149 652 99 20 re S
+BT /FH 9 Tf 250 670 Td (Artifact Written) Tj ET
+248 652 99 20 re S
+BT /FH 9 Tf 349 670 Td (completed) Tj ET
+347 652 99 20 re S
+BT /FH 9 Tf 448 670 Td (Stage sandbox ) Tj ET
+BT /FH 9 Tf 448 656 Td (output registered.) Tj ET
+446 652 99 20 re S
+BT /FH 9 Tf 52 650 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 636 Td (09T23:38:22.) Tj ET
+BT /FH 9 Tf 52 622 Td (306958Z) Tj ET
+50 632 99 20 re S
+BT /FH 9 Tf 151 650 Td (1) Tj ET
+149 632 99 20 re S
+BT /FH 9 Tf 250 650 Td (Sandbox Transform ) Tj ET
+BT /FH 9 Tf 250 636 Td (Completed) Tj ET
+248 632 99 20 re S
+BT /FH 9 Tf 349 650 Td (completed) Tj ET
+347 632 99 20 re S
+BT /FH 9 Tf 448 650 Td (Sandbox transform ) Tj ET
+BT /FH 9 Tf 448 636 Td (completed.) Tj ET
+446 632 99 20 re S
+BT /FH 9 Tf 52 630 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 616 Td (09T23:38:22.) Tj ET
+BT /FH 9 Tf 52 602 Td (363917Z) Tj ET
+50 612 99 20 re S
+BT /FH 9 Tf 151 630 Td (1) Tj ET
+149 612 99 20 re S
+BT /FH 9 Tf 250 630 Td (Build Completed) Tj ET
+248 612 99 20 re S
+BT /FH 9 Tf 349 630 Td (completed) Tj ET
+347 612 99 20 re S
+BT /FH 9 Tf 448 630 Td (Sandbox build ) Tj ET
+BT /FH 9 Tf 448 616 Td (completed.) Tj ET
+446 612 99 20 re S
+BT /FH 9 Tf 52 610 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 596 Td (09T23:38:22.) Tj ET
+BT /FH 9 Tf 52 582 Td (416906Z) Tj ET
+50 592 99 20 re S
+BT /FH 9 Tf 151 610 Td (1) Tj ET
+149 592 99 20 re S
+BT /FH 9 Tf 250 610 Td (Test Completed) Tj ET
+248 592 99 20 re S
+BT /FH 9 Tf 349 610 Td (completed) Tj ET
+347 592 99 20 re S
+BT /FH 9 Tf 448 610 Td (Sandbox tests ) Tj ET
+BT /FH 9 Tf 448 596 Td (accepted with ) Tj ET
+BT /FH 9 Tf 448 582 Td (status: PASS_WITH_) Tj ET
+BT /FH 9 Tf 448 568 Td (WARNINGS.) Tj ET
+446 592 99 20 re S
+BT /FH 9 Tf 52 590 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 576 Td (09T23:38:22.) Tj ET
+BT /FH 9 Tf 52 562 Td (741909Z) Tj ET
+50 572 99 20 re S
+BT /FH 9 Tf 151 590 Td (1) Tj ET
+149 572 99 20 re S
+BT /FH 9 Tf 250 590 Td (Proof Updated) Tj ET
+248 572 99 20 re S
+BT /FH 9 Tf 349 590 Td (completed) Tj ET
+347 572 99 20 re S
+BT /FH 9 Tf 448 590 Td (Orchestrator ) Tj ET
+BT /FH 9 Tf 448 576 Td (result parsed ) Tj ET
+BT /FH 9 Tf 448 562 Td (into ) Tj ET
+BT /FH 9 Tf 448 548 Td (deterministic ) Tj ET
+BT /FH 9 Tf 448 534 Td (evidence.) Tj ET
+446 572 99 20 re S
+BT /FH 9 Tf 52 570 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 556 Td (09T23:38:22.) Tj ET
+BT /FH 9 Tf 52 542 Td (812572Z) Tj ET
+50 552 99 20 re S
+BT /FH 9 Tf 151 570 Td (1) Tj ET
+149 552 99 20 re S
+BT /FH 9 Tf 250 570 Td (Stage Completed) Tj ET
+248 552 99 20 re S
+BT /FH 9 Tf 349 570 Td (completed) Tj ET
+347 552 99 20 re S
+BT /FH 9 Tf 448 570 Td (Stage 1 real ) Tj ET
+BT /FH 9 Tf 448 556 Td (orchestrator ) Tj ET
+BT /FH 9 Tf 448 542 Td (completed.) Tj ET
+446 552 99 20 re S
+BT /FH 9 Tf 52 550 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 536 Td (09T23:38:23.) Tj ET
+BT /FH 9 Tf 52 522 Td (049281Z) Tj ET
+50 532 99 20 re S
+BT /FH 9 Tf 151 550 Td (1) Tj ET
+149 532 99 20 re S
+BT /FH 9 Tf 250 550 Td (Stage Report ) Tj ET
+BT /FH 9 Tf 250 536 Td (Started) Tj ET
+248 532 99 20 re S
+BT /FH 9 Tf 349 550 Td (running) Tj ET
+347 532 99 20 re S
+BT /FH 9 Tf 448 550 Td (Stage 1 report ) Tj ET
+BT /FH 9 Tf 448 536 Td (started.) Tj ET
+446 532 99 20 re S
+BT /FH 9 Tf 52 530 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 516 Td (09T23:38:23.) Tj ET
+BT /FH 9 Tf 52 502 Td (103952Z) Tj ET
+50 512 99 20 re S
+BT /FH 9 Tf 151 530 Td (1) Tj ET
+149 512 99 20 re S
+BT /FH 9 Tf 250 530 Td (Stage Report ) Tj ET
+BT /FH 9 Tf 250 516 Td (Completed) Tj ET
+248 512 99 20 re S
+BT /FH 9 Tf 349 530 Td (completed) Tj ET
+347 512 99 20 re S
+BT /FH 9 Tf 448 530 Td (Stage 1 report ) Tj ET
+BT /FH 9 Tf 448 516 Td (completed.) Tj ET
+446 512 99 20 re S
+BT /FH 9 Tf 52 510 Td (2026-07-) Tj ET
+BT /FH 9 Tf 52 496 Td (09T23:38:23.) Tj ET
+BT /FH 9 Tf 52 482 Td (153216Z) Tj ET
+50 492 99 20 re S
+BT /FH 9 Tf 151 510 Td (1) Tj ET
+149 492 99 20 re S
+BT /FH 9 Tf 250 510 Td (Migration ) Tj ET
+BT /FH 9 Tf 250 496 Td (Completed) Tj ET
+248 492 99 20 re S
+BT /FH 9 Tf 349 510 Td (completed) Tj ET
+347 492 99 20 re S
+BT /FH 9 Tf 448 510 Td (Selected target ) Tj ET
+BT /FH 9 Tf 448 496 Td (profile ) Tj ET
+BT /FH 9 Tf 448 482 Td ('springboot-2.) Tj ET
+BT /FH 9 Tf 448 468 Td (7-java11' reached.) Tj ET
+BT /FH 9 Tf 448 454 Td ( Migration ) Tj ET
+BT /FH 9 Tf 448 440 Td (completed.) Tj ET
+446 492 99 20 re S
+BT /FB 16 Tf 50 486 Td (Event Coverage) Tj ET
+BT /FB 10 Tf 50 790 Td (Event Type) Tj ET
+50 792 248 20 re S
+BT /FB 10 Tf 298 790 Td (Count) Tj ET
+298 792 248 20 re S
+BT /FH 9 Tf 52 770 Td (Analysis Completed) Tj ET
+50 752 248 20 re S
+BT /FH 9 Tf 300 770 Td (1) Tj ET
+298 752 248 20 re S
+BT /FH 9 Tf 52 750 Td (Analysis Started) Tj ET
+50 732 248 20 re S
+BT /FH 9 Tf 300 750 Td (1) Tj ET
+298 732 248 20 re S
+BT /FH 9 Tf 52 730 Td (Approval Auto Approved) Tj ET
+50 712 248 20 re S
+BT /FH 9 Tf 300 730 Td (1) Tj ET
+298 712 248 20 re S
+BT /FH 9 Tf 52 710 Td (Approval Blocked) Tj ET
+50 692 248 20 re S
+BT /FH 9 Tf 300 710 Td (2) Tj ET
+298 692 248 20 re S
+BT /FH 9 Tf 52 690 Td (Approval Completed) Tj ET
+50 672 248 20 re S
+BT /FH 9 Tf 300 690 Td (3) Tj ET
+298 672 248 20 re S
+BT /FH 9 Tf 52 670 Td (Approval Mode Updated) Tj ET
+50 652 248 20 re S
+BT /FH 9 Tf 300 670 Td (1) Tj ET
+298 652 248 20 re S
+BT /FH 9 Tf 52 650 Td (Approval Started) Tj ET
+50 632 248 20 re S
+BT /FH 9 Tf 300 650 Td (3) Tj ET
+298 632 248 20 re S
+BT /FH 9 Tf 52 630 Td (Artifact Written) Tj ET
+50 612 248 20 re S
+BT /FH 9 Tf 300 630 Td (89) Tj ET
+298 612 248 20 re S
+BT /FH 9 Tf 52 610 Td (Assessment Completed) Tj ET
+50 592 248 20 re S
+BT /FH 9 Tf 300 610 Td (1) Tj ET
+298 592 248 20 re S
+BT /FH 9 Tf 52 590 Td (Assessment Started) Tj ET
+50 572 248 20 re S
+BT /FH 9 Tf 300 590 Td (1) Tj ET
+298 572 248 20 re S
+BT /FH 9 Tf 52 570 Td (Build Completed) Tj ET
+50 552 248 20 re S
+BT /FH 9 Tf 300 570 Td (1) Tj ET
+298 552 248 20 re S
+BT /FH 9 Tf 52 550 Td (Command Started) Tj ET
+50 532 248 20 re S
+BT /FH 9 Tf 300 550 Td (2) Tj ET
+298 532 248 20 re S
+BT /FH 9 Tf 52 530 Td (Job Created) Tj ET
+50 512 248 20 re S
+BT /FH 9 Tf 300 530 Td (1) Tj ET
+298 512 248 20 re S
+BT /FH 9 Tf 52 510 Td (Migration Completed) Tj ET
+50 492 248 20 re S
+BT /FH 9 Tf 300 510 Td (1) Tj ET
+298 492 248 20 re S
+BT /FH 9 Tf 52 490 Td (Planning Completed) Tj ET
+50 472 248 20 re S
+BT /FH 9 Tf 300 490 Td (1) Tj ET
+298 472 248 20 re S
+BT /FH 9 Tf 52 470 Td (Planning Started) Tj ET
+50 452 248 20 re S
+BT /FH 9 Tf 300 470 Td (1) Tj ET
+298 452 248 20 re S
+BT /FH 9 Tf 52 450 Td (Process Started) Tj ET
+50 432 248 20 re S
+BT /FH 9 Tf 300 450 Td (2) Tj ET
+298 432 248 20 re S
+BT /FH 9 Tf 52 430 Td (Proof Updated) Tj ET
+50 412 248 20 re S
+BT /FH 9 Tf 300 430 Td (1) Tj ET
+298 412 248 20 re S
+BT /FH 9 Tf 52 410 Td (Resume Started) Tj ET
+50 392 248 20 re S
+BT /FH 9 Tf 300 410 Td (1) Tj ET
+298 392 248 20 re S
+BT /FH 9 Tf 52 390 Td (Sandbox Transform Completed) Tj ET
+50 372 248 20 re S
+BT /FH 9 Tf 300 390 Td (2) Tj ET
+298 372 248 20 re S
+BT /FH 9 Tf 52 370 Td (Sandbox Transform Started) Tj ET
+50 352 248 20 re S
+BT /FH 9 Tf 300 370 Td (1) Tj ET
+298 352 248 20 re S
+BT /FH 9 Tf 52 350 Td (Stage Completed) Tj ET
+50 332 248 20 re S
+BT /FH 9 Tf 300 350 Td (1) Tj ET
+298 332 248 20 re S
+BT /FH 9 Tf 52 330 Td (Stage Queued) Tj ET
+50 312 248 20 re S
+BT /FH 9 Tf 300 330 Td (1) Tj ET
+298 312 248 20 re S
+BT /FH 9 Tf 52 310 Td (Stage Report Completed) Tj ET
+50 292 248 20 re S
+BT /FH 9 Tf 300 310 Td (2) Tj ET
+298 292 248 20 re S
+BT /FH 9 Tf 52 290 Td (Stage Report Started) Tj ET
+50 272 248 20 re S
+BT /FH 9 Tf 300 290 Td (2) Tj ET
+298 272 248 20 re S
+BT /FH 9 Tf 52 270 Td (Stage Started) Tj ET
+50 252 248 20 re S
+BT /FH 9 Tf 300 270 Td (1) Tj ET
+298 252 248 20 re S
+BT /FH 9 Tf 52 250 Td (Stdout) Tj ET
+50 232 248 20 re S
+BT /FH 9 Tf 300 250 Td (2) Tj ET
+298 232 248 20 re S
+BT /FH 9 Tf 52 230 Td (Test Completed) Tj ET
+50 212 248 20 re S
+BT /FH 9 Tf 300 230 Td (1) Tj ET
+298 212 248 20 re S
+BT /FH 10 Tf 50 206 Td (Console output events omitted from the narrative timeline: 2.) Tj ET
+BT /FH 10 Tf 50 192 Td ( Their aggregate count remains above.) Tj ET
+BT /FB 16 Tf 50 172 Td (Report Provenance and Limitations) Tj ET
+BT /FH 10 Tf 60 148 Td (? Narrative generation: azure_openai \(live_ok\)) Tj ET
+BT /FH 10 Tf 60 134 Td (? Line metrics exclude binary files, generated build output, dependency caches, ) Tj ET
+BT /FH 10 Tf 60 120 Td (and files larger than 5 MiB.) Tj ET
+BT /FH 10 Tf 60 106 Td (? LLM narrative is advisory; deterministic metrics and persisted stage evidence ) Tj ET
+BT /FH 10 Tf 60 92 Td (are authoritative.) Tj ET
+BT /FH 10 Tf 60 78 Td (? The report describes sandbox migration execution and does not claim ) Tj ET
+BT /FH 10 Tf 60 64 Td (production deployment or production validation.) Tj ET
+BT /FH 10 Tf 60 792 Td (? Report generated at: 2026-07-10T00:26:05Z) Tj ET
+BT /FH 10 Tf 60 778 Td (? Migration job: 6ef861d56a914308ab331c77df96d2a3) Tj ET
+Q
+
+endstream
+endobj
+6 0 obj
+<< /Font <</FH 2 0 R /FB 3 0 R>> >>
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 5 0 R /Resources 6 0 R >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000260 00000 n 
+0000070214 00000 n 
+0000070265 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+70369
+%%EOF
