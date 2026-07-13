@@ -1023,6 +1023,26 @@ describe("V2 Migration Cockpit contract", () => {
 
     expect(getTargetVersionComparisonStageIndex(stages, routeSteps)).toBe(3);
   });
+  it("uses the execution stage index for completed routed migrations", () => {
+    const routeSteps: V2RouteStepEntry[] = [{
+      route_step_index: 1,
+      stage_index: 1,
+      execution_stage_index: 2,
+      source_profile: "springboot-3.5-java17",
+      target_profile: "springboot-3.5-java21",
+      runtime_profile: "springboot-3.5-java17-to-java21",
+      catalog: "springboot-3.5-java17-to-java21",
+      execution_jdk: "java21",
+      status: "completed",
+      approval_gate_id: "",
+      artifact_refs: [],
+      evidence_refs: [],
+    }];
+
+    expect(getTargetVersionComparisonStageIndex([
+      { stage_index: 2, pipeline_stage: "Stage 2", chain_status: "completed", input_source_kind: "stage_1_sandbox" },
+    ], routeSteps)).toBe(2);
+  });
   it("buildStageTimelineEntries overlays route-step status from refreshed stages", () => {
     const routeSteps: V2RouteStepEntry[] = [
       {
