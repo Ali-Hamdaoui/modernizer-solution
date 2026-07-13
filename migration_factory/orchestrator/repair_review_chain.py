@@ -73,6 +73,11 @@ def _line_body(line: str) -> str:
     return line
 
 
+def _eol_normalize(text: str) -> str:
+    """Normalize CRLF and CR to LF for structured-edit preimage comparison."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _relative_diff_path(raw: str) -> str:
     value = raw.split("\t", 1)[0].strip().strip('"')
     if value in {"/dev/null", ""}:
@@ -474,10 +479,10 @@ def _reviewer_repair_prompt(
         "- Use repository-relative paths only; reject commands, secrets, test disabling, "
         "absolute paths, traversal, or deployment/environment changes.\n"
         "- Bind your decision to the exact checksums provided.\n\n"
-        f"Deterministic repair artifact checksum: {deterministic_checksum}\n"
-        f"Context pack checksum: {context_checksum}\n"
-        f"Primary output checksum: {primary_checksum}\n"
-        f"Proposed diff checksum: {diff_checksum}\n"
+        f"DETERMINISTIC_REPAIR_ARTIFACT_CHECKSUM: {deterministic_checksum}\n"
+        f"CONTEXT_PACK_CHECKSUM: {context_checksum}\n"
+        f"PRIMARY_OUTPUT_CHECKSUM: {primary_checksum}\n"
+        f"DIFF_CHECKSUM: {diff_checksum}\n"
         f"{retry_contract}"
         f"FAILURE EVIDENCE:\n{json.dumps(failure_evidence_to_dict(failure_evidence), sort_keys=True)}\n\n"
         f"SOURCE/CONTEXT PACK:\n{json.dumps(context_pack_to_dict(context_pack), sort_keys=True)}\n\n"
@@ -929,7 +934,10 @@ def _apply_structured_edits_to_shadow(
         if context_source is None:
             failures.append(f"structured edit source context is missing for {path}")
             continue
-        context_matches = str(context_source.content).count(old_text)
+        # EOL-normalized preimage comparison (CRLF/LF-agnostic)
+        _norm_old = _eol_normalize(old_text)
+        _norm_context = _eol_normalize(str(context_source.content))
+        context_matches = _norm_context.count(_norm_old)
         if context_matches != 1:
             failures.append(
                 f"structured edit old text context match count for {path}: "
@@ -943,20 +951,37 @@ def _apply_structured_edits_to_shadow(
         except UnicodeDecodeError:
             failures.append(f"structured edit source is not UTF-8: {path}")
             continue
+        # EOL-normalized source preimage count
+        _norm_source = _eol_normalize(source_text)
+        source_matches = _norm_source.count(_norm_old)
+        if source_matches != 1:
+            failures.append(f"structured edit old text match count for {path}: {source_matches} (expected 1)")
+            continue
+        # Convert old/new text to match source text line-ending convention
+        _norm_new = _eol_normalize(new_text)
+        if "\r\n" in source_text:
+            _source_eol_old = _norm_old.replace("\n", "\r\n")
+            _source_eol_new = _norm_new.replace("\n", "\r\n")
+        elif "\r" in source_text:
+            _source_eol_old = _norm_old.replace("\n", "\r")
+            _source_eol_new = _norm_new.replace("\n", "\r")
+        else:
+            _source_eol_old = _norm_old
+            _source_eol_new = _norm_new
         matches: list[int] = []
-        offset = source_text.find(old_text)
+        offset = source_text.find(_source_eol_old)
         while offset >= 0:
             matches.append(offset)
-            offset = source_text.find(old_text, offset + 1)
+            offset = source_text.find(_source_eol_old, offset + 1)
         if len(matches) != 1:
             failures.append(f"structured edit old text match count for {path}: {len(matches)} (expected 1)")
             continue
         start = matches[0]
-        end = start + len(old_text)
+        end = start + len(_source_eol_old)
         prior = replacements.setdefault(path, [])
         if any(start < existing_end and existing_start < end for existing_start, existing_end, _ in prior):
             failures.append(f"structured edits overlap for {path}")
-        prior.append((start, end, new_text))
+        prior.append((start, end, _source_eol_new))
         files[path] = source_bytes
 
     if failures:

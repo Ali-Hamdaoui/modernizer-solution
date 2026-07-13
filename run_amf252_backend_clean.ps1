@@ -104,7 +104,7 @@ elseif ($env:AMF252_MAX_REPAIR_ATTEMPTS) {
     }
 }
 else {
-    3
+    6
 }
 
 if ($MaxRepairAttempts -lt 1) {

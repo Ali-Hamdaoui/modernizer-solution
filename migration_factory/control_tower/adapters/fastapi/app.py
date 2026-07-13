@@ -3745,7 +3745,9 @@ def create_app(
                             retry_detail = str(event_payload.get("reason") or event.message or "").strip()
                             break
                 if retry_detail:
-                    detail = f"Attempt 1 validation failed: {detail}; Attempt 2 repair generation failed: {retry_detail}"
+                    current_attempt = getattr(record, "attempt_number", 1) or 1
+                    retry_attempt = (getattr(retry_record, "attempt_number", None) or current_attempt + 1) if retry_proposal_id and retry_record is not None else current_attempt + 1
+                    detail = f"Attempt {current_attempt} validation failed: {detail}; Attempt {retry_attempt} repair generation failed: {retry_detail}"
             return repair_unavailable_state_to_dict(RepairUnavailableState(
                 attempted=True,
                 status="error",
