@@ -254,8 +254,6 @@ def _normalize_output_paths(state: dict[str, Any]) -> dict[str, Any]:
 
     sandbox_path = _first_text(
         updated.get("sandbox_path"),
-        updated.get("modernized_app_path"),
-        updated.get("output_app_path"),
         artifact_refs.get("sandbox"),
         artifact_refs.get("sandbox_path"),
         artifact_refs.get("modernized_app"),
@@ -264,7 +262,6 @@ def _normalize_output_paths(state: dict[str, Any]) -> dict[str, Any]:
 
     if sandbox_path:
         updated["sandbox_path"] = sandbox_path
-        updated.setdefault("modernized_app_path", sandbox_path)
 
     return updated
 

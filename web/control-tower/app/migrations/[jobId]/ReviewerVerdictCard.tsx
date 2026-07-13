@@ -55,9 +55,6 @@ export function ReviewerVerdictCard({
           <p className="meta">{verdict.reasoning}</p>
         </div>
       )}
-      {verdict.reviewer_verdict_id && (
-        <p className="meta">Verdict ID: {verdict.reviewer_verdict_id}</p>
-      )}
       {verdict.missing_evidence.length > 0 && (
         <div className="reviewer-verdict-section">
           <strong>Missing Evidence</strong>
@@ -78,12 +75,7 @@ export function ReviewerVerdictCard({
           </ul>
         </div>
       )}
-      {verdict.model_invocation_id && (
-        <p className="meta">Model invocation: {verdict.model_invocation_id}</p>
-      )}
-      {verdict.output_checksum && (
-        <p className="checksum">Output checksum: {verdict.output_checksum}</p>
-      )}
+
     </div>
   );
 }

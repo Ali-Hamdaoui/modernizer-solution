@@ -1209,6 +1209,7 @@ export type SafeDiffPreview = {
   total_deletions: number;
   truncated: boolean;
   checksum_mismatch: boolean;
+  parse_status?: string;
   redactions: string[];
 };
 
@@ -1251,11 +1252,28 @@ export type ReviewedDiffProposal = {
   required_validation: string[];
   allowed_actions: string[];
   redactions: string[];
+  apply_status?: string | null;
+  rerun_status?: string | null;
+  validation_proof_status?: string | null;
+  final_diff_source?: "reviewer" | "proposer_fallback" | null;
+  generation_status?: string | null;
+  generation_reason?: string | null;
+};
+
+export type RepairState = {
+  attempted: boolean;
+  status: "not_attempted" | "running" | "unavailable" | "ready" | "attempts_exhausted" | "blocked" | "error";
+  reason_code?: string | null;
+  detail?: string | null;
+  event_type?: string | null;
+  created_at?: string | null;
+  allowed_actions: string[];
 };
 
 export type RepairProposalCurrentResponse = {
   proposal: ReviewedDiffProposal | null;
   job_id: string;
+  repair_state?: RepairState | null;
 };
 
 export type RepairProposalDetailResponse = {
@@ -1290,6 +1308,8 @@ export type RepairAttemptSummary = {
   status_reason: string | null;
   created_at: string;
   completed_at: string | null;
+  validation_proof_status?: string | null;
+  final_diff_source?: "reviewer" | "proposer_fallback" | null;
 };
 
 export type RepairAttemptsResponse = {
@@ -1321,10 +1341,13 @@ export type RepairProposalRevisionResponse = {
 export type RepairProposalApproveRequest = {
   proposal_id: string;
   diff_checksum: string;
-  reviewer_verdict_id: string;
-  gate_id: string;
-  expected_gate_checksum?: string;
-  idempotency_key?: string;
+  idempotency_key: string;
+};
+
+export type RepairProposalRejectRequest = {
+  proposal_id: string;
+  reason?: string;
+  idempotency_key: string;
 };
 
 export type RepairProposalApproveResponse = {

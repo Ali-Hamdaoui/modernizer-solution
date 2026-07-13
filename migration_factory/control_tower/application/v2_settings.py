@@ -73,6 +73,22 @@ class ControlTowerSettings(BaseSettings):
     azure_foundry_fallback_deployment_env: str = "AZURE_OPENAI_FALLBACK_DEPLOYMENT"
     azure_foundry_fallback_enabled: bool = False
 
+    # ── Role-aware token/reasoning/response-format env refs ─────────
+    # These are read directly at runtime by V2AssistantModelClient.
+    # Listed here for discovery / documentation only.
+    # AZURE_OPENAI_PROPOSER_MAX_OUTPUT_TOKENS     (default 20000)
+    # AZURE_OPENAI_REVIEWER_MAX_OUTPUT_TOKENS     (default 20000)
+    # AZURE_OPENAI_FALLBACK_MAX_OUTPUT_TOKENS     (default 20000)
+    # AZURE_OPENAI_ASSISTANT_MAX_OUTPUT_TOKENS    (default 20000)
+    # AZURE_OPENAI_PROPOSER_MAX_INPUT_TOKENS      (default 40000)
+    # AZURE_OPENAI_REVIEWER_MAX_INPUT_TOKENS      (default 40000)
+    # AZURE_OPENAI_FALLBACK_MAX_INPUT_TOKENS      (default 40000)
+    # AZURE_OPENAI_PROPOSER_REASONING_EFFORT      (default "medium")
+    # AZURE_OPENAI_REVIEWER_REASONING_EFFORT      (default "medium")
+    # AZURE_OPENAI_FALLBACK_REASONING_EFFORT      (default "medium")
+    # AZURE_OPENAI_PROPOSER_RESPONSE_FORMAT       ("json_schema" | "json_object" | "")
+    # AZURE_OPENAI_REVIEWER_RESPONSE_FORMAT       ("json_schema" | "json_object" | "")
+
 
 # ── Env ref helpers ──────────────────────────────────────────────────
 

@@ -65,6 +65,65 @@ class PatchGateResult:
     human_review_required: bool = False
 
 
+def validate_technical_patch_application(
+    *,
+    unified_diff: str,
+    sandbox_path: str | Path,
+) -> PatchGateResult:
+    """Apply-boundary checks only; no reviewer/risk/rule/policy semantics."""
+    diff = str(unified_diff or "")
+    if not is_unified_diff(diff):
+        return PatchGateResult("INVALID_PATCH", "patch is not a valid unified diff")
+    paths, path_errors = extract_touched_paths(diff)
+    if path_errors:
+        return PatchGateResult("INVALID_PATCH", "; ".join(path_errors), touched_paths=tuple(paths))
+    sandbox = Path(sandbox_path).resolve()
+    errors: list[str] = []
+    for rel in paths:
+        normalized = rel.replace("\\", "/")
+        pure = PurePosixPath(normalized)
+        win = PureWindowsPath(rel)
+        if normalized.startswith("/") or normalized.startswith("//") or win.is_absolute() or re.match(r"^[A-Za-z]:", rel):
+            errors.append(f"absolute patch path rejected: {rel}")
+            continue
+        if ".." in pure.parts:
+            errors.append(f"path traversal rejected: {rel}")
+            continue
+        candidate = (sandbox / pure).resolve()
+        if not candidate.is_relative_to(sandbox):
+            errors.append(f"patch path escapes sandbox: {rel}")
+        if _has_symlink_parent(candidate, sandbox):
+            errors.append(f"patch path traverses a symlink: {rel}")
+    if errors:
+        return PatchGateResult("INVALID_PATCH", "; ".join(errors), touched_paths=tuple(paths))
+    return PatchGateResult("ALLOWED", "technical diff integrity and sandbox containment passed", touched_paths=tuple(paths))
+
+
+def normalize_unified_diff_for_sandbox(
+    unified_diff: str,
+    *,
+    sandbox_path: str | Path,
+) -> str:
+    """Normalize an accidental leading ``sandbox/`` repo path exactly once."""
+    paths, _ = extract_touched_paths(unified_diff)
+    if not paths or not all(path.startswith("sandbox/") for path in paths):
+        return unified_diff
+    sandbox = Path(sandbox_path).resolve()
+    if (sandbox / "sandbox").exists():
+        return unified_diff
+    for path in paths:
+        stripped = sandbox / path.removeprefix("sandbox/")
+        if not stripped.exists() and not stripped.parent.exists():
+            return unified_diff
+
+    normalized_lines: list[str] = []
+    for line in unified_diff.splitlines(keepends=True):
+        if line.startswith("diff --git ") or line.startswith("--- ") or line.startswith("+++ "):
+            line = line.replace("a/sandbox/", "a/", 1).replace("b/sandbox/", "b/", 1)
+        normalized_lines.append(line)
+    return "".join(normalized_lines)
+
+
 def evaluate_patch_proposal(
     *,
     proposal: dict[str, Any],

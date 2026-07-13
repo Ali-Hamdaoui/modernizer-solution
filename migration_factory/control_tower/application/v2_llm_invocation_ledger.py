@@ -20,6 +20,7 @@ from uuid import uuid4
 
 from migration_factory.control_tower.application.ports import V2LLMInvocationRepository
 from migration_factory.control_tower.application.redaction import redact_model_summary
+from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole, V2ModelRoleRouter
 from migration_factory.control_tower.domain.checksums import sha256_canonical_json, utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.v2_llm_invocation_repository import (
     V2LLMInvocationRecord,
@@ -165,6 +166,13 @@ class V2LLMInvocationLedger:
         """
         from migration_factory.control_tower.application.dto import LlmInvocationDto
 
+        role = _coerce_role(record.role)
+        budget = V2ModelRoleRouter().resolve_budget(
+            role=role,
+            responsibility=str(record.responsibility or ""),
+            output_schema_name=record.schema_name,
+        )
+
         dto = LlmInvocationDto(
             invocation_id=record.invocation_id,
             job_id=record.job_id,
@@ -180,12 +188,16 @@ class V2LLMInvocationLedger:
             output_checksum=record.output_checksum,
             schema_name=record.schema_name,
             fallback_used=bool(record.fallback_used),
+            redacted_error=record.redacted_error,
             redacted_summary=record.redacted_summary,
             prompt_tokens=record.prompt_tokens,
             completion_tokens=record.completion_tokens,
             total_tokens=record.total_tokens,
             latency_ms=record.latency_ms,
             completed_at=record.completed_at,
+            configured_max_input_tokens=budget.max_input_tokens,
+            configured_max_output_tokens=budget.max_output_tokens,
+            response_format_used=_response_format_used_for_record(role, record),
         )
         return {
             "invocation_id": dto.invocation_id,
@@ -201,6 +213,7 @@ class V2LLMInvocationLedger:
             "output_checksum": dto.output_checksum,
             "schema_name": dto.schema_name,
             "fallback_used": dto.fallback_used,
+            "redacted_error": dto.redacted_error,
             "redacted_summary": dto.redacted_summary,
             "prompt_tokens": dto.prompt_tokens,
             "completion_tokens": dto.completion_tokens,
@@ -208,6 +221,9 @@ class V2LLMInvocationLedger:
             "latency_ms": dto.latency_ms,
             "created_at": dto.created_at,
             "completed_at": dto.completed_at,
+            "configured_max_input_tokens": dto.configured_max_input_tokens,
+            "configured_max_output_tokens": dto.configured_max_output_tokens,
+            "response_format_used": dto.response_format_used,
         }
 
     @staticmethod
@@ -232,3 +248,21 @@ class V2LLMInvocationLedger:
         if dto_dict.get("deployment_alias_hash") and len(str(dto_dict["deployment_alias_hash"])) > 64:
             forbidden.append("deployment_alias_hash_too_long")
         return list(set(forbidden))
+
+
+def _coerce_role(role: str) -> V2ModelRole:
+    try:
+        return V2ModelRole(role)
+    except ValueError:
+        return V2ModelRole.ASSISTANT
+
+
+def _response_format_used_for_record(role: V2ModelRole, record: V2LLMInvocationRecord) -> str:
+    if record.schema_name in {"RepairPrimaryOutput", "RepairReviewerOutput"}:
+        configured = V2ModelRoleRouter().resolve_budget(
+            role=role,
+            responsibility=str(record.responsibility or ""),
+            output_schema_name=record.schema_name,
+        ).response_format
+        return configured or ""
+    return ""

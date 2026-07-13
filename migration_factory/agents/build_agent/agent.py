@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import logging
 from pathlib import Path
@@ -61,6 +62,7 @@ def run_build_agent(
     validation_command: str | list[str] | tuple[str, ...] | None = None,
     source_jdk_home_env: str | None = None,
     target_jdk_home_env: str | None = None,
+    execution_env: Mapping[str, str] | None = None,
 ) -> BuildRunResult:
     project_root = Path(project_path).expanduser().resolve()
     resolved_output_dir = _resolve_output_dir(output_dir)
@@ -109,7 +111,7 @@ def run_build_agent(
         source_jdk_home_env=source_jdk_home_env,
         target_jdk_home_env=target_jdk_home_env,
     )
-    command_env = _build_command_env(java_home)
+    command_env = _build_command_env(java_home, execution_env=execution_env)
     gate_failure = _target_environment_gate(project, validation_unit_id, explicit_command, env=command_env)
     if gate_failure is not None:
         classification = command_error_classification(gate_failure.message)
@@ -368,7 +370,13 @@ def _java_runtime_for_unit(
     return env_name, java_home if java_home else None
 
 
-def _build_command_env(java_home: str | None) -> dict[str, str] | None:
+def _build_command_env(
+    java_home: str | None,
+    *,
+    execution_env: Mapping[str, str] | None = None,
+) -> dict[str, str] | None:
+    if execution_env is not None:
+        return {str(key): str(value) for key, value in execution_env.items()}
     if not java_home:
         return None
     env = os.environ.copy()
