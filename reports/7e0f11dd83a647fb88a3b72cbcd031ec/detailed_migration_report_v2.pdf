@@ -1,0 +1,2752 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [16 0 R 17 0 R 18 0 R 19 0 R 20 0 R 21 0 R 22 0 R 23 0 R 24 0 R 25 0 R] /Count 10 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+5 0 obj
+<< /Font <</FH 3 0 R /FB 4 0 R>> >>
+endobj
+6 0 obj
+<< /Length 6818 >>
+stream
+q
+1.000 1.000 1.000 rg 0 0 595.0 842.0 re f
+0.910 0.970 0.960 rg 0 0 595.0 28.0 re f
+0.780 0.820 0.860 RG 0.6 w 46.0 42.0 m 549.0 42.0 l S
+BT 0.340 0.380 0.430 rg /FH 8 Tf 46.0 24.0 Td (Detailed Migration Report) Tj ET
+BT 0.340 0.380 0.430 rg /FH 8 Tf 487.0 24.0 Td (Page 1 of 10) Tj ET
+0.090 0.160 0.250 rg 0.0 738.0 595.0 104.0 re f
+0.000 0.480 0.520 rg 46.0 724.0 84.0 6.0 re f
+BT 1.000 1.000 1.000 rg /FB 24 Tf 46.0 794.0 Td (Detailed Migration Report) Tj ET
+BT 0.820 0.890 0.960 rg /FH 10 Tf 46.0 770.0 Td (Evidence-backed migration summary, technical progress, validation, and limitations) Tj ET
+0.000 0.480 0.520 rg 46.0 674.0 4.0 22.0 re f
+BT 0.090 0.160 0.250 rg /FB 15 Tf 58.0 693.0 Td (Executive Summary) Tj ET
+0.780 0.820 0.860 RG 0.7 w 46.0 675.0 m 549.0 675.0 l S
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 662.0 Td (This migration moved the application from Spring Boot 2.1 / Java 11 to Spring Boot 2.7 / Java 11.) Tj ET
+BT 0.100 0.320 0.580 rg /FB 12 Tf 46.0 632.0 Td (Key Metrics) Tj ET
+0.920 0.960 0.990 rg 46.0 594.0 211.3 18.0 re f
+0.780 0.820 0.860 RG 46.0 594.0 211.3 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 50.0 600.0 Td (Metric) Tj ET
+0.920 0.960 0.990 rg 257.3 594.0 291.7 18.0 re f
+0.780 0.820 0.860 RG 257.3 594.0 291.7 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 261.3 600.0 Td (Value) Tj ET
+1.000 1.000 1.000 rg 46.0 573.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 573.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 581.0 Td (Outcome) Tj ET
+1.000 1.000 1.000 rg 257.3 573.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 573.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 581.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 46.0 552.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 552.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 560.0 Td (Duration) Tj ET
+0.960 0.970 0.980 rg 257.3 552.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 552.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 560.0 Td (9m 5s) Tj ET
+1.000 1.000 1.000 rg 46.0 531.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 531.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 539.0 Td (Migration stages) Tj ET
+1.000 1.000 1.000 rg 257.3 531.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 531.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 539.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 46.0 510.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 510.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 518.0 Td (Files changed) Tj ET
+0.960 0.970 0.980 rg 257.3 510.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 510.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 518.0 Td (0) Tj ET
+1.000 1.000 1.000 rg 46.0 489.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 489.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 497.0 Td (Lines added) Tj ET
+1.000 1.000 1.000 rg 257.3 489.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 489.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 497.0 Td (0) Tj ET
+0.960 0.970 0.980 rg 46.0 468.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 468.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 476.0 Td (Lines deleted) Tj ET
+0.960 0.970 0.980 rg 257.3 468.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 468.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 476.0 Td (0) Tj ET
+1.000 1.000 1.000 rg 46.0 447.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 447.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 455.0 Td (Total lines changed) Tj ET
+1.000 1.000 1.000 rg 257.3 447.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 447.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 455.0 Td (0) Tj ET
+0.960 0.970 0.980 rg 46.0 426.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 426.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 434.0 Td (Tests executed) Tj ET
+0.960 0.970 0.980 rg 257.3 426.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 426.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 434.0 Td (0) Tj ET
+1.000 1.000 1.000 rg 46.0 405.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 405.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 413.0 Td (Tests passed) Tj ET
+1.000 1.000 1.000 rg 257.3 405.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 405.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 413.0 Td (0) Tj ET
+0.960 0.970 0.980 rg 46.0 384.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 384.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 392.0 Td (Repair attempts) Tj ET
+0.960 0.970 0.980 rg 257.3 384.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 384.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 392.0 Td (0) Tj ET
+0.000 0.480 0.520 rg 46.0 343.0 4.0 22.0 re f
+BT 0.090 0.160 0.250 rg /FB 15 Tf 58.0 362.0 Td (Migration Story) Tj ET
+0.780 0.820 0.860 RG 0.7 w 46.0 344.0 m 549.0 344.0 l S
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 331.0 Td (The migration focused on a single included unit:) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 317.0 Td (an automated Stage 1 transition from the project's detected source profile "Spring Boot 2.1 /) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 303.0 Td (Java 11" toward the target profile "Spring Boot 2.7 /) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 289.0 Td (Java 11".) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 275.0 Td (The run explicitly excluded Stages 2?4, so the delivered work and artifacts are scoped to the initial) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 261.0 Td (planning, analysis, assessment, and sandbox transform for that first stage.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 247.0 Td (The job was created and queued on 2026-07-10T15:13:54.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 233.0 Td (934334Z and Stage 1 started immediately thereafter.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 207.0 Td (Stage 1 began with an analysis phase that completed within the first several minutes; planning and) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 193.0 Td (assessment phases then completed in rapid succession.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 179.0 Td (The system produced a broad set of artifacts during these phases ? analysis_report, assessment_) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 165.0 Td (report, dependency_graph, target_dependency_plan, migration_plan.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 151.0 Td (yaml, rewrite_preview, rewrite_patch, rewrite_impact_) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 137.0 Td (summary, and multiple summaries and inventories ? which collectively capture the detected state,) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 123.0 Td (recommended changes, and an automated rewrite dry-run.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 109.0 Td (The analysis and planning outputs were written before the approval gate was reached.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 83.0 Td (Operationally the approval flow recorded both an auto-) Tj ET
+Q
+
+endstream
+endobj
+7 0 obj
+<< /Length 6994 >>
+stream
+q
+1.000 1.000 1.000 rg 0 0 595.0 842.0 re f
+0.910 0.970 0.960 rg 0 0 595.0 28.0 re f
+0.780 0.820 0.860 RG 0.6 w 46.0 42.0 m 549.0 42.0 l S
+BT 0.340 0.380 0.430 rg /FH 8 Tf 46.0 24.0 Td (Detailed Migration Report) Tj ET
+BT 0.340 0.380 0.430 rg /FH 8 Tf 487.0 24.0 Td (Page 2 of 10) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 788.0 Td (approval enablement and subsequent human approval activity.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 774.0 Td (Auto Approval was enabled early in the run, and the approval gate was auto-) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 760.0 Td (approved; the timeline also records multiple human approval decisions being recorded and completed.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 746.0 Td (After approvals were recorded, the orchestrator resumed and a sandbox transform was started and) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 732.0 Td (completed; sandbox transform completed at 2026-07-10T15:22:55.957768Z.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 718.0 Td (Final report generation and a stage report were produced immediately after the transform.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 692.0 Td (Despite the sandbox transform, measured line- and file-) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 678.0 Td (level impact for this migration is zero: files_changed 0, lines_added 0, lines_changed 0, lines_) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 664.0 Td (deleted 0. The rewrite artifacts \(rewrite_dry_run.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 650.0 Td (patch, rewrite_patch, rewrite_) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 636.0 Td (preview\) were generated and saved as evidence of proposed edits, but no on-) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 622.0 Td (repo changes are recorded by this run.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 608.0 Td (Repair attempts are zero and no repair actions were required or executed during Stage 1.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 582.0 Td (Validation outcomes are partially recorded:) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 568.0 Td (planning, assessment, and artifact generation completed successfully and a final stage report was) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 554.0 Td (written.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 540.0 Td (Test execution and build status are not captured in the evidence \(test_totals show zero tests and build_) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 526.0 Td (status is "not captured"\), and proof_level and transform_status fields are also "not captured.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 512.0 Td (" These gaps mean there is no recorded test pass/fail signal or verified build result from this run.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 486.0 Td (Remaining limitations and next considerations are therefore explicit in the evidence:) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 472.0 Td (Stage 1 has produced a complete set of analysis and plan artifacts and a successful sandbox transform,) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 458.0 Td (but there is no captured result for builds or tests, no recorded) Tj ET
+0.000 0.480 0.520 rg 46.0 407.0 4.0 22.0 re f
+BT 0.090 0.160 0.250 rg /FB 15 Tf 58.0 426.0 Td (Migration Scope) Tj ET
+0.780 0.820 0.860 RG 0.7 w 46.0 408.0 m 549.0 408.0 l S
+BT 0.080 0.090 0.100 rg /FH 10 Tf 58.0 395.0 Td (- Source profile: Spring Boot 2.1 / Java 11) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 58.0 379.0 Td (- Target profile: Spring Boot 2.7 / Java 11) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 58.0 363.0 Td (- Included stages: 1) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 58.0 347.0 Td (- Skipped earlier stages: none) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 58.0 331.0 Td (- Excluded later stages: 2, 3, 4) Tj ET
+0.000 0.480 0.520 rg 46.0 285.0 4.0 22.0 re f
+BT 0.090 0.160 0.250 rg /FB 15 Tf 58.0 304.0 Td (Stage-by-Stage Technical Details) Tj ET
+0.780 0.820 0.860 RG 0.7 w 46.0 286.0 m 549.0 286.0 l S
+BT 0.100 0.320 0.580 rg /FB 12 Tf 46.0 269.0 Td (Stage 1: Spring Boot 2.1 / Java 11 to Spring Boot 2.7 / Java 11) Tj ET
+0.920 0.960 0.990 rg 46.0 231.0 211.3 18.0 re f
+0.780 0.820 0.860 RG 46.0 231.0 211.3 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 50.0 237.0 Td (Metric) Tj ET
+0.920 0.960 0.990 rg 257.3 231.0 291.7 18.0 re f
+0.780 0.820 0.860 RG 257.3 231.0 291.7 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 261.3 237.0 Td (Value) Tj ET
+1.000 1.000 1.000 rg 46.0 210.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 210.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 218.0 Td (Status) Tj ET
+1.000 1.000 1.000 rg 257.3 210.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 210.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 218.0 Td (manifest_ready) Tj ET
+0.960 0.970 0.980 rg 46.0 189.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 189.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 197.0 Td (Duration) Tj ET
+0.960 0.970 0.980 rg 257.3 189.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 189.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 197.0 Td (9m 5s) Tj ET
+1.000 1.000 1.000 rg 46.0 168.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 168.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 176.0 Td (Files changed) Tj ET
+1.000 1.000 1.000 rg 257.3 168.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 168.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 176.0 Td (0) Tj ET
+0.960 0.970 0.980 rg 46.0 147.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 147.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 155.0 Td (Lines added) Tj ET
+0.960 0.970 0.980 rg 257.3 147.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 147.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 155.0 Td (0) Tj ET
+1.000 1.000 1.000 rg 46.0 126.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 126.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 134.0 Td (Lines deleted) Tj ET
+1.000 1.000 1.000 rg 257.3 126.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 126.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 134.0 Td (0) Tj ET
+0.960 0.970 0.980 rg 46.0 105.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 105.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 113.0 Td (Total lines changed) Tj ET
+0.960 0.970 0.980 rg 257.3 105.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 105.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 113.0 Td (0) Tj ET
+1.000 1.000 1.000 rg 46.0 84.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 84.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 92.0 Td (Transform) Tj ET
+1.000 1.000 1.000 rg 257.3 84.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 84.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 92.0 Td (not captured) Tj ET
+0.960 0.970 0.980 rg 46.0 63.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 63.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 71.0 Td (Build) Tj ET
+0.960 0.970 0.980 rg 257.3 63.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 63.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 71.0 Td (not captured) Tj ET
+Q
+
+endstream
+endobj
+8 0 obj
+<< /Length 17498 >>
+stream
+q
+1.000 1.000 1.000 rg 0 0 595.0 842.0 re f
+0.910 0.970 0.960 rg 0 0 595.0 28.0 re f
+0.780 0.820 0.860 RG 0.6 w 46.0 42.0 m 549.0 42.0 l S
+BT 0.340 0.380 0.430 rg /FH 8 Tf 46.0 24.0 Td (Detailed Migration Report) Tj ET
+BT 0.340 0.380 0.430 rg /FH 8 Tf 487.0 24.0 Td (Page 3 of 10) Tj ET
+0.920 0.960 0.990 rg 46.0 773.0 211.3 18.0 re f
+0.780 0.820 0.860 RG 46.0 773.0 211.3 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 50.0 779.0 Td (Metric) Tj ET
+0.920 0.960 0.990 rg 257.3 773.0 291.7 18.0 re f
+0.780 0.820 0.860 RG 257.3 773.0 291.7 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 261.3 779.0 Td (Value) Tj ET
+1.000 1.000 1.000 rg 46.0 752.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 752.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 760.0 Td (Tests) Tj ET
+1.000 1.000 1.000 rg 257.3 752.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 752.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 760.0 Td (not captured) Tj ET
+0.960 0.970 0.980 rg 46.0 731.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 731.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 739.0 Td (Proof) Tj ET
+0.960 0.970 0.980 rg 257.3 731.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 731.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 739.0 Td (not captured) Tj ET
+1.000 1.000 1.000 rg 46.0 710.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 710.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 718.0 Td (Test total / passed / failed) Tj ET
+1.000 1.000 1.000 rg 257.3 710.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 710.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 718.0 Td (0 / 0 / 0) Tj ET
+0.960 0.970 0.980 rg 46.0 689.0 211.3 21.0 re f
+0.780 0.820 0.860 RG 46.0 689.0 211.3 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 697.0 Td (Repair attempts) Tj ET
+0.960 0.970 0.980 rg 257.3 689.0 291.7 21.0 re f
+0.780 0.820 0.860 RG 257.3 689.0 291.7 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 261.3 697.0 Td (0) Tj ET
+0.000 0.480 0.520 rg 46.0 648.0 4.0 22.0 re f
+BT 0.090 0.160 0.250 rg /FB 15 Tf 58.0 667.0 Td (Migration Process Timeline) Tj ET
+0.780 0.820 0.860 RG 0.7 w 46.0 649.0 m 549.0 649.0 l S
+0.920 0.960 0.990 rg 46.0 621.0 96.0 18.0 re f
+0.780 0.820 0.860 RG 46.0 621.0 96.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 50.0 627.0 Td (Time) Tj ET
+0.920 0.960 0.990 rg 142.0 621.0 42.0 18.0 re f
+0.780 0.820 0.860 RG 142.0 621.0 42.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 146.0 627.0 Td (Stage) Tj ET
+0.920 0.960 0.990 rg 184.0 621.0 96.0 18.0 re f
+0.780 0.820 0.860 RG 184.0 621.0 96.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 188.0 627.0 Td (Event) Tj ET
+0.920 0.960 0.990 rg 280.0 621.0 70.0 18.0 re f
+0.780 0.820 0.860 RG 280.0 621.0 70.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 284.0 627.0 Td (Status) Tj ET
+0.920 0.960 0.990 rg 350.0 621.0 199.0 18.0 re f
+0.780 0.820 0.860 RG 350.0 621.0 199.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 354.0 627.0 Td (Detail) Tj ET
+1.000 1.000 1.000 rg 46.0 587.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 587.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 608.0 Td (2026-07-10T15:13:54.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 595.0 Td (934334Z) Tj ET
+1.000 1.000 1.000 rg 142.0 587.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 587.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 608.0 Td () Tj ET
+1.000 1.000 1.000 rg 184.0 587.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 587.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 608.0 Td (Job Created) Tj ET
+1.000 1.000 1.000 rg 280.0 587.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 587.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 608.0 Td (created) Tj ET
+1.000 1.000 1.000 rg 350.0 587.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 587.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 608.0 Td (V2 migration job created.) Tj ET
+0.960 0.970 0.980 rg 46.0 553.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 553.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 574.0 Td (2026-07-10T15:13:54.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 561.0 Td (969762Z) Tj ET
+0.960 0.970 0.980 rg 142.0 553.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 553.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 574.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 553.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 553.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 574.0 Td (Stage Queued) Tj ET
+0.960 0.970 0.980 rg 280.0 553.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 553.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 574.0 Td (queued) Tj ET
+0.960 0.970 0.980 rg 350.0 553.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 553.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 574.0 Td (Stage 1 command manifest queued for real) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 561.0 Td (orchestrator execution.) Tj ET
+1.000 1.000 1.000 rg 46.0 519.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 519.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 540.0 Td (2026-07-10T15:13:55.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 527.0 Td (022473Z) Tj ET
+1.000 1.000 1.000 rg 142.0 519.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 519.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 540.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 519.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 519.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 540.0 Td (Stage Started) Tj ET
+1.000 1.000 1.000 rg 280.0 519.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 519.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 540.0 Td (running) Tj ET
+1.000 1.000 1.000 rg 350.0 519.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 519.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 540.0 Td (Stage 1 real orchestrator started.) Tj ET
+0.960 0.970 0.980 rg 46.0 485.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 485.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 506.0 Td (2026-07-10T15:13:55.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 493.0 Td (066022Z) Tj ET
+0.960 0.970 0.980 rg 142.0 485.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 485.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 506.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 485.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 485.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 506.0 Td (Command Started) Tj ET
+0.960 0.970 0.980 rg 280.0 485.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 485.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 506.0 Td (running) Tj ET
+0.960 0.970 0.980 rg 350.0 485.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 485.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 506.0 Td (Backend-) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 493.0 Td (owned orchestrator manifest launched.) Tj ET
+1.000 1.000 1.000 rg 46.0 451.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 451.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 472.0 Td (2026-07-10T15:13:55.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 459.0 Td (142894Z) Tj ET
+1.000 1.000 1.000 rg 142.0 451.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 451.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 472.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 451.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 451.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 472.0 Td (Process Started) Tj ET
+1.000 1.000 1.000 rg 280.0 451.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 451.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 472.0 Td (running) Tj ET
+1.000 1.000 1.000 rg 350.0 451.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 451.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 472.0 Td (Orchestrator subprocess is running.) Tj ET
+0.960 0.970 0.980 rg 46.0 417.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 417.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 438.0 Td (2026-07-10T15:13:56.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 425.0 Td (595002Z) Tj ET
+0.960 0.970 0.980 rg 142.0 417.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 417.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 438.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 417.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 417.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 438.0 Td (Analysis Started) Tj ET
+0.960 0.970 0.980 rg 280.0 417.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 417.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 438.0 Td (running) Tj ET
+0.960 0.970 0.980 rg 350.0 417.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 417.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 438.0 Td (analysis phase started.) Tj ET
+1.000 1.000 1.000 rg 46.0 383.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 383.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 404.0 Td (2026-07-10T15:14:00.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 391.0 Td (257969Z) Tj ET
+1.000 1.000 1.000 rg 142.0 383.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 383.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 404.0 Td () Tj ET
+1.000 1.000 1.000 rg 184.0 383.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 383.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 404.0 Td (Approval Mode) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 391.0 Td (Updated) Tj ET
+1.000 1.000 1.000 rg 280.0 383.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 383.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 404.0 Td (updated) Tj ET
+1.000 1.000 1.000 rg 350.0 383.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 383.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 404.0 Td (Auto Approval enabled.) Tj ET
+0.960 0.970 0.980 rg 46.0 349.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 349.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 370.0 Td (2026-07-10T15:20:02.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 357.0 Td (204962Z) Tj ET
+0.960 0.970 0.980 rg 142.0 349.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 349.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 370.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 349.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 349.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 370.0 Td (Analysis Completed) Tj ET
+0.960 0.970 0.980 rg 280.0 349.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 349.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 370.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 349.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 349.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 370.0 Td (analysis phase completed.) Tj ET
+1.000 1.000 1.000 rg 46.0 315.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 315.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 336.0 Td (2026-07-10T15:20:02.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 323.0 Td (237564Z) Tj ET
+1.000 1.000 1.000 rg 142.0 315.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 315.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 336.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 315.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 315.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 336.0 Td (Planning Started) Tj ET
+1.000 1.000 1.000 rg 280.0 315.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 315.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 336.0 Td (running) Tj ET
+1.000 1.000 1.000 rg 350.0 315.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 315.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 336.0 Td (planning phase started.) Tj ET
+0.960 0.970 0.980 rg 46.0 281.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 281.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 302.0 Td (2026-07-10T15:20:02.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 289.0 Td (337803Z) Tj ET
+0.960 0.970 0.980 rg 142.0 281.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 281.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 302.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 281.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 281.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 302.0 Td (Planning Completed) Tj ET
+0.960 0.970 0.980 rg 280.0 281.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 281.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 302.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 281.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 281.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 302.0 Td (planning phase completed.) Tj ET
+1.000 1.000 1.000 rg 46.0 247.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 247.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 268.0 Td (2026-07-10T15:20:02.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 255.0 Td (394712Z) Tj ET
+1.000 1.000 1.000 rg 142.0 247.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 247.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 268.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 247.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 247.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 268.0 Td (Assessment Started) Tj ET
+1.000 1.000 1.000 rg 280.0 247.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 247.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 268.0 Td (running) Tj ET
+1.000 1.000 1.000 rg 350.0 247.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 247.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 268.0 Td (assessment phase started.) Tj ET
+0.960 0.970 0.980 rg 46.0 213.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 213.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 234.0 Td (2026-07-10T15:20:02.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 221.0 Td (454717Z) Tj ET
+0.960 0.970 0.980 rg 142.0 213.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 213.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 234.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 213.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 213.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 234.0 Td (Assessment Completed) Tj ET
+0.960 0.970 0.980 rg 280.0 213.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 213.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 234.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 213.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 213.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 234.0 Td (assessment phase completed.) Tj ET
+1.000 1.000 1.000 rg 46.0 179.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 179.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 200.0 Td (2026-07-10T15:20:02.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 187.0 Td (491847Z) Tj ET
+1.000 1.000 1.000 rg 142.0 179.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 179.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 200.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 179.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 179.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 200.0 Td (Approval Blocked) Tj ET
+1.000 1.000 1.000 rg 280.0 179.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 179.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 200.0 Td (blocked) Tj ET
+1.000 1.000 1.000 rg 350.0 179.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 179.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 200.0 Td (Human approval required.) Tj ET
+0.960 0.970 0.980 rg 46.0 145.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 145.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 166.0 Td (2026-07-10T15:20:02.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 153.0 Td (929559Z) Tj ET
+0.960 0.970 0.980 rg 142.0 145.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 145.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 166.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 145.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 145.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 166.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 145.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 145.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 166.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 145.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 145.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 166.0 Td (Artifact written: analysis_report) Tj ET
+1.000 1.000 1.000 rg 46.0 111.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 111.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 132.0 Td (2026-07-10T15:20:02.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 119.0 Td (980657Z) Tj ET
+1.000 1.000 1.000 rg 142.0 111.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 111.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 132.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 111.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 111.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 132.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 111.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 111.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 132.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 111.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 111.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 132.0 Td (Artifact written: analysis_report.json) Tj ET
+0.960 0.970 0.980 rg 46.0 77.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 77.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 98.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 85.0 Td (012944Z) Tj ET
+0.960 0.970 0.980 rg 142.0 77.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 77.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 98.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 77.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 77.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 98.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 77.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 77.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 98.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 77.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 77.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 98.0 Td (Artifact written: analysis_summary) Tj ET
+Q
+
+endstream
+endobj
+9 0 obj
+<< /Length 20359 >>
+stream
+q
+1.000 1.000 1.000 rg 0 0 595.0 842.0 re f
+0.910 0.970 0.960 rg 0 0 595.0 28.0 re f
+0.780 0.820 0.860 RG 0.6 w 46.0 42.0 m 549.0 42.0 l S
+BT 0.340 0.380 0.430 rg /FH 8 Tf 46.0 24.0 Td (Detailed Migration Report) Tj ET
+BT 0.340 0.380 0.430 rg /FH 8 Tf 487.0 24.0 Td (Page 4 of 10) Tj ET
+0.920 0.960 0.990 rg 46.0 773.0 96.0 18.0 re f
+0.780 0.820 0.860 RG 46.0 773.0 96.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 50.0 779.0 Td (Time) Tj ET
+0.920 0.960 0.990 rg 142.0 773.0 42.0 18.0 re f
+0.780 0.820 0.860 RG 142.0 773.0 42.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 146.0 779.0 Td (Stage) Tj ET
+0.920 0.960 0.990 rg 184.0 773.0 96.0 18.0 re f
+0.780 0.820 0.860 RG 184.0 773.0 96.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 188.0 779.0 Td (Event) Tj ET
+0.920 0.960 0.990 rg 280.0 773.0 70.0 18.0 re f
+0.780 0.820 0.860 RG 280.0 773.0 70.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 284.0 779.0 Td (Status) Tj ET
+0.920 0.960 0.990 rg 350.0 773.0 199.0 18.0 re f
+0.780 0.820 0.860 RG 350.0 773.0 199.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 354.0 779.0 Td (Detail) Tj ET
+1.000 1.000 1.000 rg 46.0 739.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 739.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 760.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 747.0 Td (050225Z) Tj ET
+1.000 1.000 1.000 rg 142.0 739.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 739.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 760.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 739.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 739.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 760.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 739.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 739.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 760.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 739.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 739.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 760.0 Td (Artifact written: analysis_summary.md) Tj ET
+0.960 0.970 0.980 rg 46.0 705.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 705.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 726.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 713.0 Td (092352Z) Tj ET
+0.960 0.970 0.980 rg 142.0 705.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 705.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 726.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 705.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 705.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 726.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 705.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 705.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 726.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 705.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 705.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 726.0 Td (Artifact written: approval_request.json) Tj ET
+1.000 1.000 1.000 rg 46.0 671.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 671.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 692.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 679.0 Td (128712Z) Tj ET
+1.000 1.000 1.000 rg 142.0 671.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 671.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 692.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 671.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 671.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 692.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 671.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 671.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 692.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 671.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 671.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 692.0 Td (Artifact written: assessment_report) Tj ET
+0.960 0.970 0.980 rg 46.0 637.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 637.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 658.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 645.0 Td (166892Z) Tj ET
+0.960 0.970 0.980 rg 142.0 637.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 637.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 658.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 637.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 637.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 658.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 637.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 637.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 658.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 637.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 637.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 658.0 Td (Artifact written: assessment_report.json) Tj ET
+1.000 1.000 1.000 rg 46.0 603.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 603.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 624.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 611.0 Td (205055Z) Tj ET
+1.000 1.000 1.000 rg 142.0 603.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 603.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 624.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 603.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 603.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 624.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 603.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 603.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 624.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 603.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 603.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 624.0 Td (Artifact written: assessment_summary) Tj ET
+0.960 0.970 0.980 rg 46.0 569.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 569.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 590.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 577.0 Td (231742Z) Tj ET
+0.960 0.970 0.980 rg 142.0 569.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 569.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 590.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 569.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 569.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 590.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 569.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 569.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 590.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 569.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 569.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 590.0 Td (Artifact written: assessment_summary.md) Tj ET
+1.000 1.000 1.000 rg 46.0 535.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 535.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 556.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 543.0 Td (277300Z) Tj ET
+1.000 1.000 1.000 rg 142.0 535.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 535.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 556.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 535.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 535.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 556.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 535.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 535.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 556.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 535.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 535.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 556.0 Td (Artifact written: config_inventory) Tj ET
+0.960 0.970 0.980 rg 46.0 501.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 501.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 522.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 509.0 Td (315658Z) Tj ET
+0.960 0.970 0.980 rg 142.0 501.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 501.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 522.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 501.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 501.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 522.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 501.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 501.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 522.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 501.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 501.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 522.0 Td (Artifact written: config_inventory.json) Tj ET
+1.000 1.000 1.000 rg 46.0 467.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 467.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 488.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 475.0 Td (360071Z) Tj ET
+1.000 1.000 1.000 rg 142.0 467.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 467.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 488.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 467.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 467.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 488.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 467.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 467.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 488.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 467.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 467.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 488.0 Td (Artifact written: copilot_assist) Tj ET
+0.960 0.970 0.980 rg 46.0 433.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 433.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 454.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 441.0 Td (398320Z) Tj ET
+0.960 0.970 0.980 rg 142.0 433.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 433.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 454.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 433.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 433.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 454.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 433.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 433.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 454.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 433.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 433.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 454.0 Td (Artifact written: copilot_assist.json) Tj ET
+1.000 1.000 1.000 rg 46.0 399.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 399.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 420.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 407.0 Td (440724Z) Tj ET
+1.000 1.000 1.000 rg 142.0 399.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 399.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 420.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 399.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 399.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 420.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 399.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 399.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 420.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 399.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 399.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 420.0 Td (Artifact written: dependency_graph) Tj ET
+0.960 0.970 0.980 rg 46.0 365.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 365.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 386.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 373.0 Td (480265Z) Tj ET
+0.960 0.970 0.980 rg 142.0 365.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 365.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 386.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 365.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 365.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 386.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 365.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 365.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 386.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 365.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 365.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 386.0 Td (Artifact written: dependency_graph.json) Tj ET
+1.000 1.000 1.000 rg 46.0 331.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 331.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 352.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 339.0 Td (516879Z) Tj ET
+1.000 1.000 1.000 rg 142.0 331.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 331.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 352.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 331.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 331.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 352.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 331.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 331.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 352.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 331.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 331.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 352.0 Td (Artifact written: migration_plan.yaml) Tj ET
+0.960 0.970 0.980 rg 46.0 297.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 297.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 318.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 305.0 Td (559220Z) Tj ET
+0.960 0.970 0.980 rg 142.0 297.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 297.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 318.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 297.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 297.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 318.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 297.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 297.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 318.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 297.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 297.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 318.0 Td (Artifact written: migration_units.yaml) Tj ET
+1.000 1.000 1.000 rg 46.0 263.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 263.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 284.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 271.0 Td (602304Z) Tj ET
+1.000 1.000 1.000 rg 142.0 263.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 263.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 284.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 263.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 263.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 284.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 263.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 263.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 284.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 263.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 263.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 284.0 Td (Artifact written: plan_summary.md) Tj ET
+0.960 0.970 0.980 rg 46.0 229.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 229.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 250.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 237.0 Td (641165Z) Tj ET
+0.960 0.970 0.980 rg 142.0 229.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 229.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 250.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 229.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 229.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 250.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 229.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 229.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 250.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 229.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 229.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 250.0 Td (Artifact written: plan_validation_report.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 237.0 Td (json) Tj ET
+1.000 1.000 1.000 rg 46.0 195.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 195.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 216.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 203.0 Td (692426Z) Tj ET
+1.000 1.000 1.000 rg 142.0 195.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 195.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 216.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 195.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 195.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 216.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 195.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 195.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 216.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 195.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 195.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 216.0 Td (Artifact written: read_only_verification) Tj ET
+0.960 0.970 0.980 rg 46.0 161.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 161.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 182.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 169.0 Td (728924Z) Tj ET
+0.960 0.970 0.980 rg 142.0 161.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 161.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 182.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 161.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 161.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 182.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 161.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 161.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 182.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 161.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 161.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 182.0 Td (Artifact written: read_only_verification.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 169.0 Td (json) Tj ET
+1.000 1.000 1.000 rg 46.0 127.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 127.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 148.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 135.0 Td (765415Z) Tj ET
+1.000 1.000 1.000 rg 142.0 127.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 127.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 148.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 127.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 127.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 148.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 127.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 127.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 148.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 127.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 127.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 148.0 Td (Artifact written: rewrite_dry_run.patch) Tj ET
+0.960 0.970 0.980 rg 46.0 93.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 93.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 114.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 101.0 Td (798287Z) Tj ET
+0.960 0.970 0.980 rg 142.0 93.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 93.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 114.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 93.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 93.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 114.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 93.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 93.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 114.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 93.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 93.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 114.0 Td (Artifact written: rewrite_impact_summary) Tj ET
+1.000 1.000 1.000 rg 46.0 59.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 59.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 80.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 67.0 Td (848249Z) Tj ET
+1.000 1.000 1.000 rg 142.0 59.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 59.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 80.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 59.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 59.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 80.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 59.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 59.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 80.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 59.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 59.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 80.0 Td (Artifact written: rewrite_impact_summary.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 67.0 Td (json) Tj ET
+Q
+
+endstream
+endobj
+10 0 obj
+<< /Length 20530 >>
+stream
+q
+1.000 1.000 1.000 rg 0 0 595.0 842.0 re f
+0.910 0.970 0.960 rg 0 0 595.0 28.0 re f
+0.780 0.820 0.860 RG 0.6 w 46.0 42.0 m 549.0 42.0 l S
+BT 0.340 0.380 0.430 rg /FH 8 Tf 46.0 24.0 Td (Detailed Migration Report) Tj ET
+BT 0.340 0.380 0.430 rg /FH 8 Tf 487.0 24.0 Td (Page 5 of 10) Tj ET
+0.920 0.960 0.990 rg 46.0 773.0 96.0 18.0 re f
+0.780 0.820 0.860 RG 46.0 773.0 96.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 50.0 779.0 Td (Time) Tj ET
+0.920 0.960 0.990 rg 142.0 773.0 42.0 18.0 re f
+0.780 0.820 0.860 RG 142.0 773.0 42.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 146.0 779.0 Td (Stage) Tj ET
+0.920 0.960 0.990 rg 184.0 773.0 96.0 18.0 re f
+0.780 0.820 0.860 RG 184.0 773.0 96.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 188.0 779.0 Td (Event) Tj ET
+0.920 0.960 0.990 rg 280.0 773.0 70.0 18.0 re f
+0.780 0.820 0.860 RG 280.0 773.0 70.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 284.0 779.0 Td (Status) Tj ET
+0.920 0.960 0.990 rg 350.0 773.0 199.0 18.0 re f
+0.780 0.820 0.860 RG 350.0 773.0 199.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 354.0 779.0 Td (Detail) Tj ET
+0.960 0.970 0.980 rg 46.0 739.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 739.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 760.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 747.0 Td (882371Z) Tj ET
+0.960 0.970 0.980 rg 142.0 739.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 739.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 760.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 739.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 739.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 760.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 739.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 739.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 760.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 739.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 739.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 760.0 Td (Artifact written: rewrite_patch) Tj ET
+1.000 1.000 1.000 rg 46.0 705.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 705.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 726.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 713.0 Td (921981Z) Tj ET
+1.000 1.000 1.000 rg 142.0 705.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 705.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 726.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 705.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 705.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 726.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 705.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 705.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 726.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 705.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 705.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 726.0 Td (Artifact written: rewrite_plugin_plan) Tj ET
+0.960 0.970 0.980 rg 46.0 671.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 671.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 692.0 Td (2026-07-10T15:20:03.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 679.0 Td (966660Z) Tj ET
+0.960 0.970 0.980 rg 142.0 671.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 671.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 692.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 671.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 671.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 692.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 671.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 671.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 692.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 671.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 671.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 692.0 Td (Artifact written: rewrite_plugin_plan.json) Tj ET
+1.000 1.000 1.000 rg 46.0 637.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 637.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 658.0 Td (2026-07-10T15:20:04.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 645.0 Td (007779Z) Tj ET
+1.000 1.000 1.000 rg 142.0 637.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 637.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 658.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 637.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 637.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 658.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 637.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 637.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 658.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 637.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 637.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 658.0 Td (Artifact written: rewrite_preview) Tj ET
+0.960 0.970 0.980 rg 46.0 603.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 603.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 624.0 Td (2026-07-10T15:20:04.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 611.0 Td (046331Z) Tj ET
+0.960 0.970 0.980 rg 142.0 603.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 603.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 624.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 603.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 603.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 624.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 603.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 603.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 624.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 603.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 603.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 624.0 Td (Artifact written: rewrite_preview.json) Tj ET
+1.000 1.000 1.000 rg 46.0 569.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 569.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 590.0 Td (2026-07-10T15:20:04.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 577.0 Td (094086Z) Tj ET
+1.000 1.000 1.000 rg 142.0 569.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 569.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 590.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 569.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 569.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 590.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 569.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 569.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 590.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 569.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 569.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 590.0 Td (Artifact written: source_profile_detection) Tj ET
+0.960 0.970 0.980 rg 46.0 535.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 535.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 556.0 Td (2026-07-10T15:20:04.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 543.0 Td (129886Z) Tj ET
+0.960 0.970 0.980 rg 142.0 535.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 535.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 556.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 535.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 535.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 556.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 535.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 535.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 556.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 535.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 535.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 556.0 Td (Artifact written: target_dependency_plan) Tj ET
+1.000 1.000 1.000 rg 46.0 501.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 501.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 522.0 Td (2026-07-10T15:20:04.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 509.0 Td (167167Z) Tj ET
+1.000 1.000 1.000 rg 142.0 501.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 501.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 522.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 501.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 501.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 522.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 501.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 501.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 522.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 501.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 501.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 522.0 Td (Artifact written: target_dependency_plan.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 509.0 Td (json) Tj ET
+0.960 0.970 0.980 rg 46.0 467.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 467.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 488.0 Td (2026-07-10T15:20:04.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 475.0 Td (226922Z) Tj ET
+0.960 0.970 0.980 rg 142.0 467.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 467.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 488.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 467.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 467.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 488.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 467.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 467.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 488.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 467.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 467.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 488.0 Td (Artifact written: test_inventory) Tj ET
+1.000 1.000 1.000 rg 46.0 433.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 433.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 454.0 Td (2026-07-10T15:20:04.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 441.0 Td (265257Z) Tj ET
+1.000 1.000 1.000 rg 142.0 433.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 433.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 454.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 433.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 433.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 454.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 433.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 433.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 454.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 433.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 433.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 454.0 Td (Artifact written: test_inventory.json) Tj ET
+0.960 0.970 0.980 rg 46.0 399.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 399.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 420.0 Td (2026-07-10T15:20:04.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 407.0 Td (373484Z) Tj ET
+0.960 0.970 0.980 rg 142.0 399.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 399.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 420.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 399.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 399.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 420.0 Td (Approval Auto) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 407.0 Td (Approved) Tj ET
+0.960 0.970 0.980 rg 280.0 399.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 399.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 420.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 399.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 399.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 420.0 Td (Approval gate auto-) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 407.0 Td (approved because Auto Approval is enabled.) Tj ET
+1.000 1.000 1.000 rg 46.0 365.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 365.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 386.0 Td (2026-07-10T15:20:04.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 373.0 Td (436193Z) Tj ET
+1.000 1.000 1.000 rg 142.0 365.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 365.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 386.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 365.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 365.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 386.0 Td (Approval Started) Tj ET
+1.000 1.000 1.000 rg 280.0 365.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 365.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 386.0 Td (running) Tj ET
+1.000 1.000 1.000 rg 350.0 365.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 365.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 386.0 Td (Approval accepted; orchestrator resume) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 373.0 Td (process starting.) Tj ET
+0.960 0.970 0.980 rg 46.0 331.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 331.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 352.0 Td (2026-07-10T15:20:04.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 339.0 Td (540690Z) Tj ET
+0.960 0.970 0.980 rg 142.0 331.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 331.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 352.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 331.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 331.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 352.0 Td (Resume Started) Tj ET
+0.960 0.970 0.980 rg 280.0 331.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 331.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 352.0 Td (running) Tj ET
+0.960 0.970 0.980 rg 350.0 331.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 331.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 352.0 Td (Stage 1 real orchestrator resume started.) Tj ET
+1.000 1.000 1.000 rg 46.0 297.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 297.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 318.0 Td (2026-07-10T15:20:04.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 305.0 Td (586774Z) Tj ET
+1.000 1.000 1.000 rg 142.0 297.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 297.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 318.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 297.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 297.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 318.0 Td (Command Started) Tj ET
+1.000 1.000 1.000 rg 280.0 297.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 297.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 318.0 Td (running) Tj ET
+1.000 1.000 1.000 rg 350.0 297.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 297.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 318.0 Td (Backend-) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 305.0 Td (owned approval resume command launched.) Tj ET
+0.960 0.970 0.980 rg 46.0 263.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 263.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 284.0 Td (2026-07-10T15:20:04.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 271.0 Td (707661Z) Tj ET
+0.960 0.970 0.980 rg 142.0 263.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 263.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 284.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 263.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 263.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 284.0 Td (Process Started) Tj ET
+0.960 0.970 0.980 rg 280.0 263.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 263.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 284.0 Td (running) Tj ET
+0.960 0.970 0.980 rg 350.0 263.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 263.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 284.0 Td (Orchestrator subprocess is running.) Tj ET
+1.000 1.000 1.000 rg 46.0 229.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 229.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 250.0 Td (2026-07-10T15:20:06.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 237.0 Td (292030Z) Tj ET
+1.000 1.000 1.000 rg 142.0 229.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 229.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 250.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 229.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 229.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 250.0 Td (Approval Started) Tj ET
+1.000 1.000 1.000 rg 280.0 229.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 229.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 250.0 Td (running) Tj ET
+1.000 1.000 1.000 rg 350.0 229.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 229.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 250.0 Td (Recording approval decision.) Tj ET
+0.960 0.970 0.980 rg 46.0 195.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 195.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 216.0 Td (2026-07-10T15:20:06.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 203.0 Td (328546Z) Tj ET
+0.960 0.970 0.980 rg 142.0 195.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 195.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 216.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 195.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 195.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 216.0 Td (Approval Completed) Tj ET
+0.960 0.970 0.980 rg 280.0 195.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 195.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 216.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 195.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 195.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 216.0 Td (Approval decision recorded.) Tj ET
+1.000 1.000 1.000 rg 46.0 161.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 161.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 182.0 Td (2026-07-10T15:20:06.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 169.0 Td (366952Z) Tj ET
+1.000 1.000 1.000 rg 142.0 161.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 161.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 182.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 161.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 161.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 182.0 Td (Approval Blocked) Tj ET
+1.000 1.000 1.000 rg 280.0 161.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 161.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 182.0 Td (blocked) Tj ET
+1.000 1.000 1.000 rg 350.0 161.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 161.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 182.0 Td (Human approval required.) Tj ET
+0.960 0.970 0.980 rg 46.0 127.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 127.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 148.0 Td (2026-07-10T15:20:06.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 135.0 Td (401473Z) Tj ET
+0.960 0.970 0.980 rg 142.0 127.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 127.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 148.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 127.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 127.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 148.0 Td (Approval Started) Tj ET
+0.960 0.970 0.980 rg 280.0 127.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 127.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 148.0 Td (running) Tj ET
+0.960 0.970 0.980 rg 350.0 127.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 127.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 148.0 Td (Recording approval decision.) Tj ET
+1.000 1.000 1.000 rg 46.0 93.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 93.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 114.0 Td (2026-07-10T15:20:06.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 101.0 Td (434652Z) Tj ET
+1.000 1.000 1.000 rg 142.0 93.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 93.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 114.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 93.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 93.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 114.0 Td (Approval Completed) Tj ET
+1.000 1.000 1.000 rg 280.0 93.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 93.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 114.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 93.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 93.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 114.0 Td (Approval decision recorded.) Tj ET
+0.960 0.970 0.980 rg 46.0 59.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 59.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 80.0 Td (2026-07-10T15:20:06.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 67.0 Td (794212Z) Tj ET
+0.960 0.970 0.980 rg 142.0 59.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 59.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 80.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 59.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 59.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 80.0 Td (Approval Completed) Tj ET
+0.960 0.970 0.980 rg 280.0 59.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 59.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 80.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 59.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 59.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 80.0 Td (Human approval phase complete; sandbox) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 67.0 Td (transform has started.) Tj ET
+Q
+
+endstream
+endobj
+11 0 obj
+<< /Length 20376 >>
+stream
+q
+1.000 1.000 1.000 rg 0 0 595.0 842.0 re f
+0.910 0.970 0.960 rg 0 0 595.0 28.0 re f
+0.780 0.820 0.860 RG 0.6 w 46.0 42.0 m 549.0 42.0 l S
+BT 0.340 0.380 0.430 rg /FH 8 Tf 46.0 24.0 Td (Detailed Migration Report) Tj ET
+BT 0.340 0.380 0.430 rg /FH 8 Tf 487.0 24.0 Td (Page 6 of 10) Tj ET
+0.920 0.960 0.990 rg 46.0 773.0 96.0 18.0 re f
+0.780 0.820 0.860 RG 46.0 773.0 96.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 50.0 779.0 Td (Time) Tj ET
+0.920 0.960 0.990 rg 142.0 773.0 42.0 18.0 re f
+0.780 0.820 0.860 RG 142.0 773.0 42.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 146.0 779.0 Td (Stage) Tj ET
+0.920 0.960 0.990 rg 184.0 773.0 96.0 18.0 re f
+0.780 0.820 0.860 RG 184.0 773.0 96.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 188.0 779.0 Td (Event) Tj ET
+0.920 0.960 0.990 rg 280.0 773.0 70.0 18.0 re f
+0.780 0.820 0.860 RG 280.0 773.0 70.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 284.0 779.0 Td (Status) Tj ET
+0.920 0.960 0.990 rg 350.0 773.0 199.0 18.0 re f
+0.780 0.820 0.860 RG 350.0 773.0 199.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 354.0 779.0 Td (Detail) Tj ET
+1.000 1.000 1.000 rg 46.0 739.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 739.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 760.0 Td (2026-07-10T15:20:06.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 747.0 Td (836103Z) Tj ET
+1.000 1.000 1.000 rg 142.0 739.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 739.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 760.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 739.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 739.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 760.0 Td (Sandbox Transform) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 747.0 Td (Started) Tj ET
+1.000 1.000 1.000 rg 280.0 739.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 739.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 760.0 Td (running) Tj ET
+1.000 1.000 1.000 rg 350.0 739.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 739.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 760.0 Td (Sandbox transform started.) Tj ET
+0.960 0.970 0.980 rg 46.0 705.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 705.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 726.0 Td (2026-07-10T15:22:55.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 713.0 Td (957768Z) Tj ET
+0.960 0.970 0.980 rg 142.0 705.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 705.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 726.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 705.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 705.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 726.0 Td (Sandbox Transform) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 713.0 Td (Completed) Tj ET
+0.960 0.970 0.980 rg 280.0 705.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 705.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 726.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 705.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 705.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 726.0 Td (Sandbox transform completed.) Tj ET
+1.000 1.000 1.000 rg 46.0 671.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 671.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 692.0 Td (2026-07-10T15:22:55.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 679.0 Td (999914Z) Tj ET
+1.000 1.000 1.000 rg 142.0 671.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 671.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 692.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 671.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 671.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 692.0 Td (Stage Report Started) Tj ET
+1.000 1.000 1.000 rg 280.0 671.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 671.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 692.0 Td (running) Tj ET
+1.000 1.000 1.000 rg 350.0 671.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 671.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 692.0 Td (Final report generation started.) Tj ET
+0.960 0.970 0.980 rg 46.0 637.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 637.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 658.0 Td (2026-07-10T15:22:56.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 645.0 Td (038897Z) Tj ET
+0.960 0.970 0.980 rg 142.0 637.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 637.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 658.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 637.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 637.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 658.0 Td (Stage Report) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 645.0 Td (Completed) Tj ET
+0.960 0.970 0.980 rg 280.0 637.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 637.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 658.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 637.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 637.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 658.0 Td (Final report written.) Tj ET
+1.000 1.000 1.000 rg 46.0 603.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 603.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 624.0 Td (2026-07-10T15:22:56.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 611.0 Td (454783Z) Tj ET
+1.000 1.000 1.000 rg 142.0 603.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 603.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 624.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 603.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 603.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 624.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 603.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 603.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 624.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 603.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 603.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 624.0 Td (Artifact written: analysis_report) Tj ET
+0.960 0.970 0.980 rg 46.0 569.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 569.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 590.0 Td (2026-07-10T15:22:56.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 577.0 Td (502340Z) Tj ET
+0.960 0.970 0.980 rg 142.0 569.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 569.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 590.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 569.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 569.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 590.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 569.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 569.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 590.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 569.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 569.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 590.0 Td (Artifact written: analysis_report.json) Tj ET
+1.000 1.000 1.000 rg 46.0 535.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 535.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 556.0 Td (2026-07-10T15:22:56.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 543.0 Td (573239Z) Tj ET
+1.000 1.000 1.000 rg 142.0 535.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 535.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 556.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 535.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 535.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 556.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 535.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 535.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 556.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 535.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 535.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 556.0 Td (Artifact written: analysis_summary) Tj ET
+0.960 0.970 0.980 rg 46.0 501.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 501.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 522.0 Td (2026-07-10T15:22:56.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 509.0 Td (625214Z) Tj ET
+0.960 0.970 0.980 rg 142.0 501.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 501.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 522.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 501.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 501.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 522.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 501.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 501.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 522.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 501.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 501.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 522.0 Td (Artifact written: analysis_summary.md) Tj ET
+1.000 1.000 1.000 rg 46.0 467.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 467.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 488.0 Td (2026-07-10T15:22:56.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 475.0 Td (666868Z) Tj ET
+1.000 1.000 1.000 rg 142.0 467.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 467.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 488.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 467.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 467.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 488.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 467.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 467.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 488.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 467.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 467.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 488.0 Td (Artifact written: approval_decision) Tj ET
+0.960 0.970 0.980 rg 46.0 433.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 433.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 454.0 Td (2026-07-10T15:22:56.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 441.0 Td (720748Z) Tj ET
+0.960 0.970 0.980 rg 142.0 433.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 433.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 454.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 433.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 433.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 454.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 433.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 433.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 454.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 433.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 433.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 454.0 Td (Artifact written: approval_request.json) Tj ET
+1.000 1.000 1.000 rg 46.0 399.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 399.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 420.0 Td (2026-07-10T15:22:56.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 407.0 Td (759323Z) Tj ET
+1.000 1.000 1.000 rg 142.0 399.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 399.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 420.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 399.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 399.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 420.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 399.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 399.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 420.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 399.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 399.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 420.0 Td (Artifact written: approved_plan_lock) Tj ET
+0.960 0.970 0.980 rg 46.0 365.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 365.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 386.0 Td (2026-07-10T15:22:56.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 373.0 Td (793588Z) Tj ET
+0.960 0.970 0.980 rg 142.0 365.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 365.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 386.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 365.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 365.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 386.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 365.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 365.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 386.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 365.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 365.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 386.0 Td (Artifact written: assessment_report) Tj ET
+1.000 1.000 1.000 rg 46.0 331.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 331.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 352.0 Td (2026-07-10T15:22:56.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 339.0 Td (840812Z) Tj ET
+1.000 1.000 1.000 rg 142.0 331.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 331.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 352.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 331.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 331.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 352.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 331.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 331.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 352.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 331.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 331.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 352.0 Td (Artifact written: assessment_report.json) Tj ET
+0.960 0.970 0.980 rg 46.0 297.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 297.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 318.0 Td (2026-07-10T15:22:56.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 305.0 Td (875913Z) Tj ET
+0.960 0.970 0.980 rg 142.0 297.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 297.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 318.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 297.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 297.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 318.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 297.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 297.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 318.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 297.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 297.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 318.0 Td (Artifact written: assessment_summary) Tj ET
+1.000 1.000 1.000 rg 46.0 263.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 263.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 284.0 Td (2026-07-10T15:22:56.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 271.0 Td (917650Z) Tj ET
+1.000 1.000 1.000 rg 142.0 263.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 263.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 284.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 263.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 263.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 284.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 263.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 263.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 284.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 263.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 263.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 284.0 Td (Artifact written: assessment_summary.md) Tj ET
+0.960 0.970 0.980 rg 46.0 229.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 229.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 250.0 Td (2026-07-10T15:22:56.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 237.0 Td (981326Z) Tj ET
+0.960 0.970 0.980 rg 142.0 229.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 229.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 250.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 229.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 229.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 250.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 229.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 229.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 250.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 229.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 229.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 250.0 Td (Artifact written: config_inventory) Tj ET
+1.000 1.000 1.000 rg 46.0 195.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 195.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 216.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 203.0 Td (027067Z) Tj ET
+1.000 1.000 1.000 rg 142.0 195.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 195.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 216.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 195.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 195.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 216.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 195.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 195.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 216.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 195.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 195.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 216.0 Td (Artifact written: config_inventory.json) Tj ET
+0.960 0.970 0.980 rg 46.0 161.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 161.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 182.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 169.0 Td (082692Z) Tj ET
+0.960 0.970 0.980 rg 142.0 161.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 161.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 182.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 161.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 161.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 182.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 161.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 161.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 182.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 161.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 161.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 182.0 Td (Artifact written: copilot_assist) Tj ET
+1.000 1.000 1.000 rg 46.0 127.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 127.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 148.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 135.0 Td (159454Z) Tj ET
+1.000 1.000 1.000 rg 142.0 127.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 127.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 148.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 127.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 127.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 148.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 127.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 127.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 148.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 127.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 127.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 148.0 Td (Artifact written: copilot_assist.json) Tj ET
+0.960 0.970 0.980 rg 46.0 93.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 93.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 114.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 101.0 Td (206053Z) Tj ET
+0.960 0.970 0.980 rg 142.0 93.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 93.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 114.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 93.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 93.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 114.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 93.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 93.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 114.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 93.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 93.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 114.0 Td (Artifact written: dependency_copilot_request) Tj ET
+1.000 1.000 1.000 rg 46.0 59.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 59.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 80.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 67.0 Td (249597Z) Tj ET
+1.000 1.000 1.000 rg 142.0 59.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 59.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 80.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 59.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 59.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 80.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 59.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 59.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 80.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 59.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 59.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 80.0 Td (Artifact written: dependency_copilot_) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 67.0 Td (response) Tj ET
+Q
+
+endstream
+endobj
+12 0 obj
+<< /Length 20375 >>
+stream
+q
+1.000 1.000 1.000 rg 0 0 595.0 842.0 re f
+0.910 0.970 0.960 rg 0 0 595.0 28.0 re f
+0.780 0.820 0.860 RG 0.6 w 46.0 42.0 m 549.0 42.0 l S
+BT 0.340 0.380 0.430 rg /FH 8 Tf 46.0 24.0 Td (Detailed Migration Report) Tj ET
+BT 0.340 0.380 0.430 rg /FH 8 Tf 487.0 24.0 Td (Page 7 of 10) Tj ET
+0.920 0.960 0.990 rg 46.0 773.0 96.0 18.0 re f
+0.780 0.820 0.860 RG 46.0 773.0 96.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 50.0 779.0 Td (Time) Tj ET
+0.920 0.960 0.990 rg 142.0 773.0 42.0 18.0 re f
+0.780 0.820 0.860 RG 142.0 773.0 42.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 146.0 779.0 Td (Stage) Tj ET
+0.920 0.960 0.990 rg 184.0 773.0 96.0 18.0 re f
+0.780 0.820 0.860 RG 184.0 773.0 96.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 188.0 779.0 Td (Event) Tj ET
+0.920 0.960 0.990 rg 280.0 773.0 70.0 18.0 re f
+0.780 0.820 0.860 RG 280.0 773.0 70.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 284.0 779.0 Td (Status) Tj ET
+0.920 0.960 0.990 rg 350.0 773.0 199.0 18.0 re f
+0.780 0.820 0.860 RG 350.0 773.0 199.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 354.0 779.0 Td (Detail) Tj ET
+0.960 0.970 0.980 rg 46.0 739.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 739.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 760.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 747.0 Td (329232Z) Tj ET
+0.960 0.970 0.980 rg 142.0 739.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 739.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 760.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 739.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 739.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 760.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 739.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 739.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 760.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 739.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 739.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 760.0 Td (Artifact written: dependency_graph) Tj ET
+1.000 1.000 1.000 rg 46.0 705.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 705.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 726.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 713.0 Td (377700Z) Tj ET
+1.000 1.000 1.000 rg 142.0 705.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 705.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 726.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 705.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 705.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 726.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 705.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 705.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 726.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 705.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 705.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 726.0 Td (Artifact written: dependency_graph.json) Tj ET
+0.960 0.970 0.980 rg 46.0 671.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 671.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 692.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 679.0 Td (428476Z) Tj ET
+0.960 0.970 0.980 rg 142.0 671.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 671.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 692.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 671.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 671.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 692.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 671.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 671.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 692.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 671.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 671.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 692.0 Td (Artifact written: dependency_policy_report) Tj ET
+1.000 1.000 1.000 rg 46.0 637.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 637.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 658.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 645.0 Td (471860Z) Tj ET
+1.000 1.000 1.000 rg 142.0 637.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 637.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 658.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 637.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 637.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 658.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 637.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 637.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 658.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 637.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 637.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 658.0 Td (Artifact written: dependency_policy_summary) Tj ET
+0.960 0.970 0.980 rg 46.0 603.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 603.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 624.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 611.0 Td (512438Z) Tj ET
+0.960 0.970 0.980 rg 142.0 603.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 603.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 624.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 603.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 603.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 624.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 603.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 603.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 624.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 603.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 603.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 624.0 Td (Artifact written: dependency_repair_plan) Tj ET
+1.000 1.000 1.000 rg 46.0 569.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 569.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 590.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 577.0 Td (556717Z) Tj ET
+1.000 1.000 1.000 rg 142.0 569.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 569.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 590.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 569.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 569.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 590.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 569.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 569.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 590.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 569.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 569.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 590.0 Td (Artifact written: migration_ledger) Tj ET
+0.960 0.970 0.980 rg 46.0 535.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 535.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 556.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 543.0 Td (610735Z) Tj ET
+0.960 0.970 0.980 rg 142.0 535.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 535.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 556.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 535.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 535.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 556.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 535.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 535.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 556.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 535.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 535.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 556.0 Td (Artifact written: migration_plan.yaml) Tj ET
+1.000 1.000 1.000 rg 46.0 501.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 501.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 522.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 509.0 Td (653739Z) Tj ET
+1.000 1.000 1.000 rg 142.0 501.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 501.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 522.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 501.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 501.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 522.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 501.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 501.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 522.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 501.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 501.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 522.0 Td (Artifact written: migration_units.yaml) Tj ET
+0.960 0.970 0.980 rg 46.0 467.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 467.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 488.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 475.0 Td (710982Z) Tj ET
+0.960 0.970 0.980 rg 142.0 467.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 467.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 488.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 467.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 467.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 488.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 467.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 467.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 488.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 467.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 467.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 488.0 Td (Artifact written: openrewrite_plugin_xml) Tj ET
+1.000 1.000 1.000 rg 46.0 433.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 433.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 454.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 441.0 Td (766202Z) Tj ET
+1.000 1.000 1.000 rg 142.0 433.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 433.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 454.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 433.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 433.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 454.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 433.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 433.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 454.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 433.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 433.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 454.0 Td (Artifact written: orchestration_summary) Tj ET
+0.960 0.970 0.980 rg 46.0 399.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 399.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 420.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 407.0 Td (811472Z) Tj ET
+0.960 0.970 0.980 rg 142.0 399.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 399.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 420.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 399.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 399.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 420.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 399.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 399.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 420.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 399.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 399.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 420.0 Td (Artifact written: phase2_log) Tj ET
+1.000 1.000 1.000 rg 46.0 365.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 365.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 386.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 373.0 Td (862451Z) Tj ET
+1.000 1.000 1.000 rg 142.0 365.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 365.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 386.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 365.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 365.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 386.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 365.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 365.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 386.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 365.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 365.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 386.0 Td (Artifact written: plan_summary.md) Tj ET
+0.960 0.970 0.980 rg 46.0 331.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 331.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 352.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 339.0 Td (936165Z) Tj ET
+0.960 0.970 0.980 rg 142.0 331.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 331.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 352.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 331.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 331.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 352.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 331.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 331.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 352.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 331.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 331.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 352.0 Td (Artifact written: plan_validation_report.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 339.0 Td (json) Tj ET
+1.000 1.000 1.000 rg 46.0 297.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 297.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 318.0 Td (2026-07-10T15:22:57.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 305.0 Td (991234Z) Tj ET
+1.000 1.000 1.000 rg 142.0 297.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 297.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 318.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 297.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 297.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 318.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 297.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 297.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 318.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 297.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 297.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 318.0 Td (Artifact written: policy_patch_plan) Tj ET
+0.960 0.970 0.980 rg 46.0 263.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 263.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 284.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 271.0 Td (054207Z) Tj ET
+0.960 0.970 0.980 rg 142.0 263.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 263.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 284.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 263.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 263.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 284.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 263.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 263.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 284.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 263.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 263.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 284.0 Td (Artifact written: policy_patch_result) Tj ET
+1.000 1.000 1.000 rg 46.0 229.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 229.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 250.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 237.0 Td (111886Z) Tj ET
+1.000 1.000 1.000 rg 142.0 229.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 229.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 250.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 229.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 229.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 250.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 229.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 229.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 250.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 229.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 229.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 250.0 Td (Artifact written: post_transform_test_log) Tj ET
+0.960 0.970 0.980 rg 46.0 195.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 195.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 216.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 203.0 Td (157994Z) Tj ET
+0.960 0.970 0.980 rg 142.0 195.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 195.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 216.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 195.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 195.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 216.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 195.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 195.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 216.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 195.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 195.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 216.0 Td (Artifact written: post_transform_test_report) Tj ET
+1.000 1.000 1.000 rg 46.0 161.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 161.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 182.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 169.0 Td (204850Z) Tj ET
+1.000 1.000 1.000 rg 142.0 161.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 161.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 182.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 161.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 161.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 182.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 161.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 161.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 182.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 161.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 161.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 182.0 Td (Artifact written: post_transform_test_) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 169.0 Td (summary) Tj ET
+0.960 0.970 0.980 rg 46.0 127.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 127.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 148.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 135.0 Td (282730Z) Tj ET
+0.960 0.970 0.980 rg 142.0 127.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 127.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 148.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 127.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 127.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 148.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 127.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 127.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 148.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 127.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 127.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 148.0 Td (Artifact written: read_only_verification) Tj ET
+1.000 1.000 1.000 rg 46.0 93.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 93.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 114.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 101.0 Td (335300Z) Tj ET
+1.000 1.000 1.000 rg 142.0 93.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 93.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 114.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 93.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 93.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 114.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 93.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 93.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 114.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 93.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 93.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 114.0 Td (Artifact written: read_only_verification.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 101.0 Td (json) Tj ET
+0.960 0.970 0.980 rg 46.0 59.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 59.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 80.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 67.0 Td (384575Z) Tj ET
+0.960 0.970 0.980 rg 142.0 59.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 59.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 80.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 59.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 59.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 80.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 59.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 59.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 80.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 59.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 59.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 80.0 Td (Artifact written: rewrite_dry_run.patch) Tj ET
+Q
+
+endstream
+endobj
+13 0 obj
+<< /Length 20521 >>
+stream
+q
+1.000 1.000 1.000 rg 0 0 595.0 842.0 re f
+0.910 0.970 0.960 rg 0 0 595.0 28.0 re f
+0.780 0.820 0.860 RG 0.6 w 46.0 42.0 m 549.0 42.0 l S
+BT 0.340 0.380 0.430 rg /FH 8 Tf 46.0 24.0 Td (Detailed Migration Report) Tj ET
+BT 0.340 0.380 0.430 rg /FH 8 Tf 487.0 24.0 Td (Page 8 of 10) Tj ET
+0.920 0.960 0.990 rg 46.0 773.0 96.0 18.0 re f
+0.780 0.820 0.860 RG 46.0 773.0 96.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 50.0 779.0 Td (Time) Tj ET
+0.920 0.960 0.990 rg 142.0 773.0 42.0 18.0 re f
+0.780 0.820 0.860 RG 142.0 773.0 42.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 146.0 779.0 Td (Stage) Tj ET
+0.920 0.960 0.990 rg 184.0 773.0 96.0 18.0 re f
+0.780 0.820 0.860 RG 184.0 773.0 96.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 188.0 779.0 Td (Event) Tj ET
+0.920 0.960 0.990 rg 280.0 773.0 70.0 18.0 re f
+0.780 0.820 0.860 RG 280.0 773.0 70.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 284.0 779.0 Td (Status) Tj ET
+0.920 0.960 0.990 rg 350.0 773.0 199.0 18.0 re f
+0.780 0.820 0.860 RG 350.0 773.0 199.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 354.0 779.0 Td (Detail) Tj ET
+1.000 1.000 1.000 rg 46.0 739.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 739.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 760.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 747.0 Td (453828Z) Tj ET
+1.000 1.000 1.000 rg 142.0 739.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 739.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 760.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 739.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 739.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 760.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 739.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 739.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 760.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 739.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 739.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 760.0 Td (Artifact written: rewrite_impact_summary) Tj ET
+0.960 0.970 0.980 rg 46.0 705.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 705.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 726.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 713.0 Td (506682Z) Tj ET
+0.960 0.970 0.980 rg 142.0 705.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 705.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 726.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 705.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 705.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 726.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 705.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 705.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 726.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 705.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 705.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 726.0 Td (Artifact written: rewrite_impact_summary.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 713.0 Td (json) Tj ET
+1.000 1.000 1.000 rg 46.0 671.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 671.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 692.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 679.0 Td (574751Z) Tj ET
+1.000 1.000 1.000 rg 142.0 671.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 671.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 692.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 671.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 671.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 692.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 671.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 671.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 692.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 671.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 671.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 692.0 Td (Artifact written: rewrite_patch) Tj ET
+0.960 0.970 0.980 rg 46.0 637.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 637.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 658.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 645.0 Td (623484Z) Tj ET
+0.960 0.970 0.980 rg 142.0 637.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 637.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 658.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 637.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 637.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 658.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 637.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 637.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 658.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 637.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 637.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 658.0 Td (Artifact written: rewrite_plugin_plan) Tj ET
+1.000 1.000 1.000 rg 46.0 603.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 603.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 624.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 611.0 Td (689636Z) Tj ET
+1.000 1.000 1.000 rg 142.0 603.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 603.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 624.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 603.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 603.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 624.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 603.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 603.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 624.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 603.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 603.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 624.0 Td (Artifact written: rewrite_plugin_plan.json) Tj ET
+0.960 0.970 0.980 rg 46.0 569.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 569.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 590.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 577.0 Td (741272Z) Tj ET
+0.960 0.970 0.980 rg 142.0 569.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 569.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 590.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 569.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 569.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 590.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 569.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 569.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 590.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 569.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 569.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 590.0 Td (Artifact written: rewrite_preview) Tj ET
+1.000 1.000 1.000 rg 46.0 535.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 535.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 556.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 543.0 Td (785890Z) Tj ET
+1.000 1.000 1.000 rg 142.0 535.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 535.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 556.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 535.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 535.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 556.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 535.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 535.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 556.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 535.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 535.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 556.0 Td (Artifact written: rewrite_preview.json) Tj ET
+0.960 0.970 0.980 rg 46.0 501.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 501.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 522.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 509.0 Td (848297Z) Tj ET
+0.960 0.970 0.980 rg 142.0 501.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 501.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 522.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 501.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 501.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 522.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 501.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 501.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 522.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 501.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 501.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 522.0 Td (Artifact written: sandbox) Tj ET
+1.000 1.000 1.000 rg 46.0 467.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 467.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 488.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 475.0 Td (919819Z) Tj ET
+1.000 1.000 1.000 rg 142.0 467.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 467.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 488.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 467.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 467.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 488.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 467.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 467.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 488.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 467.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 467.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 488.0 Td (Artifact written: source_profile_detection) Tj ET
+0.960 0.970 0.980 rg 46.0 433.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 433.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 454.0 Td (2026-07-10T15:22:58.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 441.0 Td (986021Z) Tj ET
+0.960 0.970 0.980 rg 142.0 433.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 433.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 454.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 433.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 433.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 454.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 433.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 433.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 454.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 433.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 433.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 454.0 Td (Artifact written: target_dependency_plan) Tj ET
+1.000 1.000 1.000 rg 46.0 399.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 399.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 420.0 Td (2026-07-10T15:22:59.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 407.0 Td (025434Z) Tj ET
+1.000 1.000 1.000 rg 142.0 399.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 399.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 420.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 399.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 399.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 420.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 399.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 399.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 420.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 399.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 399.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 420.0 Td (Artifact written: target_dependency_plan.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 407.0 Td (json) Tj ET
+0.960 0.970 0.980 rg 46.0 365.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 365.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 386.0 Td (2026-07-10T15:22:59.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 373.0 Td (064859Z) Tj ET
+0.960 0.970 0.980 rg 142.0 365.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 365.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 386.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 365.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 365.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 386.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 365.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 365.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 386.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 365.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 365.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 386.0 Td (Artifact written: test_inventory) Tj ET
+1.000 1.000 1.000 rg 46.0 331.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 331.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 352.0 Td (2026-07-10T15:22:59.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 339.0 Td (113785Z) Tj ET
+1.000 1.000 1.000 rg 142.0 331.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 331.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 352.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 331.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 331.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 352.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 331.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 331.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 352.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 331.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 331.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 352.0 Td (Artifact written: test_inventory.json) Tj ET
+0.960 0.970 0.980 rg 46.0 297.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 297.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 318.0 Td (2026-07-10T15:22:59.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 305.0 Td (144230Z) Tj ET
+0.960 0.970 0.980 rg 142.0 297.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 297.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 318.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 297.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 297.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 318.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 297.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 297.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 318.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 297.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 297.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 318.0 Td (Artifact written: timing_report) Tj ET
+1.000 1.000 1.000 rg 46.0 263.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 263.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 284.0 Td (2026-07-10T15:22:59.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 271.0 Td (193884Z) Tj ET
+1.000 1.000 1.000 rg 142.0 263.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 263.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 284.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 263.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 263.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 284.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 263.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 263.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 284.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 263.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 263.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 284.0 Td (Artifact written: timing_summary) Tj ET
+0.960 0.970 0.980 rg 46.0 229.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 229.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 250.0 Td (2026-07-10T15:22:59.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 237.0 Td (243337Z) Tj ET
+0.960 0.970 0.980 rg 142.0 229.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 229.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 250.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 229.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 229.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 250.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 280.0 229.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 229.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 250.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 229.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 229.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 250.0 Td (Artifact written: transformation_execution_) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 237.0 Td (plan) Tj ET
+1.000 1.000 1.000 rg 46.0 195.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 195.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 216.0 Td (2026-07-10T15:22:59.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 203.0 Td (283062Z) Tj ET
+1.000 1.000 1.000 rg 142.0 195.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 195.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 216.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 195.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 195.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 216.0 Td (Artifact Written) Tj ET
+1.000 1.000 1.000 rg 280.0 195.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 195.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 216.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 195.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 195.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 216.0 Td (Stage sandbox output registered.) Tj ET
+0.960 0.970 0.980 rg 46.0 161.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 161.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 182.0 Td (2026-07-10T15:22:59.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 169.0 Td (311412Z) Tj ET
+0.960 0.970 0.980 rg 142.0 161.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 161.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 182.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 161.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 161.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 182.0 Td (Sandbox Transform) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 169.0 Td (Completed) Tj ET
+0.960 0.970 0.980 rg 280.0 161.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 161.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 182.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 161.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 161.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 182.0 Td (Sandbox transform completed.) Tj ET
+1.000 1.000 1.000 rg 46.0 127.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 127.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 148.0 Td (2026-07-10T15:22:59.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 135.0 Td (351242Z) Tj ET
+1.000 1.000 1.000 rg 142.0 127.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 127.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 148.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 127.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 127.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 148.0 Td (Build Completed) Tj ET
+1.000 1.000 1.000 rg 280.0 127.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 127.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 148.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 127.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 127.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 148.0 Td (Sandbox build completed.) Tj ET
+0.960 0.970 0.980 rg 46.0 93.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 93.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 114.0 Td (2026-07-10T15:22:59.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 101.0 Td (512793Z) Tj ET
+0.960 0.970 0.980 rg 142.0 93.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 93.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 114.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 93.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 93.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 114.0 Td (Test Completed) Tj ET
+0.960 0.970 0.980 rg 280.0 93.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 93.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 114.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 93.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 93.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 114.0 Td (Sandbox tests accepted with status: PASS_) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 101.0 Td (WITH_WARNINGS.) Tj ET
+1.000 1.000 1.000 rg 46.0 59.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 59.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 80.0 Td (2026-07-10T15:22:59.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 67.0 Td (605651Z) Tj ET
+1.000 1.000 1.000 rg 142.0 59.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 59.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 80.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 59.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 59.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 80.0 Td (Proof Updated) Tj ET
+1.000 1.000 1.000 rg 280.0 59.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 59.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 80.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 59.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 59.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 80.0 Td (Orchestrator result parsed into) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 67.0 Td (deterministic evidence.) Tj ET
+Q
+
+endstream
+endobj
+14 0 obj
+<< /Length 13149 >>
+stream
+q
+1.000 1.000 1.000 rg 0 0 595.0 842.0 re f
+0.910 0.970 0.960 rg 0 0 595.0 28.0 re f
+0.780 0.820 0.860 RG 0.6 w 46.0 42.0 m 549.0 42.0 l S
+BT 0.340 0.380 0.430 rg /FH 8 Tf 46.0 24.0 Td (Detailed Migration Report) Tj ET
+BT 0.340 0.380 0.430 rg /FH 8 Tf 487.0 24.0 Td (Page 9 of 10) Tj ET
+0.920 0.960 0.990 rg 46.0 773.0 96.0 18.0 re f
+0.780 0.820 0.860 RG 46.0 773.0 96.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 50.0 779.0 Td (Time) Tj ET
+0.920 0.960 0.990 rg 142.0 773.0 42.0 18.0 re f
+0.780 0.820 0.860 RG 142.0 773.0 42.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 146.0 779.0 Td (Stage) Tj ET
+0.920 0.960 0.990 rg 184.0 773.0 96.0 18.0 re f
+0.780 0.820 0.860 RG 184.0 773.0 96.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 188.0 779.0 Td (Event) Tj ET
+0.920 0.960 0.990 rg 280.0 773.0 70.0 18.0 re f
+0.780 0.820 0.860 RG 280.0 773.0 70.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 284.0 779.0 Td (Status) Tj ET
+0.920 0.960 0.990 rg 350.0 773.0 199.0 18.0 re f
+0.780 0.820 0.860 RG 350.0 773.0 199.0 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 354.0 779.0 Td (Detail) Tj ET
+0.960 0.970 0.980 rg 46.0 739.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 739.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 760.0 Td (2026-07-10T15:22:59.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 747.0 Td (637407Z) Tj ET
+0.960 0.970 0.980 rg 142.0 739.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 739.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 760.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 739.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 739.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 760.0 Td (Stage Completed) Tj ET
+0.960 0.970 0.980 rg 280.0 739.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 739.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 760.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 739.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 739.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 760.0 Td (Stage 1 real orchestrator completed.) Tj ET
+1.000 1.000 1.000 rg 46.0 705.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 705.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 726.0 Td (2026-07-10T15:22:59.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 713.0 Td (679468Z) Tj ET
+1.000 1.000 1.000 rg 142.0 705.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 705.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 726.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 705.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 705.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 726.0 Td (Stage Report Started) Tj ET
+1.000 1.000 1.000 rg 280.0 705.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 705.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 726.0 Td (running) Tj ET
+1.000 1.000 1.000 rg 350.0 705.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 705.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 726.0 Td (Stage 1 report started.) Tj ET
+0.960 0.970 0.980 rg 46.0 671.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 671.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 692.0 Td (2026-07-10T15:22:59.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 679.0 Td (801209Z) Tj ET
+0.960 0.970 0.980 rg 142.0 671.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 671.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 692.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 184.0 671.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 671.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 692.0 Td (Stage Report) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 679.0 Td (Completed) Tj ET
+0.960 0.970 0.980 rg 280.0 671.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 671.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 692.0 Td (completed) Tj ET
+0.960 0.970 0.980 rg 350.0 671.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 671.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 692.0 Td (Stage 1 report completed.) Tj ET
+1.000 1.000 1.000 rg 46.0 637.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 46.0 637.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 658.0 Td (2026-07-10T15:22:59.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 645.0 Td (836372Z) Tj ET
+1.000 1.000 1.000 rg 142.0 637.0 42.0 34.0 re f
+0.780 0.820 0.860 RG 142.0 637.0 42.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 146.0 658.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 184.0 637.0 96.0 34.0 re f
+0.780 0.820 0.860 RG 184.0 637.0 96.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 188.0 658.0 Td (Migration Completed) Tj ET
+1.000 1.000 1.000 rg 280.0 637.0 70.0 34.0 re f
+0.780 0.820 0.860 RG 280.0 637.0 70.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 284.0 658.0 Td (completed) Tj ET
+1.000 1.000 1.000 rg 350.0 637.0 199.0 34.0 re f
+0.780 0.820 0.860 RG 350.0 637.0 199.0 34.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 658.0 Td (Selected target profile 'springboot-2.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 9 Tf 354.0 645.0 Td (7-java11' reached. Migration completed.) Tj ET
+0.000 0.480 0.520 rg 46.0 596.0 4.0 22.0 re f
+BT 0.090 0.160 0.250 rg /FB 15 Tf 58.0 615.0 Td (Event Coverage) Tj ET
+0.780 0.820 0.860 RG 0.7 w 46.0 597.0 m 549.0 597.0 l S
+0.920 0.960 0.990 rg 46.0 569.0 362.2 18.0 re f
+0.780 0.820 0.860 RG 46.0 569.0 362.2 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 50.0 575.0 Td (Event Type) Tj ET
+0.920 0.960 0.990 rg 408.2 569.0 140.8 18.0 re f
+0.780 0.820 0.860 RG 408.2 569.0 140.8 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 412.2 575.0 Td (Count) Tj ET
+1.000 1.000 1.000 rg 46.0 548.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 548.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 556.0 Td (Analysis Completed) Tj ET
+1.000 1.000 1.000 rg 408.2 548.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 548.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 556.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 46.0 527.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 527.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 535.0 Td (Analysis Started) Tj ET
+0.960 0.970 0.980 rg 408.2 527.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 527.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 535.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 46.0 506.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 506.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 514.0 Td (Approval Auto Approved) Tj ET
+1.000 1.000 1.000 rg 408.2 506.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 506.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 514.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 46.0 485.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 485.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 493.0 Td (Approval Blocked) Tj ET
+0.960 0.970 0.980 rg 408.2 485.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 485.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 493.0 Td (2) Tj ET
+1.000 1.000 1.000 rg 46.0 464.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 464.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 472.0 Td (Approval Completed) Tj ET
+1.000 1.000 1.000 rg 408.2 464.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 464.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 472.0 Td (3) Tj ET
+0.960 0.970 0.980 rg 46.0 443.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 443.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 451.0 Td (Approval Mode Updated) Tj ET
+0.960 0.970 0.980 rg 408.2 443.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 443.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 451.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 46.0 422.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 422.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 430.0 Td (Approval Started) Tj ET
+1.000 1.000 1.000 rg 408.2 422.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 422.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 430.0 Td (3) Tj ET
+0.960 0.970 0.980 rg 46.0 401.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 401.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 409.0 Td (Artifact Written) Tj ET
+0.960 0.970 0.980 rg 408.2 401.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 401.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 409.0 Td (89) Tj ET
+1.000 1.000 1.000 rg 46.0 380.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 380.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 388.0 Td (Assessment Completed) Tj ET
+1.000 1.000 1.000 rg 408.2 380.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 380.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 388.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 46.0 359.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 359.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 367.0 Td (Assessment Started) Tj ET
+0.960 0.970 0.980 rg 408.2 359.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 359.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 367.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 46.0 338.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 338.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 346.0 Td (Build Completed) Tj ET
+1.000 1.000 1.000 rg 408.2 338.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 338.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 346.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 46.0 317.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 317.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 325.0 Td (Command Started) Tj ET
+0.960 0.970 0.980 rg 408.2 317.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 317.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 325.0 Td (2) Tj ET
+1.000 1.000 1.000 rg 46.0 296.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 296.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 304.0 Td (Job Created) Tj ET
+1.000 1.000 1.000 rg 408.2 296.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 296.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 304.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 46.0 275.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 275.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 283.0 Td (Migration Completed) Tj ET
+0.960 0.970 0.980 rg 408.2 275.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 275.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 283.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 46.0 254.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 254.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 262.0 Td (Planning Completed) Tj ET
+1.000 1.000 1.000 rg 408.2 254.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 254.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 262.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 46.0 233.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 233.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 241.0 Td (Planning Started) Tj ET
+0.960 0.970 0.980 rg 408.2 233.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 233.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 241.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 46.0 212.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 212.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 220.0 Td (Process Started) Tj ET
+1.000 1.000 1.000 rg 408.2 212.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 212.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 220.0 Td (2) Tj ET
+0.960 0.970 0.980 rg 46.0 191.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 191.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 199.0 Td (Proof Updated) Tj ET
+0.960 0.970 0.980 rg 408.2 191.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 191.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 199.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 46.0 170.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 170.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 178.0 Td (Resume Started) Tj ET
+1.000 1.000 1.000 rg 408.2 170.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 170.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 178.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 46.0 149.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 149.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 157.0 Td (Sandbox Transform Completed) Tj ET
+0.960 0.970 0.980 rg 408.2 149.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 149.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 157.0 Td (2) Tj ET
+1.000 1.000 1.000 rg 46.0 128.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 128.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 136.0 Td (Sandbox Transform Started) Tj ET
+1.000 1.000 1.000 rg 408.2 128.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 128.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 136.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 46.0 107.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 107.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 115.0 Td (Stage Completed) Tj ET
+0.960 0.970 0.980 rg 408.2 107.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 107.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 115.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 46.0 86.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 86.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 94.0 Td (Stage Queued) Tj ET
+1.000 1.000 1.000 rg 408.2 86.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 86.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 94.0 Td (1) Tj ET
+0.960 0.970 0.980 rg 46.0 65.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 65.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 73.0 Td (Stage Report Completed) Tj ET
+0.960 0.970 0.980 rg 408.2 65.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 65.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 73.0 Td (2) Tj ET
+Q
+
+endstream
+endobj
+15 0 obj
+<< /Length 3161 >>
+stream
+q
+1.000 1.000 1.000 rg 0 0 595.0 842.0 re f
+0.910 0.970 0.960 rg 0 0 595.0 28.0 re f
+0.780 0.820 0.860 RG 0.6 w 46.0 42.0 m 549.0 42.0 l S
+BT 0.340 0.380 0.430 rg /FH 8 Tf 46.0 24.0 Td (Detailed Migration Report) Tj ET
+BT 0.340 0.380 0.430 rg /FH 8 Tf 487.0 24.0 Td (Page 10 of 10) Tj ET
+0.920 0.960 0.990 rg 46.0 773.0 362.2 18.0 re f
+0.780 0.820 0.860 RG 46.0 773.0 362.2 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 50.0 779.0 Td (Event Type) Tj ET
+0.920 0.960 0.990 rg 408.2 773.0 140.8 18.0 re f
+0.780 0.820 0.860 RG 408.2 773.0 140.8 18.0 re S
+BT 0.090 0.160 0.250 rg /FB 9 Tf 412.2 779.0 Td (Count) Tj ET
+1.000 1.000 1.000 rg 46.0 752.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 752.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 760.0 Td (Stage Report Started) Tj ET
+1.000 1.000 1.000 rg 408.2 752.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 752.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 760.0 Td (2) Tj ET
+0.960 0.970 0.980 rg 46.0 731.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 731.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 739.0 Td (Stage Started) Tj ET
+0.960 0.970 0.980 rg 408.2 731.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 731.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 739.0 Td (1) Tj ET
+1.000 1.000 1.000 rg 46.0 710.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 710.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 718.0 Td (Stdout) Tj ET
+1.000 1.000 1.000 rg 408.2 710.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 710.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 718.0 Td (2) Tj ET
+0.960 0.970 0.980 rg 46.0 689.0 362.2 21.0 re f
+0.780 0.820 0.860 RG 46.0 689.0 362.2 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 50.0 697.0 Td (Test Completed) Tj ET
+0.960 0.970 0.980 rg 408.2 689.0 140.8 21.0 re f
+0.780 0.820 0.860 RG 408.2 689.0 140.8 21.0 re S
+BT 0.080 0.090 0.100 rg /FH 9 Tf 412.2 697.0 Td (1) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 46.0 673.0 Td (Console output events omitted from the narrative timeline: 2. Their aggregate count remains above.) Tj ET
+0.000 0.480 0.520 rg 46.0 622.0 4.0 22.0 re f
+BT 0.090 0.160 0.250 rg /FB 15 Tf 58.0 641.0 Td (Report Provenance and Limitations) Tj ET
+0.780 0.820 0.860 RG 0.7 w 46.0 623.0 m 549.0 623.0 l S
+BT 0.080 0.090 0.100 rg /FH 10 Tf 58.0 610.0 Td (- Narrative generation: azure_openai \(live_ok\)) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 58.0 594.0 Td (- Line metrics exclude binary files, generated build output, dependency caches, and files larger than) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 58.0 580.0 Td (5 MiB.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 58.0 564.0 Td (- LLM narrative is advisory; deterministic metrics and persisted stage evidence are authoritative.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 58.0 548.0 Td (- The report describes sandbox migration execution and does not claim production deployment or) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 58.0 534.0 Td (production validation.) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 58.0 513.0 Td (- Report generated at: 2026-07-10T15:26:53Z) Tj ET
+BT 0.080 0.090 0.100 rg /FH 10 Tf 58.0 497.0 Td (- Migration job: 7e0f11dd83a647fb88a3b72cbcd031ec) Tj ET
+Q
+
+endstream
+endobj
+16 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 6 0 R /Resources 5 0 R >>
+endobj
+17 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 7 0 R /Resources 5 0 R >>
+endobj
+18 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 8 0 R /Resources 5 0 R >>
+endobj
+19 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 9 0 R /Resources 5 0 R >>
+endobj
+20 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 10 0 R /Resources 5 0 R >>
+endobj
+21 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 11 0 R /Resources 5 0 R >>
+endobj
+22 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 12 0 R /Resources 5 0 R >>
+endobj
+23 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 13 0 R /Resources 5 0 R >>
+endobj
+24 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 14 0 R /Resources 5 0 R >>
+endobj
+25 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 15 0 R /Resources 5 0 R >>
+endobj
+xref
+0 26
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000180 00000 n 
+0000000250 00000 n 
+0000000325 00000 n 
+0000000376 00000 n 
+0000007246 00000 n 
+0000014292 00000 n 
+0000031843 00000 n 
+0000052255 00000 n 
+0000072839 00000 n 
+0000093269 00000 n 
+0000113698 00000 n 
+0000134273 00000 n 
+0000147476 00000 n 
+0000150690 00000 n 
+0000150795 00000 n 
+0000150900 00000 n 
+0000151005 00000 n 
+0000151110 00000 n 
+0000151216 00000 n 
+0000151322 00000 n 
+0000151428 00000 n 
+0000151534 00000 n 
+0000151640 00000 n 
+trailer
+<< /Size 26 /Root 1 0 R >>
+startxref
+151746
+%%EOF
