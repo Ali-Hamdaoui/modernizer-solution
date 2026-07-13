@@ -1,0 +1,987 @@
+{
+  "event_counts": {
+    "analysis_completed": 1,
+    "analysis_started": 1,
+    "approval_auto_approved": 1,
+    "approval_blocked": 2,
+    "approval_completed": 3,
+    "approval_mode_updated": 1,
+    "approval_started": 3,
+    "artifact_written": 89,
+    "assessment_completed": 1,
+    "assessment_started": 1,
+    "build_completed": 1,
+    "command_started": 2,
+    "job_created": 1,
+    "migration_completed": 1,
+    "planning_completed": 1,
+    "planning_started": 1,
+    "process_started": 2,
+    "proof_updated": 1,
+    "resume_started": 1,
+    "sandbox_transform_completed": 2,
+    "sandbox_transform_started": 1,
+    "stage_completed": 1,
+    "stage_queued": 1,
+    "stage_report_completed": 2,
+    "stage_report_started": 2,
+    "stage_started": 1,
+    "stdout": 2,
+    "test_completed": 1
+  },
+  "generated_at": "2026-07-10T00:26:05Z",
+  "job_id": "6ef861d56a914308ab331c77df96d2a3",
+  "limitations": [
+    "Line metrics exclude binary files, generated build output, dependency caches, and files larger than 5 MiB.",
+    "LLM narrative is advisory; deterministic metrics and persisted stage evidence are authoritative.",
+    "The report describes sandbox migration execution and does not claim production deployment or production validation."
+  ],
+  "migration_scope": {
+    "excluded_stages": [
+      2,
+      3,
+      4
+    ],
+    "included_stages": [
+      1
+    ],
+    "skipped_stages": [],
+    "source_label": "Spring Boot 2.1 / Java 11",
+    "source_profile": "springboot-2.1-java11",
+    "target_label": "Spring Boot 2.7 / Java 11",
+    "target_profile": "springboot-2.7-java11"
+  },
+  "migration_story": "The migration began with a Stage 1 job created at 2026-07-09T23:25:11.119886Z. Stage 1 was queued and started immediately; the orchestrator launched and entered an analysis phase at 2026-07-09T23:25:13Z. Analysis completed at 2026-07-09T23:34:00Z and planning and assessment phases ran back-to-back, completing within seconds. The stage run finished at 2026-07-09T23:38:23.153216Z after a total recorded duration of ~792 seconds (started 23:25:11.181809Z, completed 23:38:23.153216Z).\n\nTechnical work during Stage 1 focused on analysis, planning, and producing migration artifacts rather than on source edits. The process generated the analysis, assessment, dependency, and plan artifacts (examples: analysis_report, assessment_report, dependency_graph, target_dependency_plan, migration_plan.yaml, rewrite_preview and rewrite_patch). A sandbox transform step was executed and completed (sandbox_transform started 23:34:06.683936Z, completed 23:38:18.407528Z), indicating code-change previews and rewrite artifacts were produced, but the recorded change metrics show files_changed: 0 and zero lines added/changed/deleted.\n\nValidation outcomes and approvals are recorded in the timeline. Auto Approval was enabled at 23:25:19.730321Z, and the approval gate was auto-approved shortly after artifact production; multiple human approval events were recorded (two approval_blocked entries and three approval_completed entries), with an approval decision recorded and the human approval phase completing before the sandbox transform started. Artifacts capturing these decisions were written (approval_request.json, approval_decision, approved_plan_lock).\n\nTesting and build outcomes are not captured in the supplied evidence: test_totals report zero tests run and test_status is listed as \"not captured\"; build_status and proof_level are also \"not captured\". Repair attempts are recorded as 0. In short, the run produced planning and rewrite artifacts and passed the recorded approval gating, but there is no captured evidence of executed source changes, builds, or test validation in this dataset.\n\nLine-change impact and risk: the summary and stage change metrics both report zero files and zero lines changed, so no direct code modifications were applied in this Stage 1 run. The rewrite_preview and rewrite_patch artifacts exist (indicating proposed edits were generated), but the evidence shows they were produced as artifacts rather than applied. Required downstream actions (not captured here) would be human review and gated application of the proposed rewrite",
+  "narrative_generation": {
+    "source": "azure_openai",
+    "status": "live_ok"
+  },
+  "omitted_console_events": 2,
+  "schema_version": "2.0.0",
+  "stages": [
+    {
+      "build_status": "not captured",
+      "change_metrics": {
+        "files_changed": 0,
+        "lines_added": 0,
+        "lines_changed": 0,
+        "lines_deleted": 0,
+        "source": "not_captured"
+      },
+      "completed_at": "2026-07-09T23:38:23.153216Z",
+      "duration_seconds": 791.971,
+      "event_count": 125,
+      "phase_durations_seconds": {},
+      "proof_level": "not captured",
+      "repair_attempts": 0,
+      "stage_index": 1,
+      "started_at": "2026-07-09T23:25:11.181809Z",
+      "status": "manifest_ready",
+      "test_status": "not captured",
+      "test_totals": {
+        "failed": 0,
+        "passed": 0,
+        "skipped": 0,
+        "tests": 0
+      },
+      "transform_status": "not captured",
+      "transition": "Spring Boot 2.1 / Java 11 to Spring Boot 2.7 / Java 11",
+      "warnings": []
+    }
+  ],
+  "status": "completed",
+  "summary": {
+    "duration_seconds": 792.047,
+    "files_changed": 0,
+    "included_stages": [
+      1
+    ],
+    "lines_added": 0,
+    "lines_changed": 0,
+    "lines_deleted": 0,
+    "repair_attempts": 0,
+    "source": "Spring Boot 2.1 / Java 11",
+    "stage_count": 1,
+    "target": "Spring Boot 2.7 / Java 11",
+    "tests": 0,
+    "tests_failed": 0,
+    "tests_passed": 0
+  },
+  "timeline": [
+    {
+      "created_at": "2026-07-09T23:25:11.119886Z",
+      "message": "V2 migration job created.",
+      "stage": null,
+      "status": "created",
+      "type": "job_created"
+    },
+    {
+      "created_at": "2026-07-09T23:25:11.181809Z",
+      "message": "Stage 1 command manifest queued for real orchestrator execution.",
+      "stage": 1,
+      "status": "queued",
+      "type": "stage_queued"
+    },
+    {
+      "created_at": "2026-07-09T23:25:11.265503Z",
+      "message": "Stage 1 real orchestrator started.",
+      "stage": 1,
+      "status": "running",
+      "type": "stage_started"
+    },
+    {
+      "created_at": "2026-07-09T23:25:11.331596Z",
+      "message": "Backend-owned orchestrator manifest launched.",
+      "stage": 1,
+      "status": "running",
+      "type": "command_started"
+    },
+    {
+      "created_at": "2026-07-09T23:25:11.451236Z",
+      "message": "Orchestrator subprocess is running.",
+      "stage": 1,
+      "status": "running",
+      "type": "process_started"
+    },
+    {
+      "created_at": "2026-07-09T23:25:13.427560Z",
+      "message": "analysis phase started.",
+      "stage": 1,
+      "status": "running",
+      "type": "analysis_started"
+    },
+    {
+      "created_at": "2026-07-09T23:25:19.730321Z",
+      "message": "Auto Approval enabled.",
+      "stage": null,
+      "status": "updated",
+      "type": "approval_mode_updated"
+    },
+    {
+      "created_at": "2026-07-09T23:34:00.329268Z",
+      "message": "analysis phase completed.",
+      "stage": 1,
+      "status": "completed",
+      "type": "analysis_completed"
+    },
+    {
+      "created_at": "2026-07-09T23:34:00.386683Z",
+      "message": "planning phase started.",
+      "stage": 1,
+      "status": "running",
+      "type": "planning_started"
+    },
+    {
+      "created_at": "2026-07-09T23:34:00.624375Z",
+      "message": "planning phase completed.",
+      "stage": 1,
+      "status": "completed",
+      "type": "planning_completed"
+    },
+    {
+      "created_at": "2026-07-09T23:34:00.741752Z",
+      "message": "assessment phase started.",
+      "stage": 1,
+      "status": "running",
+      "type": "assessment_started"
+    },
+    {
+      "created_at": "2026-07-09T23:34:00.833873Z",
+      "message": "assessment phase completed.",
+      "stage": 1,
+      "status": "completed",
+      "type": "assessment_completed"
+    },
+    {
+      "created_at": "2026-07-09T23:34:00.927944Z",
+      "message": "Human approval required.",
+      "stage": 1,
+      "status": "blocked",
+      "type": "approval_blocked"
+    },
+    {
+      "created_at": "2026-07-09T23:34:01.467138Z",
+      "message": "Artifact written: analysis_report",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:01.500826Z",
+      "message": "Artifact written: analysis_report.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:01.536050Z",
+      "message": "Artifact written: analysis_summary",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:01.587971Z",
+      "message": "Artifact written: analysis_summary.md",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:01.670673Z",
+      "message": "Artifact written: approval_request.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:01.731822Z",
+      "message": "Artifact written: assessment_report",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:01.789609Z",
+      "message": "Artifact written: assessment_report.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:01.849466Z",
+      "message": "Artifact written: assessment_summary",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:01.907325Z",
+      "message": "Artifact written: assessment_summary.md",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:01.951745Z",
+      "message": "Artifact written: config_inventory",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.007601Z",
+      "message": "Artifact written: config_inventory.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.061356Z",
+      "message": "Artifact written: copilot_assist",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.114607Z",
+      "message": "Artifact written: copilot_assist.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.183008Z",
+      "message": "Artifact written: dependency_graph",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.228930Z",
+      "message": "Artifact written: dependency_graph.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.301381Z",
+      "message": "Artifact written: migration_plan.yaml",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.359313Z",
+      "message": "Artifact written: migration_units.yaml",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.425969Z",
+      "message": "Artifact written: plan_summary.md",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.487449Z",
+      "message": "Artifact written: plan_validation_report.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.523216Z",
+      "message": "Artifact written: read_only_verification",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.576377Z",
+      "message": "Artifact written: read_only_verification.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.640488Z",
+      "message": "Artifact written: rewrite_dry_run.patch",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.698065Z",
+      "message": "Artifact written: rewrite_impact_summary",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.757646Z",
+      "message": "Artifact written: rewrite_impact_summary.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.827235Z",
+      "message": "Artifact written: rewrite_patch",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.879374Z",
+      "message": "Artifact written: rewrite_plugin_plan",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.930793Z",
+      "message": "Artifact written: rewrite_plugin_plan.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:02.988519Z",
+      "message": "Artifact written: rewrite_preview",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:03.036269Z",
+      "message": "Artifact written: rewrite_preview.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:03.102496Z",
+      "message": "Artifact written: source_profile_detection",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:03.161192Z",
+      "message": "Artifact written: target_dependency_plan",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:03.218509Z",
+      "message": "Artifact written: target_dependency_plan.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:03.280254Z",
+      "message": "Artifact written: test_inventory",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:03.340387Z",
+      "message": "Artifact written: test_inventory.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:34:03.464837Z",
+      "message": "Approval gate auto-approved because Auto Approval is enabled.",
+      "stage": 1,
+      "status": "completed",
+      "type": "approval_auto_approved"
+    },
+    {
+      "created_at": "2026-07-09T23:34:03.548514Z",
+      "message": "Approval accepted; orchestrator resume process starting.",
+      "stage": 1,
+      "status": "running",
+      "type": "approval_started"
+    },
+    {
+      "created_at": "2026-07-09T23:34:03.641315Z",
+      "message": "Stage 1 real orchestrator resume started.",
+      "stage": 1,
+      "status": "running",
+      "type": "resume_started"
+    },
+    {
+      "created_at": "2026-07-09T23:34:03.754263Z",
+      "message": "Backend-owned approval resume command launched.",
+      "stage": 1,
+      "status": "running",
+      "type": "command_started"
+    },
+    {
+      "created_at": "2026-07-09T23:34:03.976596Z",
+      "message": "Orchestrator subprocess is running.",
+      "stage": 1,
+      "status": "running",
+      "type": "process_started"
+    },
+    {
+      "created_at": "2026-07-09T23:34:06.048737Z",
+      "message": "Recording approval decision.",
+      "stage": 1,
+      "status": "running",
+      "type": "approval_started"
+    },
+    {
+      "created_at": "2026-07-09T23:34:06.108101Z",
+      "message": "Approval decision recorded.",
+      "stage": 1,
+      "status": "completed",
+      "type": "approval_completed"
+    },
+    {
+      "created_at": "2026-07-09T23:34:06.162160Z",
+      "message": "Human approval required.",
+      "stage": 1,
+      "status": "blocked",
+      "type": "approval_blocked"
+    },
+    {
+      "created_at": "2026-07-09T23:34:06.230518Z",
+      "message": "Recording approval decision.",
+      "stage": 1,
+      "status": "running",
+      "type": "approval_started"
+    },
+    {
+      "created_at": "2026-07-09T23:34:06.285894Z",
+      "message": "Approval decision recorded.",
+      "stage": 1,
+      "status": "completed",
+      "type": "approval_completed"
+    },
+    {
+      "created_at": "2026-07-09T23:34:06.633990Z",
+      "message": "Human approval phase complete; sandbox transform has started.",
+      "stage": 1,
+      "status": "completed",
+      "type": "approval_completed"
+    },
+    {
+      "created_at": "2026-07-09T23:34:06.683936Z",
+      "message": "Sandbox transform started.",
+      "stage": 1,
+      "status": "running",
+      "type": "sandbox_transform_started"
+    },
+    {
+      "created_at": "2026-07-09T23:38:18.407528Z",
+      "message": "Sandbox transform completed.",
+      "stage": 1,
+      "status": "completed",
+      "type": "sandbox_transform_completed"
+    },
+    {
+      "created_at": "2026-07-09T23:38:18.460994Z",
+      "message": "Final report generation started.",
+      "stage": 1,
+      "status": "running",
+      "type": "stage_report_started"
+    },
+    {
+      "created_at": "2026-07-09T23:38:18.505504Z",
+      "message": "Final report written.",
+      "stage": 1,
+      "status": "completed",
+      "type": "stage_report_completed"
+    },
+    {
+      "created_at": "2026-07-09T23:38:18.995174Z",
+      "message": "Artifact written: analysis_report",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.054185Z",
+      "message": "Artifact written: analysis_report.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.118934Z",
+      "message": "Artifact written: analysis_summary",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.182892Z",
+      "message": "Artifact written: analysis_summary.md",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.242469Z",
+      "message": "Artifact written: approval_decision",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.305829Z",
+      "message": "Artifact written: approval_request.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.349186Z",
+      "message": "Artifact written: approved_plan_lock",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.408951Z",
+      "message": "Artifact written: assessment_report",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.468935Z",
+      "message": "Artifact written: assessment_report.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.525326Z",
+      "message": "Artifact written: assessment_summary",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.563793Z",
+      "message": "Artifact written: assessment_summary.md",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.626027Z",
+      "message": "Artifact written: config_inventory",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.693126Z",
+      "message": "Artifact written: config_inventory.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.750446Z",
+      "message": "Artifact written: copilot_assist",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.802362Z",
+      "message": "Artifact written: copilot_assist.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.856683Z",
+      "message": "Artifact written: dependency_copilot_request",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:19.950719Z",
+      "message": "Artifact written: dependency_copilot_response",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.014986Z",
+      "message": "Artifact written: dependency_graph",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.068636Z",
+      "message": "Artifact written: dependency_graph.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.139041Z",
+      "message": "Artifact written: dependency_policy_report",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.198996Z",
+      "message": "Artifact written: dependency_policy_summary",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.256358Z",
+      "message": "Artifact written: dependency_repair_plan",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.316290Z",
+      "message": "Artifact written: migration_ledger",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.372914Z",
+      "message": "Artifact written: migration_plan.yaml",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.440014Z",
+      "message": "Artifact written: migration_units.yaml",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.496996Z",
+      "message": "Artifact written: openrewrite_plugin_xml",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.571961Z",
+      "message": "Artifact written: orchestration_summary",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.631743Z",
+      "message": "Artifact written: phase2_log",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.680489Z",
+      "message": "Artifact written: plan_summary.md",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.744250Z",
+      "message": "Artifact written: plan_validation_report.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.802084Z",
+      "message": "Artifact written: policy_patch_plan",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.879154Z",
+      "message": "Artifact written: policy_patch_result",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:20.938356Z",
+      "message": "Artifact written: post_transform_test_log",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.005652Z",
+      "message": "Artifact written: post_transform_test_report",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.061977Z",
+      "message": "Artifact written: post_transform_test_summary",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.125531Z",
+      "message": "Artifact written: read_only_verification",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.194988Z",
+      "message": "Artifact written: read_only_verification.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.253149Z",
+      "message": "Artifact written: rewrite_dry_run.patch",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.323141Z",
+      "message": "Artifact written: rewrite_impact_summary",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.376906Z",
+      "message": "Artifact written: rewrite_impact_summary.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.436628Z",
+      "message": "Artifact written: rewrite_patch",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.503044Z",
+      "message": "Artifact written: rewrite_plugin_plan",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.560025Z",
+      "message": "Artifact written: rewrite_plugin_plan.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.613733Z",
+      "message": "Artifact written: rewrite_preview",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.675804Z",
+      "message": "Artifact written: rewrite_preview.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.735753Z",
+      "message": "Artifact written: sandbox",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.790903Z",
+      "message": "Artifact written: source_profile_detection",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.848534Z",
+      "message": "Artifact written: target_dependency_plan",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.899884Z",
+      "message": "Artifact written: target_dependency_plan.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:21.950627Z",
+      "message": "Artifact written: test_inventory",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:22.005923Z",
+      "message": "Artifact written: test_inventory.json",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:22.066750Z",
+      "message": "Artifact written: timing_report",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:22.125494Z",
+      "message": "Artifact written: timing_summary",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:22.181404Z",
+      "message": "Artifact written: transformation_execution_plan",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:22.248846Z",
+      "message": "Stage sandbox output registered.",
+      "stage": 1,
+      "status": "completed",
+      "type": "artifact_written"
+    },
+    {
+      "created_at": "2026-07-09T23:38:22.306958Z",
+      "message": "Sandbox transform completed.",
+      "stage": 1,
+      "status": "completed",
+      "type": "sandbox_transform_completed"
+    },
+    {
+      "created_at": "2026-07-09T23:38:22.363917Z",
+      "message": "Sandbox build completed.",
+      "stage": 1,
+      "status": "completed",
+      "type": "build_completed"
+    },
+    {
+      "created_at": "2026-07-09T23:38:22.416906Z",
+      "message": "Sandbox tests accepted with status: PASS_WITH_WARNINGS.",
+      "stage": 1,
+      "status": "completed",
+      "type": "test_completed"
+    },
+    {
+      "created_at": "2026-07-09T23:38:22.741909Z",
+      "message": "Orchestrator result parsed into deterministic evidence.",
+      "stage": 1,
+      "status": "completed",
+      "type": "proof_updated"
+    },
+    {
+      "created_at": "2026-07-09T23:38:22.812572Z",
+      "message": "Stage 1 real orchestrator completed.",
+      "stage": 1,
+      "status": "completed",
+      "type": "stage_completed"
+    },
+    {
+      "created_at": "2026-07-09T23:38:23.049281Z",
+      "message": "Stage 1 report started.",
+      "stage": 1,
+      "status": "running",
+      "type": "stage_report_started"
+    },
+    {
+      "created_at": "2026-07-09T23:38:23.103952Z",
+      "message": "Stage 1 report completed.",
+      "stage": 1,
+      "status": "completed",
+      "type": "stage_report_completed"
+    },
+    {
+      "created_at": "2026-07-09T23:38:23.153216Z",
+      "message": "Selected target profile 'springboot-2.7-java11' reached. Migration completed.",
+      "stage": 1,
+      "status": "completed",
+      "type": "migration_completed"
+    }
+  ]
+}
