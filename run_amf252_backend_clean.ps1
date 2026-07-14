@@ -45,12 +45,13 @@ $MigrationsDir = Join-Path `
     "migration_factory\control_tower\infrastructure\sqlite\migrations"
 
 $ExpectedRepairMigrationName = `
-    "0054_v2_repair_final_diff_source.sql"
+    "0055_target_version_validation.sql"
 
 $RequiredRepairMigrationNames = @(
     "0052_v2_repair_proposals_rule_id_risk.sql",
     "0053_v2_repair_lineage_claims.sql",
-    "0054_v2_repair_final_diff_source.sql"
+    "0054_v2_repair_final_diff_source.sql",
+    "0055_target_version_validation.sql"
 )
 
 $OldConflictingRepairMigrationName = `
@@ -104,7 +105,7 @@ elseif ($env:AMF252_MAX_REPAIR_ATTEMPTS) {
     }
 }
 else {
-    6
+    3
 }
 
 if ($MaxRepairAttempts -lt 1) {
@@ -129,7 +130,7 @@ if ($MaxRepairAttempts -lt 1) {
 # maximum output is 8,192 tokens.
 # ---------------------------------------------------------------------
 
-$RoleMaxInputTokens = "50000"
+$RoleMaxInputTokens = "40000"
 
 $DefaultMaxOutputTokens = "20000"
 
@@ -143,8 +144,8 @@ $RuntimeReasoningEffort = "medium"
 $RuntimeResponseFormat = "json_schema"
 
 # The current AMF-252 reviewer call is schema-bound by the backend contract.
-# Therefore the launcher defaults the reviewer role to json_schema so the
-# configured environment matches the actual backend request path.
+# Use json_schema for capable reviewers, while preferring json_object for the
+# default text-only Llama reviewer.
 #
 # IMPORTANT: Microsoft currently documents Llama-3.3-70B-Instruct as a
 # text-only response-format model. If the deployed endpoint rejects JSON
@@ -157,6 +158,9 @@ $ReviewerResponseFormat = if ($ReviewerResponseFormatOverride) {
 elseif ($env:AMF252_REVIEWER_RESPONSE_FORMAT) {
     $env:AMF252_REVIEWER_RESPONSE_FORMAT.Trim().ToLowerInvariant()
 }
+elseif ($ReviewerModel -ieq "Llama-3.3-70B-Instruct") {
+    "json_object"
+}
 else {
     "json_schema"
 }
@@ -165,13 +169,17 @@ if ($ReviewerResponseFormat -notin @("", "json_object", "json_schema")) {
     throw "Reviewer response format must be '', 'json_object', or 'json_schema'."
 }
 
-$ReviewerSupportsJsonSchema = ($ReviewerResponseFormat -eq "json_schema")
+$ReviewerIsLlama = ($ReviewerModel -ieq "Llama-3.3-70B-Instruct")
+$ReviewerSupportsJsonSchema = (
+    $ReviewerResponseFormat -eq "json_schema" -and
+    -not $ReviewerIsLlama
+)
 $ReviewerSupportsJsonObject = ($ReviewerResponseFormat -in @("json_object", "json_schema"))
 $ReviewerSupportsStructuredOutputs = $ReviewerSupportsJsonSchema
 
 $ReviewerCapabilityWarning = (
-    $ReviewerModel -ieq "Llama-3.3-70B-Instruct" -and
-    $ReviewerResponseFormat -eq "json_schema"
+    $ReviewerIsLlama -and
+    $ReviewerResponseFormat -in @("json_object", "json_schema")
 )
 
 
@@ -641,7 +649,11 @@ function Invoke-TinyModelSmoke {
         [string]$RoleLabel,
 
         [Parameter(Mandatory = $true)]
-        [bool]$SupportsReasoning
+        [bool]$SupportsReasoning,
+
+        [Parameter(Mandatory = $false)]
+        [AllowEmptyString()]
+        [string]$ResponseFormat = ""
     )
 
     Write-Host ""
@@ -657,7 +669,12 @@ function Invoke-TinyModelSmoke {
         messages = @(
             [ordered]@{
                 role = "user"
-                content = "Reply with exactly OK."
+                content = if ($ResponseFormat -in @("json_object", "json_schema")) {
+                    'Reply with exactly {"ok": true}.'
+                }
+                else {
+                    "Reply with exactly OK."
+                }
             }
         )
     }
@@ -669,6 +686,31 @@ function Invoke-TinyModelSmoke {
     else {
         # Generic chat-completions smoke for non-reasoning/text models.
         $body["max_tokens"] = 64
+    }
+
+    if ($ResponseFormat -eq "json_object") {
+        $body["response_format"] = [ordered]@{
+            type = "json_object"
+        }
+    }
+    elseif ($ResponseFormat -eq "json_schema") {
+        $body["response_format"] = [ordered]@{
+            type = "json_schema"
+            json_schema = [ordered]@{
+                name = "amf252_smoke"
+                strict = $true
+                schema = [ordered]@{
+                    type = "object"
+                    properties = [ordered]@{
+                        ok = [ordered]@{
+                            type = "boolean"
+                        }
+                    }
+                    required = @("ok")
+                    additionalProperties = $false
+                }
+            }
+        }
     }
 
     $json = $body |
@@ -1388,16 +1430,19 @@ Write-Host "  Fallback:         $FallbackMaxOutputTokens"
 Write-Host ""
 Write-Host "Structured output:"
 Write-Host "  Main/proposer:    $RuntimeResponseFormat"
-Write-Host "  Reviewer:         $(if ($ReviewerResponseFormat) { $ReviewerResponseFormat } else { 'text / local JSON parsing' })"
+Write-Host "  Reviewer requested: $ReviewerResponseFormat"
+Write-Host "  Reviewer JSON object: $ReviewerSupportsJsonObject"
+Write-Host "  Reviewer JSON schema: $ReviewerSupportsJsonSchema"
+Write-Host "  Reviewer structured: $ReviewerSupportsStructuredOutputs"
 Write-Host "  Fallback:         $RuntimeResponseFormat"
 
 if ($ReviewerCapabilityWarning) {
     Write-Host ""
-    Write-Host "Reviewer capability warning:" -ForegroundColor Yellow
-    Write-Host "  Microsoft documents Llama-3.3-70B-Instruct as text-only."
-    Write-Host "  Current AMF-252 backend is schema-bound for reviewer output."
-    Write-Host "  If JSON Schema is rejected, reviewer failure should be logged"
-    Write-Host "  and the proposer diff fallback should remain available."
+    Write-Host "STRONG REVIEWER CAPABILITY WARNING:" -ForegroundColor Yellow
+    Write-Host "  Llama-3.3-70B-Instruct is documented as text-only."
+    Write-Host "  Requested reviewer format '$ReviewerResponseFormat' may be rejected."
+    Write-Host "  Effective JSON Schema and structured-output capabilities are false."
+    Write-Host "  Reviewer failure must leave proposer-diff fallback available."
 }
 
 Write-Host ""
@@ -1466,7 +1511,8 @@ if (-not $SkipModelSmokeTest) {
             -Endpoint $AzureOpenAIEndpoint `
             -Model $ReviewerModel `
             -RoleLabel "Reviewer" `
-            -SupportsReasoning $false
+            -SupportsReasoning $false `
+            -ResponseFormat $ReviewerResponseFormat
     }
     else {
         Write-Host ""

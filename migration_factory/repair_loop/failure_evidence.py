@@ -60,6 +60,7 @@ class FailureEvidence:
     target_profile: str = ""
     accepted_artifact_checksums: tuple[str, ...] = ()
     artifact_refs: dict[str, str] = field(default_factory=dict)
+    diagnostic_metadata: dict[str, str] = field(default_factory=dict)
     stdout_tail: str = ""
     stderr_tail: str = ""
     safe_log_preview: str = ""
@@ -115,6 +116,7 @@ def compute_failure_content_checksum(evidence: FailureEvidence) -> str:
         "target_profile": evidence.target_profile,
         "accepted_artifact_checksums": tuple(sorted(evidence.accepted_artifact_checksums)),
         "artifact_refs": dict(sorted(evidence.artifact_refs.items())),
+        "diagnostic_metadata": dict(sorted(evidence.diagnostic_metadata.items())),
         "safe_log_preview": evidence.safe_log_preview,
     }
     return sha256_canonical_json(payload)
@@ -144,6 +146,7 @@ def build_failure_evidence(
     target_profile: str = "",
     accepted_artifact_checksums: tuple[str, ...] | None = None,
     artifact_refs: dict[str, str] | None = None,
+    diagnostic_metadata: dict[str, str] | None = None,
     stdout_tail: str = "",
     stderr_tail: str = "",
     safe_log_preview: str = "",
@@ -161,6 +164,7 @@ def build_failure_evidence(
         target_profile=target_profile,
         accepted_artifact_checksums=tuple(sorted(accepted_artifact_checksums or ())),
         artifact_refs=artifact_refs or {},
+        diagnostic_metadata={str(k): str(v) for k, v in (diagnostic_metadata or {}).items()},
         stdout_tail=stdout_tail[:FailureEvidence.MAX_LOG_TAIL_LENGTH] if stdout_tail else "",
         stderr_tail=stderr_tail[:FailureEvidence.MAX_LOG_TAIL_LENGTH] if stderr_tail else "",
         safe_log_preview=safe_log_preview[:FailureEvidence.MAX_LOG_TAIL_LENGTH] if safe_log_preview else "",
@@ -181,6 +185,7 @@ def build_failure_evidence(
             target_profile=evidence.target_profile,
             accepted_artifact_checksums=evidence.accepted_artifact_checksums,
             artifact_refs=evidence.artifact_refs,
+            diagnostic_metadata=evidence.diagnostic_metadata,
             stdout_tail=evidence.stdout_tail,
             stderr_tail=evidence.stderr_tail,
             safe_log_preview=evidence.safe_log_preview,
@@ -202,6 +207,7 @@ def build_failure_evidence(
         target_profile=evidence.target_profile,
         accepted_artifact_checksums=evidence.accepted_artifact_checksums,
         artifact_refs=evidence.artifact_refs,
+        diagnostic_metadata=evidence.diagnostic_metadata,
         stdout_tail=evidence.stdout_tail,
         stderr_tail=evidence.stderr_tail,
         safe_log_preview=evidence.safe_log_preview,
@@ -244,6 +250,7 @@ def failure_evidence_to_dict(evidence: FailureEvidence) -> dict[str, Any]:
         "target_profile": evidence.target_profile,
         "accepted_artifact_checksums": list(evidence.accepted_artifact_checksums),
         "artifact_refs": dict(sorted(evidence.artifact_refs.items())),
+        "diagnostic_metadata": dict(sorted(evidence.diagnostic_metadata.items())),
         "stdout_tail": evidence.stdout_tail,
         "stderr_tail": evidence.stderr_tail,
         "safe_log_preview": evidence.safe_log_preview,

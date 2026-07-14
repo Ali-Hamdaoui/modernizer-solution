@@ -181,7 +181,9 @@ def run_validation_after_patch(
             observer("test_blocked", {
                 "attempt": attempt,
                 "run_id": run_id,
-                "test_status": TESTS_NOT_FOUND,
+                # The persisted ValidationResult is authoritative. A build
+                # failure blocks execution, but does not imply missing tests.
+                "test_status": test_status,
                 "reason": "build_failed",
             })
         else:

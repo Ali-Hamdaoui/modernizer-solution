@@ -368,6 +368,7 @@ def _build_deterministic_repair_payload(
         "failure_evidence_checksum": failure_evidence.content_checksum,
         "base_repo_state_checksum": context_pack.base_repo_state_checksum,
         "accepted_artifact_checksums": list(failure_evidence.accepted_artifact_checksums),
+        "diagnostic_metadata": dict(sorted(failure_evidence.diagnostic_metadata.items())),
         "allowed_repair_mode_hints": ["source_patch", "dependency_patch", "config_patch"],
         "created_at": utc_now_text(),
     }
@@ -579,9 +580,11 @@ def _coerce_reviewer_repair_output(
         "confidence": float(parsed.get("confidence", 0.8)),
         "risks": parsed.get("risks") if isinstance(parsed.get("risks"), list) else [],
         "policy_concerns": parsed.get("policy_concerns") if isinstance(parsed.get("policy_concerns"), list) else [],
-        "reviewed_context_checksum": str(parsed.get("reviewed_context_checksum") or context_checksum),
-        "reviewed_primary_output_checksum": str(parsed.get("reviewed_primary_output_checksum") or primary_checksum),
-        "reviewed_diff_checksum": str(parsed.get("reviewed_diff_checksum") or diff_checksum),
+        # These are model claims, not server defaults. Missing or incorrect
+        # claims must fail closed in the caller's checksum comparison.
+        "reviewed_context_checksum": str(parsed.get("reviewed_context_checksum") or ""),
+        "reviewed_primary_output_checksum": str(parsed.get("reviewed_primary_output_checksum") or ""),
+        "reviewed_diff_checksum": str(parsed.get("reviewed_diff_checksum") or ""),
         "review_dimensions": parsed.get("review_dimensions") if isinstance(parsed.get("review_dimensions"), dict) else {},
     }
 
@@ -1575,6 +1578,9 @@ def produce_repair_review_chain(
                 fallback_used=fallback_used_primary,
             )
         primary_output["usability_reason"] = _safe_diagnostic_text(validation_error)
+        if primary_output.get("no_fix_reason"):
+            primary_output["abstention_reason"] = _safe_diagnostic_text(primary_output["no_fix_reason"])
+            primary_output["usability_reason"] = "MODEL_INSUFFICIENT_EVIDENCE_ABSTENTION"
 
     if proposer_invocation_id is not None and primary_result.success and not primary_failures:
         invocation_ledger.complete_invocation(
@@ -1601,6 +1607,7 @@ def produce_repair_review_chain(
     primary_checksum = _compute_primary_repair_checksum(primary_output)
     primary_output["output_checksum"] = primary_checksum
     primary_path = output_dir / "primary_repair_llm_output.json"
+    primary_output["raw_output_ref"] = str(primary_path)
     _write_json(primary_path, primary_output)
 
     context_checksum = context_pack.context_pack_checksum
@@ -1980,6 +1987,8 @@ def _safe_model_role_status(result: Any) -> dict[str, Any]:
         "status": "available" if bool(getattr(result, "success", False)) else "blocked",
         "fallback_used": bool(getattr(result, "fallback_used", False)) or str(getattr(result, "source", "") or "") == "azure_openai_fallback",
         "configured_deployment": str(getattr(result, "configured_deployment", "") or ""),
+        "actual_deployment": str(getattr(result, "configured_deployment", "") or ""),
         "fallback_deployment": str(getattr(result, "fallback_deployment", "") or ""),
         "primary_failure_reason": str(getattr(result, "primary_failure_reason", "") or ""),
+        "fallback_reason": str(getattr(result, "primary_failure_reason", "") or ""),
     }

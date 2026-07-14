@@ -100,7 +100,13 @@ class TargetVersionValidationCoordinator:
                 if phase.startswith("test_"):
                     persisted["test_status"] = str(payload.get("test_status") or phase)
                 self._update_validation(validation_id, status="running", **persisted)
-                self._emit(change, event_type, "running", f"Target-version {phase.replace('_', ' ')}.", {
+                event_status = (
+                    "failed" if phase.endswith("_failed")
+                    else "blocked" if phase.endswith("_blocked")
+                    else "passed" if phase.endswith("_passed")
+                    else "running"
+                )
+                self._emit(change, event_type, event_status, f"Target-version {phase.replace('_', ' ')}.", {
                     "change_id": change_id,
                     "validation_id": validation_id,
                     **payload,
@@ -154,21 +160,26 @@ class TargetVersionValidationCoordinator:
                 failure_classification="VALIDATION",
                 diagnosis_json=json.dumps(result_payload, sort_keys=True),
             )
+            # Persist the target-version failure before invoking AMF-252. The
+            # handoff opens its own write UoWs and must not run in this UoW.
+            self._update_lineage(change_id, status="failed")
             repair = self._handoff_to_repair(change, validation, context, run_dir, sandbox, result)
             self._update_validation(
                 validation_id,
                 status="repair_review_required" if repair and repair.get("status") == "created" else "failed",
                 repair_linkage_json=json.dumps(repair or {}, sort_keys=True),
             )
-            self._update_lineage(change_id, status="repair_review_required", repair_linkage_json=json.dumps(repair or {}, sort_keys=True))
+            final_lineage_status = "repair_review_required" if repair and repair.get("status") == "created" else "failed"
+            self._update_lineage(change_id, status=final_lineage_status, repair_linkage_json=json.dumps(repair or {}, sort_keys=True))
             if repair and repair.get("proposal_id"):
                 self._update_lineage(change_id, repair_proposal_id=str(repair["proposal_id"]))
             self._emit(change, "target_version_validation_failed", "failed", "Target-version validation failed; modified sandbox preserved.", {
                 "change_id": change_id, "validation_id": validation_id, **result_payload,
             })
-            self._emit(change, "target_version_repair_required", "blocked", "AMF-252 repair review is required.", {
-                "change_id": change_id, "validation_id": validation_id, **(repair or {}),
-            })
+            if repair and repair.get("status") == "created":
+                self._emit(change, "target_version_repair_required", "blocked", "AMF-252 repair review is required.", {
+                    "change_id": change_id, "validation_id": validation_id, **repair,
+                })
         except Exception as exc:
             self._update_validation(validation_id, status="failed", failure_classification="VALIDATION", diagnosis_json=json.dumps({"error": str(exc)[:1000]}))
             self._update_lineage(change_id, status="failed")

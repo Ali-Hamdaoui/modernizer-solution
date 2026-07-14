@@ -325,8 +325,8 @@ class V2ModelRoleRouter:
         if not response_format and output_schema_name and responsibility == "repair_proposal":
             response_format = "json_schema"
         return V2RoleBudget(
-            max_input_tokens=max(40000, max_input_tokens),
-            max_output_tokens=max(20000, max_output_tokens),
+            max_input_tokens=min(40000, max(1, max_input_tokens)),
+            max_output_tokens=min(20000, max(1, max_output_tokens)),
             reasoning_effort=reasoning_effort,
             response_format=response_format or None,
         )

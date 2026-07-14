@@ -932,6 +932,17 @@ def create_app(
             return False
         return policy.enable_build_repair
 
+    def _llm_repair_proposal_enabled_for_job(job_id: str) -> bool:
+        with unit_of_work_factory() as uow:
+            run_config = uow.run_configurations.get_for_job(job_id)
+        if run_config is None or not run_config.policy_json:
+            return False
+        try:
+            policy = RunPolicy(**json.loads(run_config.policy_json))
+        except Exception:
+            return False
+        return policy.enable_llm_repair_proposal
+
     def _maybe_create_repair_gate(
         job_id: str,
         stage_index: int,
@@ -980,11 +991,12 @@ def create_app(
 
     def _target_version_repair_handler(*, change: dict[str, Any], validation: dict[str, Any], context: Any, run_dir: str, sandbox: str, result: Any) -> dict[str, Any] | None:
         job_id = str(change.get("job_id") or "")
-        if not _repair_gate_enabled_for_job(job_id):
-            return {"status": "unavailable", "reason": "build_repair_disabled"}
+        if not _llm_repair_proposal_enabled_for_job(job_id):
+            return {"status": "unavailable", "reason": "llm_repair_proposal_disabled"}
         context_data = dict(getattr(context, "__dict__", {}) or {})
         context_data.update({"run_dir": run_dir, "sandbox_path": sandbox})
         record = SimpleNamespace(
+            change_id=str(change.get("change_id") or ""),
             command_id=str(change.get("command_id") or ""),
             attempt_number=0,
             affected_paths_json=json.dumps(["pom.xml"]),
@@ -997,19 +1009,19 @@ def create_app(
             "source_profile": context_data.get("source_profile", ""),
             "target_profile": context_data.get("target_profile", ""),
             "h2_required": bool(context_data.get("h2_required", False)),
+            "validation_id": str(validation.get("validation_id") or ""),
         }
-        with unit_of_work_factory() as uow:
-            repair_result = _create_next_direct_reviewed_repair_proposal_from_validation_failure(
-                uow=uow,
-                job_id=job_id,
-                record=record,
-                validation=result,
-                apply_context=apply_context,
-                run_dir=run_dir,
-                sandbox_path=sandbox,
-                model_client=getattr(app.state, "v2_assistant_model_client", None),
-                unit_of_work_factory=unit_of_work_factory,
-            )
+        repair_result = _create_next_direct_reviewed_repair_proposal_from_validation_failure(
+            uow=None,
+            job_id=job_id,
+            record=record,
+            validation=result,
+            apply_context=apply_context,
+            run_dir=run_dir,
+            sandbox_path=sandbox,
+            model_client=getattr(app.state, "v2_assistant_model_client", None),
+            unit_of_work_factory=unit_of_work_factory,
+        )
         return {
             "status": str(getattr(repair_result, "status", "unknown")),
             "proposal_id": str(getattr(repair_result, "proposal_id", "") or ""),
@@ -13720,6 +13732,30 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
         from migration_factory.repair_loop.evidence_collector import _read_json
 
         build_contract = _read_json(Path(build_contract_ref))
+    build_kind = str(build_contract.get("result_kind") or "").strip().lower()
+    failure_text = " ".join(
+        str(value or "")
+        for value in (build_contract.get("message"), build_contract.get("matched_line"), *validation.errors)
+    ).lower()
+    if "database is locked" in failure_text or "database table is locked" in failure_text:
+        failure_classification = "PLATFORM_INTERNAL_FAILURE"
+    elif build_kind in {"java_version_mismatch", "java_runtime_mismatch"}:
+        failure_classification = "ENVIRONMENT_FAILURE"
+    elif build_kind in {"command_error", "timeout"}:
+        failure_classification = "TOOLCHAIN_FAILURE"
+    elif build_kind == "dependency_error":
+        failure_classification = "DEPENDENCY_CONFIGURATION_FAILURE"
+    elif build_kind == "compilation_error":
+        failure_classification = "APPLICATION_CODE_FAILURE"
+    elif validation.test_status in {"TEST_FAILED", "TEST_ERROR"}:
+        failure_classification = "TEST_FAILURE"
+    else:
+        failure_classification = "UNKNOWN"
+    repairable_failure = failure_classification in {
+        "APPLICATION_CODE_FAILURE",
+        "DEPENDENCY_CONFIGURATION_FAILURE",
+        "TEST_FAILURE",
+    }
     build_stdout = build_contract.get("stdout_tail") if isinstance(build_contract.get("stdout_tail"), list) else []
     build_stderr = build_contract.get("stderr_tail") if isinstance(build_contract.get("stderr_tail"), list) else []
     build_stdout_text = "\n".join(str(line) for line in build_stdout)
@@ -13731,6 +13767,7 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
     matched_line = str(build_contract.get("matched_line") or "").strip()
     if matched_line and not any(error.message == matched_line for error in compiler_errors):
         compiler_errors.append(NormalizedCompilerError(message=matched_line))
+    changed_files = tuple(dict.fromkeys((*changed_files, *(error.file_path for error in compiler_errors if error.file_path))))
     test_failures: tuple[NormalizedTestFailure, ...] = ()
     repair_test_report_ref = artifact_refs.get("repair_test_report", "")
     if repair_test_report_ref:
@@ -13742,9 +13779,27 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
     build_command = build_contract.get("command") or build_contract.get("resolved_command") or ()
     validation_context = apply_context.get("validation_execution_context")
     validation_context = validation_context if isinstance(validation_context, dict) else {}
+    build_command = build_command or validation_context.get("validation_command") or ()
     build_cwd = str(build_contract.get("cwd") or validation_context.get("working_directory") or "")
     build_unit_id = str(build_contract.get("unit_id") or validation_context.get("validation_unit_id") or "")
-    evidence_details = [validation_summary]
+    expected_java_match = re.search(r"java-(\d+)", build_unit_id)
+    diagnostic_metadata = {
+        "failure_classification": failure_classification,
+        "failure_phase": "test" if failure_classification == "TEST_FAILURE" else "build" if build_kind else "validation",
+        "validation_unit_id": build_unit_id,
+        "validation_command": " ".join(str(item) for item in build_command),
+        "cwd": build_cwd,
+        "exit_code": "" if exit_code is None else str(exit_code),
+        "expected_java_version": expected_java_match.group(1) if expected_java_match else "",
+        "actual_java_version": str(build_contract.get("detected_version") or ""),
+        "resolved_java_home": str(build_contract.get("java_home") or ""),
+        "effective_subprocess_java_home": str(build_contract.get("effective_java_home") or ""),
+        "java_home_source_env": str(build_contract.get("java_home_env") or ""),
+        "path_excerpt": str(build_contract.get("PATH_excerpt") or ""),
+        "build_result_kind": build_kind,
+    }
+    diagnostic_metadata = {key: value for key, value in diagnostic_metadata.items() if value}
+    evidence_details = [f"Failure classification: {failure_classification}", validation_summary]
     if exit_code is not None:
         evidence_details.append(f"Build exit code: {exit_code}")
     if matched_line:
@@ -13755,6 +13810,13 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
         evidence_details.append(f"Working directory: {build_cwd}")
     if build_unit_id:
         evidence_details.append(f"Validation unit: {build_unit_id}")
+    diagnostic_summary = "; ".join(
+        f"{key}={value}"
+        for key, value in sorted(diagnostic_metadata.items())
+        if key not in {"failure_classification", "validation_command", "cwd", "validation_unit_id"}
+    )
+    if diagnostic_summary:
+        evidence_details.append(f"Authoritative validation diagnostics: {diagnostic_summary}")
     if repair_test_report_ref:
         try:
             test_report_data = json.loads(Path(repair_test_report_ref).read_text(encoding="utf-8"))
@@ -13790,6 +13852,7 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
         compiler_errors=compiler_locations,
         changed_files=tuple(changed_files),
         build_context_files=build_context_files,
+        include_full_build_descriptors=bool(build_context_files),
     )
     evidence = build_failure_evidence(
         failure_source=FailureSource.VALIDATION,
@@ -13807,6 +13870,7 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
         stdout_tail=build_stdout_text,
         stderr_tail=build_stderr_text,
         safe_log_preview=validation_summary,
+        diagnostic_metadata=diagnostic_metadata,
     )
     context_pack = build_repair_context_pack(
         failure_evidence=evidence,
@@ -13843,9 +13907,35 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
     )
     validation_context_checksum = sha256_canonical_json(validation_context)
 
-    repair_gate_svc = V2RepairGateService(
-        gate_service=V2PhaseGateService(uow.phase_gates),
-    )
+    if not repairable_failure:
+        reason = f"AMF-252 abstained: {failure_classification} is not an application repair failure."
+        if unit_of_work_factory is not None:
+            with unit_of_work_factory() as unavailable_uow:
+                unavailable_uow.v2_events.save(
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="reviewed_repair_unavailable",
+                    status="blocked",
+                    message=reason,
+                    payload={
+                        "reason_code": failure_classification,
+                        "failure_classification": failure_classification,
+                        "remaining_attempts": max(0, DEFAULT_MAX_REPAIR_ATTEMPTS - attempt_number),
+                        "failure_evidence_ref": str(evidence_path),
+                        "repair_context_ref": str(context_path),
+                    },
+                )
+        return SimpleNamespace(
+            status="unavailable",
+            proposal_id="",
+            reason=reason,
+            remaining_attempts=max(0, DEFAULT_MAX_REPAIR_ATTEMPTS - attempt_number),
+        )
+
+    # Direct Option-A proposal creation does not need a phase-gate repository.
+    # Keep the handoff transaction-free here; the shared repair service opens
+    # fresh UoWs for each durable write.
+    repair_gate_svc = V2RepairGateService(gate_service=None)
     failure_payload = {
         "_repair_failure_evidence_ref": str(evidence_path),
         "_repair_context_pack_ref": str(context_path),
@@ -13854,6 +13944,12 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
         "_repair_validation_context_ref": str(validation_context_path),
         "_repair_validation_context_checksum": validation_context_checksum,
         "_repair_h2_required": bool(apply_context.get("h2_required", False)),
+        "origin": "target_version_update",
+        "change_id": str(getattr(record, "change_id", "") or ""),
+        "validation_id": str(apply_context.get("validation_id") or ""),
+        "execution_stage_index": stage_index,
+        "route_step_index": validation_context.get("route_step_index"),
+        "validation_artifact_refs": dict(artifact_refs),
         "legacy_path": str(apply_context.get("legacy_path", "")),
         "source_profile": str(apply_context.get("source_profile", "")),
         "target_profile": str(apply_context.get("target_profile", "")),
@@ -14855,6 +14951,11 @@ def _v2_stages_from_job(job: Any, commands: tuple[Any, ...], events: tuple[Any, 
     from collections import defaultdict
     stage_events: dict[int, list[Any]] = defaultdict(list)
     for event in events:
+        # Target-version validation is a separate lifecycle from the
+        # completed migration stage. Its events belong in target-version and
+        # repair projections, not in the migration-stage reducer.
+        if event.type.startswith("target_version_"):
+            continue
         if event.stage is None and event.type not in {"next_stage_queued", "migration_completed", "job_completed"}:
             continue
         if event.type == "next_stage_queued":

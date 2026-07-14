@@ -701,6 +701,7 @@ class V2RepairGateService:
                 status_reason=str(review_chain.get("generation_failure_reason") or "Repair generation failed."),
                 validation_context_ref=validation_context_ref or None,
                 validation_context_checksum=validation_context_checksum or None,
+                completed_at=utc_now_text(),
             )
             _persist(lambda write_uow: write_uow.v2_repairs.save_proposal(outcome_record))
             return ReviewedRepairProposalCreationResult(
@@ -1930,6 +1931,7 @@ def _failure_evidence_from_dict(data: dict[str, Any]) -> Any:
         target_profile=str(data.get("target_profile", "")),
         accepted_artifact_checksums=tuple(data.get("accepted_artifact_checksums", ())),
         artifact_refs={str(k): str(v) for k, v in data.get("artifact_refs", {}).items()},
+        diagnostic_metadata={str(k): str(v) for k, v in data.get("diagnostic_metadata", {}).items()},
         stdout_tail=str(data.get("stdout_tail", "")),
         stderr_tail=str(data.get("stderr_tail", "")),
         safe_log_preview=str(data.get("safe_log_preview", "")),

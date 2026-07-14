@@ -109,6 +109,7 @@ def build_bounded_source_context(
     lines_before: int = MAX_LINES_BEFORE,
     lines_after: int = MAX_LINES_AFTER,
     max_chars: int = MAX_SOURCE_CONTEXT_CHARS,
+    include_full_build_descriptors: bool = False,
 ) -> tuple[RepairSourceContext, ...]:
     sandbox = Path(sandbox_root).resolve()
     candidate_paths: dict[str, int] = {}
@@ -140,8 +141,13 @@ def build_bounded_source_context(
         if not lines:
             continue
         error_line = candidate_paths[file_path]
-        start_line = max(0, error_line - lines_before)
-        end_line = min(len(lines), error_line + lines_after)
+        is_build_descriptor = file_path in set(build_context_files)
+        if include_full_build_descriptors and is_build_descriptor:
+            start_line = 0
+            end_line = len(lines)
+        else:
+            start_line = max(0, error_line - lines_before)
+            end_line = min(len(lines), error_line + lines_after)
         excerpt = "".join(lines[start_line:end_line])
         if not excerpt.strip():
             continue
