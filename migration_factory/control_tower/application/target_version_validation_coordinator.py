@@ -182,24 +182,23 @@ class TargetVersionValidationCoordinator:
         context_checksum = str(change.get("validation_context_checksum") or "")
         if not command_id:
             raise ValueError("authoritative validation command is missing")
-        with self._uow_factory() as uow:
-            command = uow.v2_commands.get(command_id)
-        if command is None or not command.result_json:
-            raise ValueError("authoritative completed-stage result is missing")
-        result = json.loads(command.result_json)
-        context_data = result.get("validation_execution_context")
+        if not context_ref or not Path(context_ref).is_file():
+            raise ValueError("authoritative ValidationExecutionContext is missing")
+        context_data = json.loads(Path(context_ref).read_text(encoding="utf-8"))
         if not isinstance(context_data, dict):
             raise ValueError("authoritative ValidationExecutionContext is missing")
-        if context_ref and Path(context_ref).is_file():
-            context_data = json.loads(Path(context_ref).read_text(encoding="utf-8"))
         actual_checksum = sha256_canonical_json(context_data)
         if not context_checksum or actual_checksum != context_checksum:
             raise ValueError("authoritative ValidationExecutionContext checksum mismatch")
         context = ValidationExecutionContext.from_mapping(context_data)
+        with self._uow_factory() as uow:
+            command = uow.v2_commands.get(command_id)
+        if command is None:
+            raise ValueError("authoritative validation command is missing")
         manifest = decode_environment_manifest(command.env_json)
         execution_env = materialize_execution_environment(manifest)
-        run_dir = str(context_data.get("run_dir") or result.get("run_dir") or "")
-        sandbox = str(context.sandbox_path or result.get("sandbox_path") or "")
+        run_dir = str(context_data.get("run_dir") or "")
+        sandbox = str(context.sandbox_path or context_data.get("sandbox_path") or "")
         if not run_dir or not sandbox:
             raise ValueError("authoritative run directory or sandbox is missing")
         return context, execution_env, run_dir, sandbox

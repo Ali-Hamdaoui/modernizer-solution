@@ -244,6 +244,7 @@ from migration_factory.control_tower.application.v2_orchestrator_runner import (
     V2OrchestratorStart,
     _bounded,
     _normalize_compiler_errors,
+    validation_context_sidecar_path,
 )
 from migration_factory.control_tower.application.v2_profile_runtime import (
     RouteRuntimeProfileUnavailableError,
@@ -312,6 +313,7 @@ from migration_factory.control_tower.application.pom_change_models import (
 )
 from migration_factory.control_tower.application.target_version_update import (
     PomTargetVersionChange,
+    _sha256_text,
     apply_target_version_updates,
     atomic_replace_text,
 )
@@ -1117,6 +1119,15 @@ def create_app(
         detail = exc.detail if isinstance(exc.detail, dict) else {}
         code = str(detail.get("code", "HTTP_ERROR"))
         message = str(detail.get("message", "Request failed."))
+        if set(detail) - {"code", "message"}:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={
+                    "detail": redact_public_data(detail),
+                    **public_error_payload(code, message, request.state.correlation_id),
+                },
+                headers={"X-Correlation-ID": request.state.correlation_id},
+            )
         return _json_error(request, exc.status_code, code, message)
 
     @app.exception_handler(RequestValidationError)
@@ -5169,8 +5180,51 @@ def create_app(
                     "validation": validation,
                 }
 
-        actual_checksum = hashlib.sha256(pom_text.encode("utf-8")).hexdigest()
+        actual_checksum = _sha256_text(pom_text)
         if actual_checksum != payload.expected_pom_checksum.lower():
+            with unit_of_work_factory() as recover_uow:
+                recovered = recover_uow.v2_pom_changes.find_by_request_checksum(job_id, request_checksum)
+                recovered_validation = (
+                    recover_uow.v2_pom_validations.get_by_change(recovered.change_id)
+                    if recovered is not None
+                    else None
+                )
+                if (
+                    recovered is not None
+                    and recovered_validation is not None
+                    and str(recovered.after_checksum) == actual_checksum
+                ):
+                    recover_uow.v2_pom_changes.update_status(
+                        recovered.change_id,
+                        "validation_queued",
+                        validation_id=recovered.validation_id,
+                    )
+                    recover_uow.v2_pom_validations.update_result(
+                        str(recovered.validation_id),
+                        status="validation_queued",
+                    )
+            if recovered is not None and recovered_validation is not None and str(recovered.after_checksum) == actual_checksum:
+                enqueue_deferred = False
+                try:
+                    app.state.target_version_validation_coordinator.enqueue(
+                        recovered.change_id,
+                        str(recovered.validation_id),
+                    )
+                except Exception:
+                    enqueue_deferred = True
+                return {
+                    "job_id": job_id,
+                    "stage": stage_index,
+                    "change_id": recovered.change_id,
+                    "validation_id": recovered.validation_id,
+                    "status": "validation_queued",
+                    "idempotency_key": payload.idempotency_key,
+                    "message": (
+                        "Existing target-version update recovered; validation queued for coordinator recovery."
+                        if enqueue_deferred
+                        else "Existing target-version update recovered and validation queued."
+                    ),
+                }
             raise _error(
                 status.HTTP_412_PRECONDITION_FAILED,
                 "STALE_POM_PREVIEW",
@@ -5184,20 +5238,41 @@ def create_app(
         route_step_index: int | None = None
         context_checksum = ""
         context_ref = ""
-        with _read_unit_of_work(unit_of_work_factory) as context_uow:
-            command = context_uow.v2_commands.get(command_id) if command_id else None
-        if command is not None and command.result_json:
+        runner = getattr(app.state, "v2_orchestrator_runner", None)
+        repo_root = Path(getattr(runner, "_cwd"))
+        context_path = validation_context_sidecar_path(repo_root, command_id) if command_id else None
+        sidecar_exists = bool(context_path and context_path.is_file())
+        context_reason = "command_id_missing" if not command_id else "sidecar_missing"
+        if sidecar_exists and context_path is not None:
             try:
-                command_result = json.loads(command.result_json)
-                context_data = command_result.get("validation_execution_context") or {}
-                execution_stage_index = int(context_data.get("stage_index") or command.stage_index or stage_index)
-                route_step_index = context_data.get("route_step_index")
-                context_checksum = sha256_canonical_json(context_data) if context_data else ""
-                context_ref = f"command:{command_id}:validation_execution_context" if context_data else ""
-            except (TypeError, ValueError, json.JSONDecodeError):
+                context_data = json.loads(context_path.read_text(encoding="utf-8"))
+                if not isinstance(context_data, dict):
+                    context_data = {}
+                    context_reason = "sidecar_invalid"
+                else:
+                    context_reason = "context_identity_mismatch"
+                    execution_stage_index = int(context_data.get("stage_index") or stage_index)
+                    route_step_index = context_data.get("route_step_index")
+                    context_checksum = sha256_canonical_json(context_data)
+                    context_ref = str(context_path)
+            except (TypeError, ValueError, json.JSONDecodeError, OSError):
                 context_data = {}
-        if not context_data:
-            raise _error(status.HTTP_409_CONFLICT, "VALIDATION_CONTEXT_UNAVAILABLE", "The latest completed stage has no authoritative validation execution context.")
+                context_reason = "sidecar_unreadable"
+        if (
+            not context_data
+            or str(context_data.get("command_id") or "") != command_id
+            or str(context_data.get("job_id") or "") != job_id
+            or context_data.get("stage_index") != stage_index
+        ):
+            detail = {
+                "code": "VALIDATION_CONTEXT_UNAVAILABLE",
+                "message": "The authoritative validation execution context is unavailable for this Apply request.",
+                "reason": context_reason,
+                "correlation_id": request.state.correlation_id,
+                "command_id": "present" if command_id else "missing",
+                "sidecar_exists": sidecar_exists,
+            }
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
         result = apply_target_version_updates(
             pom_text,
@@ -5205,6 +5280,7 @@ def create_app(
         )
         record = None
         validation_id = None
+        enqueue_deferred = False
         if result["applied_count"] > 0:
             change_id = uuid4().hex
             snapshot_dir = pom_path.parent / ".target_version_changes"
@@ -5266,22 +5342,32 @@ def create_app(
                 persist_uow.v2_pom_changes.update_status(record.change_id, "apply_intent_persisted", validation_id=validation_id)
 
             try:
-                if hashlib.sha256(pom_path.read_bytes()).hexdigest() != payload.expected_pom_checksum.lower():
+                if _sha256_text(pom_path.read_text(encoding="utf-8")) != payload.expected_pom_checksum.lower():
                     raise OSError("root POM changed after target-version intent was prepared")
                 atomic_replace_text(pom_path, str(result["pom_content"]))
-                if hashlib.sha256(pom_path.read_bytes()).hexdigest() != str(result["after_checksum"]):
+                if _sha256_text(pom_path.read_text(encoding="utf-8")) != str(result["after_checksum"]):
                     raise OSError("atomic POM replacement checksum verification failed")
             except OSError as exc:
-                with unit_of_work_factory() as fail_uow:
-                    fail_uow.v2_pom_changes.update_status(record.change_id, "apply_failed", validation_id=validation_id)
-                    fail_uow.v2_pom_validations.update_result(validation_id, status="apply_failed", failure_classification="POM_APPLY")
-                    fail_uow.v2_events.save(
-                        job_id=job_id, stage=execution_stage_index,
-                        event_type="target_version_apply_failed", status="failed",
-                        message="Target-version POM replacement failed closed.",
-                        payload={"change_id": record.change_id, "validation_id": validation_id},
+                try:
+                    replacement_confirmed = (
+                        _sha256_text(pom_path.read_text(encoding="utf-8"))
+                        == str(result["after_checksum"])
                     )
-                raise _error(status.HTTP_500_INTERNAL_SERVER_ERROR, "ROOT_POM_WRITE_FAILED", str(exc)) from exc
+                except OSError:
+                    replacement_confirmed = False
+                if replacement_confirmed:
+                    pass
+                else:
+                    with unit_of_work_factory() as fail_uow:
+                        fail_uow.v2_pom_changes.update_status(record.change_id, "apply_failed", validation_id=validation_id)
+                        fail_uow.v2_pom_validations.update_result(validation_id, status="apply_failed", failure_classification="POM_APPLY")
+                        fail_uow.v2_events.save(
+                            job_id=job_id, stage=execution_stage_index,
+                            event_type="target_version_apply_failed", status="failed",
+                            message="Target-version POM replacement failed closed.",
+                            payload={"change_id": record.change_id, "validation_id": validation_id},
+                        )
+                    raise _error(status.HTTP_500_INTERNAL_SERVER_ERROR, "ROOT_POM_WRITE_FAILED", str(exc)) from exc
 
             with unit_of_work_factory() as persist_uow:
                 persist_uow.v2_pom_changes.update_status(record.change_id, "validation_queued", validation_id=validation_id)
@@ -5298,7 +5384,10 @@ def create_app(
                     message="Target-version validation queued.",
                     payload={"change_id": record.change_id, "validation_id": validation_id},
                 )
-            app.state.target_version_validation_coordinator.enqueue(record.change_id, validation_id)
+            try:
+                app.state.target_version_validation_coordinator.enqueue(record.change_id, validation_id)
+            except Exception:
+                enqueue_deferred = True
 
         public_result = {key: value for key, value in result.items() if key != "pom_content"}
         return {
@@ -5308,7 +5397,13 @@ def create_app(
             "validation_id": validation_id if result["applied_count"] > 0 else None,
             "status": "validation_queued" if result["applied_count"] > 0 else "not_applied",
             "idempotency_key": payload.idempotency_key,
-            "message": "Target dependency versions applied; validation queued." if result["applied_count"] else "No target-version POM changes were applied.",
+            "message": (
+                "Target dependency versions applied; validation queued for coordinator recovery."
+                if enqueue_deferred
+                else "Target dependency versions applied; validation queued."
+                if result["applied_count"]
+                else "No target-version POM changes were applied."
+            ),
             **public_result,
         }
 
@@ -10442,6 +10537,7 @@ def _resolve_stage_sandbox_root(
         if sandbox_path:
             return Path(sandbox_path), {
                 "event_id": str(getattr(event, "event_id", "")),
+                "command_id": str(payload.get("command_id") or ""),
                 "source": "event_payload",
             }
     return None

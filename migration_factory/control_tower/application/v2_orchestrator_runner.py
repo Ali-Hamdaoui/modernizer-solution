@@ -56,6 +56,10 @@ from migration_factory.repair_loop.repair_context import (
 
 UnitOfWorkFactory = Callable[[], Any]
 
+
+def validation_context_sidecar_path(repo_root: Path, command_id: str) -> Path:
+    return Path(repo_root) / ".control_tower" / "contexts" / f"{command_id}.json"
+
 _EVENT_PREFIX = "CONTROL_TOWER_EVENT "
 _FINAL_JSON_PREFIX = "CONTROL_TOWER_FINAL_JSON "
 _MAX_TEXT = 4096
@@ -645,12 +649,31 @@ class V2OrchestratorRunner:
         if sandbox_path:
             result["sandbox_path"] = sandbox_path
 
-        # Persist the complete backend result, including the successful
-        # ValidationExecutionContext. Repair handling also persists a focused
-        # context artifact, but target-version validation must load the
-        # authoritative context after a successful stage completes.
-        with self._unit_of_work_factory() as result_uow:
-            result_uow.v2_commands.save_result(command_id, result)
+        # Persist the authoritative validation execution context for CSV
+        # target-version validation.  The context is written to a sidecar file
+        # so that app.py can read it later without mutating append-only
+        # v2_stage_commands.
+        validation_context = dict(result.get("validation_execution_context") or {})
+        if validation_context:
+            sandbox = result.get("sandbox_path") or result.get("sandbox_root") or ""
+            run_dir = result.get("run_dir") or ""
+            validation_context.update({
+                "job_id": job_id,
+                "command_id": command_id,
+                "run_dir": str(run_dir),
+                "sandbox_path": str(sandbox or sandbox_path),
+                "stage_index": stage_index,
+                "route_step_index": result.get("route_step_index", stage_index),
+            })
+            context_path = validation_context_sidecar_path(self._cwd, command_id)
+            contexts_dir = context_path.parent
+            contexts_dir.mkdir(parents=True, exist_ok=True)
+            context_path.write_text(
+                json.dumps(validation_context, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            result["_validation_context_ref"] = str(context_path)
+            result["_validation_context_checksum"] = sha256_canonical_json(validation_context)
 
         self._maybe_write_repair_failure_context(
             job_id=job_id,
