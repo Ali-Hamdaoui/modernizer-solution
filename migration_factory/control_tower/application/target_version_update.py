@@ -56,7 +56,10 @@ class PomTargetVersionChange:
 class _PomEntry:
     group_id: str
     artifact_id: str
-    source: str
+    type: str
+    classifier: str
+    declaration_kind: str
+    version_source: str
     raw_version: str | None
     resolved_version: str | None
     version_span: tuple[int, int] | None
@@ -73,6 +76,57 @@ class _PropertyEntry:
     name: str
     value: str
     span: tuple[int, int]
+
+
+def inspect_pom_for_coordinate(
+    pom_text: str, group_id: str, artifact_id: str,
+    type: str = "jar", classifier: str = "",
+) -> dict[str, Any] | None:
+    """Expose the existing raw-POM parser for deterministic repair enrichment."""
+    model = _parse_pom_model(pom_text)
+    entries = [entry for entry in model["dependencies"] if (
+        entry.group_id == group_id and entry.artifact_id == artifact_id
+        and entry.type == (type or "jar") and entry.classifier == (classifier or "")
+    )]
+    if not entries:
+        return None
+    if len(entries) > 1:
+        return {
+            "status": "AMBIGUOUS",
+            "group_id": group_id,
+            "artifact_id": artifact_id,
+            "type": type or "jar",
+            "classifier": classifier or "",
+            "matching_declarations": len(entries),
+            "warnings": ["multiple matching dependency declarations found in raw pom.xml"],
+        }
+    entry = entries[0]
+    consumers = [
+        {"group_id": item.group_id, "artifact_id": item.artifact_id, "raw_version": item.raw_version,
+         "resolved_version": item.resolved_version, "declaration_kind": item.declaration_kind,
+         "version_source": item.version_source, "property_name": item.property_name}
+        for item in model["dependencies"] if entry.property_name and item.property_name == entry.property_name
+    ]
+    warnings = []
+    status = "MATCH"
+    if (
+        entry.declaration_kind in {"PARENT", "BOM", "PROFILE"}
+        or entry.version_source in {"UNRESOLVED_PROPERTY", "UNKNOWN"}
+        or not entry.raw_version
+    ):
+        status = "PARTIAL"
+        warnings.append("raw pom.xml cannot prove inherited, BOM, profile, or unresolved-property values")
+    return {
+        "status": status,
+        "group_id": entry.group_id, "artifact_id": entry.artifact_id,
+        "type": entry.type, "classifier": entry.classifier,
+        "raw_version": entry.raw_version, "resolved_version": entry.resolved_version,
+        "declaration_kind": entry.declaration_kind, "version_source": entry.version_source,
+        "property_name": entry.property_name,
+        "property_value": entry.resolved_version if entry.property_name else None,
+        "literal_version": not bool(entry.property_name), "known_property_consumers": consumers,
+        "warnings": warnings,
+    }
 
 
 def apply_target_version_updates(
@@ -175,13 +229,18 @@ def _evaluate_change(
 
     entry = entries[0]
     current = entry.resolved_version
-    enriched = {**base, "before_version": current, "version_source": entry.source}
+    output_version_source = (
+        "property" if entry.version_source in {"PROPERTY", "UNRESOLVED_PROPERTY"}
+        else "dependency_management" if entry.declaration_kind == "DEPENDENCY_MANAGEMENT"
+        else "dependency"
+    )
+    enriched = {**base, "before_version": current, "version_source": output_version_source}
     if not entry.version_span:
         return {**enriched, "status": "skipped", "reason": "dependency has no explicit version to update"}
     if current and _normalize_version(current) == _normalize_version(change.target_version):
         return {**enriched, "status": "noop", "reason": "target version already present"}
 
-    edit_span = entry.property_span if entry.source == "property" else entry.version_span
+    edit_span = entry.property_span if entry.version_source == "PROPERTY" else entry.version_span
     if edit_span is None:
         return {**enriched, "status": "blocked", "reason": "property version reference could not be resolved"}
 
@@ -195,6 +254,7 @@ def _evaluate_change(
 def _parse_pom_model(pom_text: str) -> dict[str, list[_PomEntry]]:
     properties = _parse_properties(pom_text)
     dependency_management_ranges = _block_ranges(pom_text, "dependencyManagement")
+    profile_ranges = _block_ranges(pom_text, "profile")
     dependencies: list[_PomEntry] = []
     for start, end, block in _iter_blocks(pom_text, "dependency"):
         group_id = _extract_tag_text(block, "groupId")
@@ -203,23 +263,39 @@ def _parse_pom_model(pom_text: str) -> dict[str, list[_PomEntry]]:
             continue
         raw_version, local_span = _extract_tag_value_span(block, "version")
         version_span = (start + local_span[0], start + local_span[1]) if local_span else None
-        source = "dependency_management" if _inside_any_range(start, end, dependency_management_ranges) else "dependency"
+        declaration_kind = (
+            "DEPENDENCY_MANAGEMENT"
+            if _inside_any_range(start, end, dependency_management_ranges)
+            else "DIRECT_DEPENDENCY"
+        )
+        if _inside_any_range(start, end, profile_ranges):
+            declaration_kind = "PROFILE"
+        if (
+            declaration_kind == "DEPENDENCY_MANAGEMENT"
+            and _extract_tag_text(block, "type") == "pom"
+            and _extract_tag_text(block, "scope") == "import"
+        ):
+            declaration_kind = "BOM"
         resolved = raw_version
         property_name = None
         property_span = None
+        version_source = "LITERAL" if raw_version else "UNKNOWN"
         if raw_version:
             property_match = _PROPERTY_REF_RE.match(raw_version.strip())
             if property_match:
                 property_name = property_match.group(1)
                 prop = properties.get(property_name)
-                source = "property"
+                version_source = "PROPERTY" if prop else "UNRESOLVED_PROPERTY"
                 if prop:
                     resolved = prop.value
                     property_span = prop.span
         dependencies.append(_PomEntry(
             group_id=group_id,
             artifact_id=artifact_id,
-            source=source,
+            type=_extract_tag_text(block, "type") or "jar",
+            classifier=_extract_tag_text(block, "classifier") or "",
+            declaration_kind=declaration_kind,
+            version_source=version_source,
             raw_version=raw_version,
             resolved_version=resolved,
             version_span=version_span,
@@ -236,7 +312,10 @@ def _parse_pom_model(pom_text: str) -> dict[str, list[_PomEntry]]:
             parents.append(_PomEntry(
                 group_id=group_id,
                 artifact_id=artifact_id,
-                source="parent",
+                type="jar",
+                classifier="",
+                declaration_kind="PARENT",
+                version_source="PARENT",
                 raw_version=raw_version,
                 resolved_version=raw_version,
                 version_span=(start + local_span[0], start + local_span[1]) if local_span else None,

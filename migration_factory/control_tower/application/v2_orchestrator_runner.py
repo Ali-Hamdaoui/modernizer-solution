@@ -1308,6 +1308,11 @@ class V2OrchestratorRunner:
             target_profile=str(result.get("target_profile") or ""),
             accepted_artifact_checksums=accepted_checksums,
             artifact_refs={str(k): str(v) for k, v in artifact_refs.items() if v},
+            diagnostic_metadata={
+                str(key): str(value)
+                for key, value in (result.get("diagnostic_metadata") or {}).items()
+                if value
+            } if isinstance(result.get("diagnostic_metadata"), dict) else {},
             stdout_tail=stdout_tail,
             stderr_tail=stderr_tail,
             safe_log_preview=_first_text(result.get("safe_log_preview"), stderr_tail, stdout_tail),
@@ -1318,14 +1323,28 @@ class V2OrchestratorRunner:
                 compiler_error_locations.append((err.file_path, err.line))
 
         sandbox_root = str(run_dir / "workspaces" / "sandbox")
-        source_contexts: tuple[Any, ...] = ()
-        if sandbox_root and (compiler_error_locations or changed_files):
-            from migration_factory.repair_loop.repair_context import build_bounded_source_context
-            source_contexts = build_bounded_source_context(
-                sandbox_root=sandbox_root,
-                compiler_errors=compiler_error_locations or None,
-                changed_files=changed_files,
-            )
+        from migration_factory.repair_loop.repair_context import (
+            build_bounded_source_context,
+            find_relevant_build_context_files,
+        )
+        validation_context = result.get("validation_execution_context")
+        validation_context = validation_context if isinstance(validation_context, dict) else {}
+        build_tool = str(validation_context.get("tool") or result.get("build_tool") or "").lower()
+        maven_evidence_text = "\n".join((failure_summary, stdout_tail, stderr_tail)).lower()
+        maven_evidence = any(marker in maven_evidence_text for marker in ("could not find artifact", "could not resolve artifact"))
+        build_context_files = find_relevant_build_context_files(
+            sandbox_root=sandbox_root,
+            working_directory=str(validation_context.get("working_directory") or result.get("working_directory") or ""),
+            module=str(validation_context.get("module") or result.get("module") or ""),
+            tool=build_tool or "maven",
+        ) if sandbox_root and ("maven" in build_tool or build_tool in {"mvn", "mvnw"} or maven_evidence) else ()
+        source_contexts = build_bounded_source_context(
+            sandbox_root=sandbox_root,
+            compiler_errors=compiler_error_locations or None,
+            changed_files=changed_files,
+            build_context_files=build_context_files,
+            include_full_build_descriptors=bool(build_context_files),
+        ) if sandbox_root else ()
 
         context_pack = build_repair_context_pack(
             failure_evidence=evidence,

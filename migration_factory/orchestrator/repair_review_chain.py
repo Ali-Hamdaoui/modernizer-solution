@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
+import logging
 import re
 import shlex
 import subprocess
@@ -45,6 +46,8 @@ from migration_factory.repair_loop.repair_context import (
     compute_context_pack_checksum,
     context_pack_to_dict,
 )
+from migration_factory.repair_loop.repair_intelligence import run_repair_intelligence_preflight
+from migration_factory.control_tower.application.target_version_update import inspect_pom_for_coordinate
 
 
 class RepairReviewChainProductionError(RuntimeError):
@@ -348,8 +351,9 @@ def _build_deterministic_repair_payload(
     context_pack: RepairContextPack,
     source_profile: str = "",
     target_profile: str = "",
+    repair_intelligence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "schema_version": "2.0.0",
         "phase": RepairArtifactPhase.REPAIR,
         "job_id": context_pack.job_id,
@@ -373,6 +377,9 @@ def _build_deterministic_repair_payload(
         "allowed_repair_mode_hints": ["source_patch", "dependency_patch", "config_patch"],
         "created_at": utc_now_text(),
     }
+    if repair_intelligence:
+        payload["repair_intelligence"] = repair_intelligence
+    return payload
 
 
 # ── F5-T4/T5: Primary/Reviewer repair contracts ─────────────────────
@@ -417,7 +424,41 @@ _STRUCTURED_REPAIR_EDIT_CONTRACT = (
 )
 
 
-def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checksum: str) -> str:
+def _pom_prompt_context(context_pack: RepairContextPack, intelligence: dict[str, Any]) -> str:
+    pom_path = str((intelligence.get("pom") or {}).get("path") or "")
+    for context in context_pack.source_contexts:
+        if str(getattr(context, "path", "")).replace("\\", "/") == pom_path:
+            return (
+                f"AUTHORITATIVE_POM_PATH: {pom_path}\n"
+                f"AUTHORITATIVE_POM_SHA256: {getattr(context, 'source_file_sha256', '') or getattr(context, 'content_checksum', '')}\n"
+                f"AUTHORITATIVE_POM_XML:\n{context.content}\nEND_AUTHORITATIVE_POM_XML"
+            )
+    return ""
+
+
+def _primary_repair_prompt(
+    context_pack: RepairContextPack, deterministic_checksum: str,
+    authoritative_facts: dict[str, Any], failure_evidence: FailureEvidence,
+) -> str:
+    if authoritative_facts.get("eligibility") is True:
+        return (
+            "You are the AMF-252 POM Repair V1 proposer. Return ONLY valid JSON.\n"
+            "Produce the smallest justified edit to the exact authoritative pom.xml.\n"
+            "Required keys: root_cause, fix_strategy, changed_files, proposed_diff, proposed_edits, confidence, rationale.\n"
+            "Use the existing structured exact-edit contract below.\n\n"
+            "HARD V1 RULES:\n"
+            "- Modify only the exact authoritative pom.xml path.\n"
+            "- Dependency removal, Java/source/test/config changes are forbidden.\n"
+            "- Never invent a version; an exact replacement must be in metadata_lookup.available_versions.\n"
+            "- UNKNOWN is not NOT_FOUND.\n"
+            "- Account for every shared-property consumer; do not claim compatibility is proven.\n"
+            "- Prefer the smallest justified POM blast radius.\n\n"
+            f"DETERMINISTIC_REPAIR_ARTIFACT_CHECKSUM: {deterministic_checksum}\n"
+            f"EXACT_FAILURE_EVIDENCE:\n{json.dumps(failure_evidence_to_dict(failure_evidence), sort_keys=True)}\n\n"
+            f"COMPACT_POM_REPAIR_V1_INTELLIGENCE:\n{json.dumps(authoritative_facts, sort_keys=True)}\n\n"
+            f"{_STRUCTURED_REPAIR_EDIT_CONTRACT}\n"
+            f"{_pom_prompt_context(context_pack, authoritative_facts)}"
+        )
     context_dict = context_pack_to_dict(context_pack)
     source_contexts = context_dict.get("source_contexts") or []
     source_section = (
@@ -472,9 +513,27 @@ def _reviewer_repair_prompt(
     context_checksum: str,
     primary_checksum: str,
     diff_checksum: str,
+    authoritative_facts: dict[str, Any],
 ) -> str:
     source_contexts = list(context_pack.source_contexts or [])
     retry_contract = _post_apply_retry_contract(context_pack)
+    if authoritative_facts.get("eligibility") is True:
+        return (
+            "You are the AMF-252 POM Repair V1 reviewer. Return ONLY valid JSON.\n"
+            "Independently verify the proposer against the exact failure, exact POM, and compact intelligence.\n"
+            "Reject non-POM changes, dependency removal, invented versions, UNKNOWN->NOT_FOUND, unsupported shared-property changes, and unsupported compatibility claims.\n"
+            "Use the existing structured exact-edit contract; final edits may touch only the exact POM path.\n\n"
+            f"DETERMINISTIC_REPAIR_ARTIFACT_CHECKSUM: {deterministic_checksum}\n"
+            f"CONTEXT_PACK_CHECKSUM: {context_checksum}\n"
+            f"PRIMARY_OUTPUT_CHECKSUM: {primary_checksum}\n"
+            f"DIFF_CHECKSUM: {diff_checksum}\n"
+            f"EXACT_FAILURE_EVIDENCE:\n{json.dumps(failure_evidence_to_dict(failure_evidence), sort_keys=True)}\n\n"
+            f"COMPACT_POM_REPAIR_V1_INTELLIGENCE:\n{json.dumps(authoritative_facts, sort_keys=True)}\n\n"
+            f"{_pom_prompt_context(context_pack, authoritative_facts)}\n\n"
+            f"PROPOSER_OUTPUT:\n{json.dumps(primary_output, sort_keys=True)}\n\n"
+            "Return keys: proposed_diff, proposed_edits, changed_files, review_notes, confidence, decision, "
+            "reviewed_context_checksum, reviewed_primary_output_checksum, reviewed_diff_checksum."
+        )
     return (
         "You are the AMF-252 final repair author and reviewer. Inspect exact failure "
         "evidence, bounded source context, proposer reasoning, and proposer diff. "
@@ -796,6 +855,7 @@ def _candidate_correction_prompt(
     context_checksum: str,
     primary_checksum: str,
     diff_checksum: str,
+    authoritative_facts: dict[str, Any],
 ) -> str:
     retry_contract = _post_apply_retry_contract(context_pack)
     source_excerpt = _format_authoritative_source_contexts(
@@ -821,6 +881,12 @@ def _candidate_correction_prompt(
         )
     else:
         correction_guidance = ""
+    v1_challenge = (
+        "REVIEWER CHALLENGE RULES:\n"
+        "- Reject invented versions, UNKNOWN→NOT_FOUND, unsupported dependency removal, broad shared-property edits, and unsupported compatibility assumptions.\n"
+        f"AUTHORITATIVE FACTS:\n{json.dumps(authoritative_facts, sort_keys=True)}\n"
+        if authoritative_facts.get("eligibility") is True else ""
+    )
     return (
         "You are correcting one failed AMF-252 repair candidate. Return only JSON matching "
         "RepairReviewerOutput.\n\n"
@@ -846,7 +912,8 @@ def _candidate_correction_prompt(
         f"{correction_guidance}"
         f"Deterministic validation failures:\n{diagnostics}\n\n"
         f"Candidate diff (bounded):\n{candidate_diff[:12000]}\n\n"
-        f"Authoritative source context (bounded):\n{source_excerpt}\n"
+        f"Authoritative source context (bounded):\n{source_excerpt}\n\n"
+        f"{v1_challenge}"
     )
 
 
@@ -1229,6 +1296,105 @@ def _candidate_source_validation(
     return failures
 
 
+def _validate_pom_v1_candidate(
+    *, proposed_diff: str, changed_files: list[Any], intelligence: dict[str, Any],
+    context_pack: RepairContextPack, sandbox_path: str | Path | None,
+) -> list[str]:
+    """Enforce V1 semantic scope after the existing deterministic diff checks."""
+    if intelligence.get("eligibility") is not True:
+        return []
+    pom_path = str((intelligence.get("pom") or {}).get("path") or "").replace("\\", "/")
+    if set(str(path).replace("\\", "/") for path in changed_files) != {pom_path}:
+        return ["POM Repair V1 candidate must modify only the authoritative pom.xml"]
+    failures: list[str] = []
+    removed = [line[1:] for line in proposed_diff.splitlines() if line.startswith("-") and not line.startswith("---")]
+    available = set((intelligence.get("metadata_lookup") or {}).get("available_versions") or [])
+    added = [line[1:] for line in proposed_diff.splitlines() if line.startswith("+") and not line.startswith("+++")]
+    declaration = intelligence.get("declaration") or {}
+    property_name = str(declaration.get("property_name") or "")
+    allowed_tag = rf"<\s*{re.escape(property_name)}\b" if property_name else r"<\s*version\b"
+    changed_lines = [line for line in (*removed, *added) if line.strip()]
+    allowed_changed_line = (
+        rf"^\s*<\s*{re.escape(property_name)}\b[^>]*>[^<]*</\s*{re.escape(property_name)}\s*>\s*$"
+        if property_name else r"^\s*<\s*version\b[^>]*>[^<]*</\s*version\s*>\s*$"
+    )
+    if not changed_lines or any(
+        not re.fullmatch(allowed_changed_line, line, re.I)
+        or not re.search(allowed_tag, line, re.I)
+        for line in changed_lines
+    ):
+        failures.append("POM Repair V1 permits changes only to the matched dependency version or its known property")
+    if not added:
+        failures.append("POM Repair V1 requires an added replacement version")
+    for line in added:
+        match = re.search(r"<version>\s*([^<{]+?)\s*</version>", line, re.I)
+        if match and match.group(1).strip() not in available:
+            failures.append("POM Repair V1 exact version is not in authoritative available_versions")
+        if property_name and re.search(rf"<\s*{re.escape(property_name)}\b", line, re.I):
+            value_match = re.search(r">\s*([^<{]+?)\s*</", line)
+            if value_match and value_match.group(1).strip() not in available:
+                failures.append("POM Repair V1 shared-property version is not in authoritative available_versions")
+    pom_context = next(
+        (
+            context for context in context_pack.source_contexts
+            if str(getattr(context, "path", "")).replace("\\", "/") == pom_path
+        ),
+        None,
+    )
+    original_text = str(getattr(pom_context, "content", "")) if pom_context is not None else ""
+    if not original_text and sandbox_path is not None:
+        source_path = _safe_source_path(sandbox_path, pom_path)
+        if source_path is not None:
+            original_text = source_path.read_text(encoding="utf-8", errors="strict")
+    coordinate = intelligence.get("coordinate") or {}
+    if not original_text or not coordinate:
+        failures.append("POM Repair V1 cannot structurally verify authoritative POM preimage")
+        return sorted(set(failures))
+    original = inspect_pom_for_coordinate(
+        original_text, coordinate.get("group_id", ""), coordinate.get("artifact_id", ""),
+        coordinate.get("type", "jar"), coordinate.get("classifier", ""),
+    )
+    if not original or original.get("status") != "MATCH":
+        failures.append("POM Repair V1 authoritative target declaration is not structurally verifiable")
+        return sorted(set(failures))
+    sections, parse_failures = _strict_parse_unified_diff(proposed_diff)
+    if parse_failures or len(sections) != 1 or sections[0].get("path") != pom_path:
+        failures.append("POM Repair V1 shadow candidate has invalid authoritative POM diff")
+    else:
+        shadow_lines = [_line_body(line) for line in original_text.splitlines(keepends=True)]
+        for hunk in sections[0].get("hunks", []):
+            old_lines = [line[1:] for line in hunk["body"] if line.startswith((" ", "-"))]
+            new_lines = [line[1:] for line in hunk["body"] if line.startswith((" ", "+"))]
+            start = int(hunk["old_start"]) - 1
+            if start < 0 or shadow_lines[start:start + len(old_lines)] != old_lines:
+                failures.append("POM Repair V1 shadow candidate preimage mismatch")
+                break
+            shadow_lines[start:start + len(old_lines)] = new_lines
+        else:
+            candidate = inspect_pom_for_coordinate(
+                "\n".join(shadow_lines) + ("\n" if original_text.endswith(("\n", "\r")) else ""),
+                coordinate.get("group_id", ""), coordinate.get("artifact_id", ""),
+                coordinate.get("type", "jar"), coordinate.get("classifier", ""),
+            )
+            if not candidate or candidate.get("status") != "MATCH":
+                failures.append("POM Repair V1 candidate removed or changed target dependency identity")
+            else:
+                identity_keys = ("group_id", "artifact_id", "type", "classifier", "declaration_kind", "property_name")
+                if any(candidate.get(key) != original.get(key) for key in identity_keys):
+                    failures.append("POM Repair V1 target dependency identity changed")
+                old_consumers = {
+                    (item.get("group_id"), item.get("artifact_id"), item.get("type", "jar"), item.get("classifier", ""), item.get("raw_version"), item.get("property_name"))
+                    for item in original.get("known_property_consumers", [])
+                }
+                new_consumers = {
+                    (item.get("group_id"), item.get("artifact_id"), item.get("type", "jar"), item.get("classifier", ""), item.get("raw_version"), item.get("property_name"))
+                    for item in candidate.get("known_property_consumers", [])
+                }
+                if old_consumers != new_consumers:
+                    failures.append("POM Repair V1 shared-property consumer set changed")
+    return sorted(set(failures))
+
+
 def _strict_git_applicability(
     *,
     proposed_diff: str,
@@ -1606,18 +1772,32 @@ def produce_repair_review_chain(
 ) -> dict[str, Any]:
     """Produce proposer -> reviewer-final-author chain with technical fallback."""
     output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        repair_intelligence = run_repair_intelligence_preflight(
+            failure_evidence=failure_evidence, context_pack=context_pack,
+            sandbox_path=sandbox_path,
+        )
+    except Exception:
+        logging.getLogger("repair_review_chain").exception(
+            "repair_intelligence_abstained job_id=%s stage_index=%s",
+            context_pack.job_id, context_pack.stage_index,
+        )
+        repair_intelligence = {}
 
     deterministic_payload = _build_deterministic_repair_payload(
         failure_evidence=failure_evidence,
         context_pack=context_pack,
         source_profile=source_profile,
         target_profile=target_profile,
+        repair_intelligence=repair_intelligence,
     )
     deterministic_checksum = sha256_canonical_json(deterministic_payload)
     deterministic_path = output_dir / "deterministic_repair_artifact.json"
     _write_json(deterministic_path, deterministic_payload)
 
     client = model_client or V2AssistantModelClient()
+    logger = logging.getLogger("repair_review_chain")
+    logger.info("repair_proposer_started job_id=%s stage_index=%s", context_pack.job_id, context_pack.stage_index)
 
     # ── PR-G: Capture proposer invocation ────────────────────────────
     proposer_invocation_id: str | None = None
@@ -1636,13 +1816,16 @@ def produce_repair_review_chain(
     # Primary Repair LLM (PROPOSER)
     primary_result = client.answer_with_role(
         role=V2ModelRole.PROPOSER,
-        prompt=_primary_repair_prompt(context_pack, deterministic_checksum),
+        prompt=_primary_repair_prompt(
+            context_pack, deterministic_checksum, repair_intelligence, failure_evidence
+        ),
         fallback="Primary repair model unavailable; reviewed repair cannot be produced.",
         output_schema_name="RepairPrimaryOutput",
         require_schema=True,
     )
 
     fallback_used_primary = str(getattr(primary_result, "source", "") or "") == "deterministic"
+    logger.info("repair_proposer_completed job_id=%s success=%s", context_pack.job_id, bool(primary_result.success))
 
     primary_output: dict[str, Any] | None = None
     primary_failures: list[str] = []
@@ -1751,6 +1934,14 @@ def produce_repair_review_chain(
         )
         primary_candidate_failures.extend(candidate_failures)
         if not primary_candidate_failures and primary_candidate_diff:
+            primary_candidate_failures.extend(_validate_pom_v1_candidate(
+                proposed_diff=primary_candidate_diff,
+                changed_files=candidate_paths,
+                intelligence=repair_intelligence,
+                context_pack=context_pack,
+                sandbox_path=sandbox_path,
+            ))
+        if not primary_candidate_failures and primary_candidate_diff:
             primary_output["proposed_diff"] = primary_candidate_diff
             primary_output["changed_files"] = candidate_paths
     primary_checksum = _compute_primary_repair_checksum(primary_output)
@@ -1785,6 +1976,7 @@ def produce_repair_review_chain(
             context_checksum,
             primary_checksum,
             diff_checksum,
+            repair_intelligence,
         ),
         fallback="Reviewer repair model unavailable; reviewed repair cannot be produced.",
         output_schema_name="RepairReviewerOutput",
@@ -1844,6 +2036,13 @@ def produce_repair_review_chain(
                     sandbox_path=sandbox_path,
                     output_dir=output_dir,
                 )
+                reviewer_failures.extend(_validate_pom_v1_candidate(
+                    proposed_diff=reviewer_candidate_diff,
+                    changed_files=reviewer_paths,
+                    intelligence=repair_intelligence,
+                    context_pack=context_pack,
+                    sandbox_path=sandbox_path,
+                ))
                 if reviewer_failures:
                     reviewer_reason = "; ".join(reviewer_failures)
                 else:
@@ -1876,6 +2075,7 @@ def produce_repair_review_chain(
         if final_diff_source == "reviewer"
         else list(primary_output.get("changed_files") or [])
     )
+    logger.info("repair_reviewer_completed job_id=%s success=%s", context_pack.job_id, bool(reviewer_result.success))
     correction_attempts = 0
     final_failures = _candidate_source_validation(
         proposed_diff=final_diff,
@@ -1883,6 +2083,14 @@ def produce_repair_review_chain(
         context_pack=context_pack,
         sandbox_path=sandbox_path,
     ) if final_diff else ["no candidate diff available for final validation"]
+    if not final_failures and final_diff:
+        final_failures.extend(_validate_pom_v1_candidate(
+            proposed_diff=final_diff,
+            changed_files=selected_changed_files,
+            intelligence=repair_intelligence,
+            context_pack=context_pack,
+            sandbox_path=sandbox_path,
+        ))
     if not final_failures and final_diff:
         final_failures.extend(_strict_git_applicability(
             proposed_diff=final_diff,
@@ -1901,6 +2109,7 @@ def produce_repair_review_chain(
                 context_checksum=context_checksum,
                 primary_checksum=primary_checksum,
                 diff_checksum=diff_checksum,
+                authoritative_facts=repair_intelligence,
             ),
             fallback="Corrective repair model unavailable; reviewed repair cannot be produced.",
             output_schema_name="RepairReviewerOutput",
@@ -1941,6 +2150,14 @@ def produce_repair_review_chain(
                     output_dir=output_dir,
                 )
                 final_failures = checksum_failures + corrected_failures
+                if not final_failures:
+                    final_failures.extend(_validate_pom_v1_candidate(
+                        proposed_diff=corrected_diff,
+                        changed_files=corrected_paths,
+                        intelligence=repair_intelligence,
+                        context_pack=context_pack,
+                        sandbox_path=sandbox_path,
+                    ))
                 if not final_failures:
                     corrected_output["proposed_diff"] = corrected_diff
                     corrected_output["changed_files"] = corrected_paths
