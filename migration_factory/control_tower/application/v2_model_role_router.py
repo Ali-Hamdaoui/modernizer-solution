@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Callable
@@ -44,13 +45,21 @@ class V2RoleModelResult:
     success: bool
     failure_reason: str
     primary_failure_reason: str = ""
+    fallback_failure_reason: str = ""
+    parser_failure_reason: str = ""
     fallback_used: bool = False
+    fallback_attempted: bool = False
     schema_validated: bool = False
     configured_max_input_tokens: int = 0
     configured_max_output_tokens: int = 0
     response_format_used: str = ""
     configured_deployment: str = ""
+    actual_deployment: str = ""
     fallback_deployment: str = ""
+    primary_http_status: str = ""
+    fallback_http_status: str = ""
+    timeout_occurred: bool = False
+    schema_validation_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -98,7 +107,7 @@ class V2ModelRoleRouter:
         settings: ControlTowerSettings | None = None,
     ) -> V2RoleModelResult:
         route = self.plan(request, settings=settings)
-        primary_result, primary_failure = self._try_invoke(
+        primary_result, primary_failure, primary_http, primary_timeout = self._try_invoke(
             invoke,
             deployment=route.primary_deployment,
             request=request,
@@ -106,7 +115,10 @@ class V2ModelRoleRouter:
         )
         if primary_result is not None:
             result = self._coerce_primary_result(primary_result, request)
-            if result.success and self._schema_ok(request, result.content):
+            schema_error = ""
+            if result.success and not self._schema_ok(request, result.content):
+                schema_error = "schema_validation_failed"
+            if result.success and not schema_error:
                 return V2RoleModelResult(
                     content=result.content,
                     role=result.role,
@@ -122,12 +134,22 @@ class V2ModelRoleRouter:
                     configured_max_output_tokens=result.configured_max_output_tokens,
                     response_format_used=result.response_format_used,
                     configured_deployment=route.primary_deployment,
+                    actual_deployment=route.primary_deployment,
                     fallback_deployment=route.fallback_deployment,
+                    primary_http_status=primary_http,
+                    timeout_occurred=primary_timeout,
+                    schema_validation_error="",
                 )
-            primary_failure = result.failure_reason or primary_failure or "primary_model_failed"
+            primary_failure = schema_error or result.failure_reason or primary_failure or "primary_model_failed"
+            if not primary_http and primary_timeout:
+                primary_failure = "timeout"
+        else:
+            result = None
 
+        fallback_http = ""
+        fallback_timeout = False
         if route.fallback_enabled and route.fallback_deployment:
-            fallback_result, fallback_failure = self._try_invoke(
+            fallback_result, fallback_failure, fallback_http, fallback_timeout = self._try_invoke(
                 invoke,
                 deployment=route.fallback_deployment,
                 request=request,
@@ -139,7 +161,10 @@ class V2ModelRoleRouter:
                     request,
                     primary_failure_reason=primary_failure,
                 )
-                if result.success and self._schema_ok(request, result.content):
+                schema_error = ""
+                if result.success and not self._schema_ok(request, result.content):
+                    schema_error = "schema_validation_failed"
+                if result.success and not schema_error:
                     return V2RoleModelResult(
                         content=result.content,
                         role=result.role,
@@ -155,9 +180,17 @@ class V2ModelRoleRouter:
                         configured_max_output_tokens=result.configured_max_output_tokens,
                         response_format_used=result.response_format_used,
                         configured_deployment=route.fallback_deployment,
+                        actual_deployment=route.fallback_deployment,
+                        fallback_attempted=True,
                         fallback_deployment=route.fallback_deployment,
+                        primary_http_status=primary_http,
+                        fallback_http_status=fallback_http,
+                        timeout_occurred=primary_timeout or fallback_timeout,
+                        schema_validation_error=schema_error,
                     )
                 fallback_failure = result.failure_reason or fallback_failure or "fallback_model_failed"
+                if schema_error:
+                    fallback_failure = f"{schema_error}: {fallback_failure}"
             else:
                 fallback_failure = fallback_failure or "fallback_model_failed"
         else:
@@ -167,6 +200,11 @@ class V2ModelRoleRouter:
             request=request,
             primary_failure_reason=primary_failure or "primary_model_unavailable",
             fallback_failure_reason=fallback_failure,
+            fallback_attempted=bool(route.fallback_enabled and route.fallback_deployment),
+            primary_http_status=primary_http,
+            fallback_http_status=fallback_http,
+            timeout_occurred=primary_timeout or fallback_timeout,
+            schema_validation_error=("schema_validation_failed" if "schema_validation_failed" in (primary_failure or fallback_failure) else ""),
         )
 
     def resolve_budget(self, *, role: V2ModelRole, responsibility: str = "", output_schema_name: str | None = None) -> V2RoleBudget:
@@ -179,13 +217,21 @@ class V2ModelRoleRouter:
         deployment: str,
         request: V2RoleModelRequest,
         role: str,
-    ) -> tuple[Any | None, str]:
+    ) -> tuple[Any | None, str, str, bool]:
         if not deployment:
-            return None, f"missing_{role}_deployment"
+            return None, f"missing_{role}_deployment", "", False
         try:
-            return invoke(deployment), ""
+            result = invoke(deployment)
+            return result, "", "", False
+        except urllib.error.HTTPError as exc:
+            code = int(getattr(exc, "code", 0) or 0)
+            return None, redact_model_summary(f"http_{code}: {exc}"), str(code), False
+        except (urllib.error.URLError, TimeoutError) as exc:
+            reason = str(getattr(exc, "reason", exc))
+            is_timeout = "timeout" in reason.lower() or "timed out" in reason.lower()
+            return None, redact_model_summary(f"{type(exc).__name__}: {exc}"), "", is_timeout
         except Exception as exc:
-            return None, redact_model_summary(f"{type(exc).__name__}: {exc}")
+            return None, redact_model_summary(f"{type(exc).__name__}: {exc}"), "", False
 
     def _coerce_primary_result(self, result: Any, request: V2RoleModelRequest) -> V2RoleModelResult:
         return V2RoleModelResult(
@@ -196,9 +242,15 @@ class V2ModelRoleRouter:
             model_status=str(getattr(result, "model_status", "") or "live_ok"),
             success=bool(getattr(result, "success", False)),
             failure_reason=str(getattr(result, "failure_reason", "") or ""),
+            parser_failure_reason=str(getattr(result, "parser_failure_reason", "") or ""),
             configured_max_input_tokens=int(getattr(result, "configured_max_input_tokens", 0) or 0),
             configured_max_output_tokens=int(getattr(result, "configured_max_output_tokens", 0) or 0),
             response_format_used=str(getattr(result, "response_format_used", "") or ""),
+            primary_http_status=str(getattr(result, "primary_http_status", "") or ""),
+            fallback_http_status=str(getattr(result, "fallback_http_status", "") or ""),
+            timeout_occurred=bool(getattr(result, "timeout_occurred", False)),
+            schema_validation_error=str(getattr(result, "schema_validation_error", "") or ""),
+            fallback_failure_reason=str(getattr(result, "fallback_failure_reason", "") or ""),
         )
 
     def _coerce_fallback_result(
@@ -207,6 +259,7 @@ class V2ModelRoleRouter:
         request: V2RoleModelRequest,
         *,
         primary_failure_reason: str,
+        fallback_failure_reason: str = "",
     ) -> V2RoleModelResult:
         coerced = self._coerce_primary_result(result, request)
         return V2RoleModelResult(
@@ -218,11 +271,16 @@ class V2ModelRoleRouter:
             success=coerced.success,
             failure_reason=coerced.failure_reason,
             primary_failure_reason=primary_failure_reason,
+            fallback_failure_reason=fallback_failure_reason or coerced.fallback_failure_reason,
             fallback_used=True,
             schema_validated=coerced.schema_validated,
             configured_max_input_tokens=coerced.configured_max_input_tokens,
             configured_max_output_tokens=coerced.configured_max_output_tokens,
             response_format_used=coerced.response_format_used,
+            primary_http_status=coerced.primary_http_status,
+            fallback_http_status=coerced.fallback_http_status,
+            timeout_occurred=coerced.timeout_occurred,
+            schema_validation_error=coerced.schema_validation_error,
         )
 
     def _schema_ok(self, request: V2RoleModelRequest, content: str) -> bool:
@@ -246,6 +304,11 @@ class V2ModelRoleRouter:
         request: V2RoleModelRequest,
         primary_failure_reason: str,
         fallback_failure_reason: str,
+        fallback_attempted: bool = False,
+        primary_http_status: str = "",
+        fallback_http_status: str = "",
+        timeout_occurred: bool = False,
+        schema_validation_error: str = "",
     ) -> V2RoleModelResult:
         content = self._deterministic_content(request, primary_failure_reason, fallback_failure_reason)
         schema_validated = self._schema_ok(request, content)
@@ -259,11 +322,19 @@ class V2ModelRoleRouter:
             success=False,
             failure_reason=fallback_failure_reason or primary_failure_reason or "deterministic_fallback",
             primary_failure_reason=primary_failure_reason,
+            fallback_failure_reason=fallback_failure_reason,
             fallback_used=bool(fallback_failure_reason),
+            fallback_attempted=fallback_attempted,
             schema_validated=schema_validated,
             configured_max_input_tokens=budget.max_input_tokens,
             configured_max_output_tokens=budget.max_output_tokens,
             response_format_used=budget.response_format or "",
+            configured_deployment=self.plan(request).primary_deployment,
+            fallback_deployment=self.plan(request).fallback_deployment,
+            primary_http_status=primary_http_status,
+            fallback_http_status=fallback_http_status,
+            timeout_occurred=timeout_occurred,
+            schema_validation_error=schema_validation_error,
         )
 
     def _deterministic_content(

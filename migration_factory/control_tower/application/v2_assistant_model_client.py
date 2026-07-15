@@ -32,6 +32,9 @@ class V2AssistantModelResult:
     success: bool
     redacted_summary: str
     failure_reason: str
+    primary_failure_reason: str = ""
+    fallback_failure_reason: str = ""
+    parser_failure_reason: str = ""
     configured_max_input_tokens: int = 0
     configured_max_output_tokens: int = 0
     response_format_used: str = ""
@@ -39,6 +42,12 @@ class V2AssistantModelResult:
     configured_deployment: str = ""
     fallback_deployment: str = ""
     fallback_used: bool = False
+    fallback_attempted: bool = False
+    actual_deployment: str = ""
+    primary_http_status: str = ""
+    fallback_http_status: str = ""
+    timeout_occurred: bool = False
+    schema_validation_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -290,6 +299,10 @@ class V2AssistantModelClient:
             output_schema_name=output_schema_name,
         )
         resolved_timeout = router.resolve_timeout(role=role)
+        primary_http_status = ""
+        fallback_http_status = ""
+        timeout_occurred = False
+        schema_validation_error = ""
         response_format_candidates = _response_format_candidates(
             role=role,
             output_schema_name=output_schema_name,
@@ -422,12 +435,21 @@ class V2AssistantModelClient:
             success=routed.success,
             redacted_summary=redacted_summary,
             failure_reason=routed.failure_reason,
+            primary_failure_reason=routed.primary_failure_reason,
+            fallback_failure_reason=routed.fallback_failure_reason,
+            parser_failure_reason=routed.parser_failure_reason,
             configured_max_input_tokens=routed.configured_max_input_tokens,
             configured_max_output_tokens=routed.configured_max_output_tokens,
             response_format_used=routed.response_format_used,
             configured_deployment=routed.configured_deployment,
             fallback_deployment=routed.fallback_deployment,
             fallback_used=routed.fallback_used,
+            fallback_attempted=routed.fallback_attempted,
+            actual_deployment=routed.actual_deployment,
+            primary_http_status=routed.primary_http_status,
+            fallback_http_status=routed.fallback_http_status,
+            timeout_occurred=routed.timeout_occurred,
+            schema_validation_error=routed.schema_validation_error,
         )
 
     @staticmethod
@@ -1111,6 +1133,10 @@ def _fallback_result(
     configured_max_input_tokens: int = 0,
     configured_max_output_tokens: int = 0,
     response_format_used: str = "",
+    primary_http_status: str = "",
+    fallback_http_status: str = "",
+    timeout_occurred: bool = False,
+    schema_validation_error: str = "",
 ) -> V2AssistantModelResult:
     safe_summary = str(redact_model_summary(summary))
     return V2AssistantModelResult(
@@ -1125,6 +1151,10 @@ def _fallback_result(
         configured_max_input_tokens=configured_max_input_tokens,
         configured_max_output_tokens=configured_max_output_tokens,
         response_format_used=response_format_used,
+        primary_http_status=primary_http_status,
+        fallback_http_status=fallback_http_status,
+        timeout_occurred=timeout_occurred,
+        schema_validation_error=schema_validation_error,
     )
 
 

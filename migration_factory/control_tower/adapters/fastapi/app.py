@@ -3645,9 +3645,9 @@ def create_app(
         "repair_generation_failed",
         "repair_cycle_started",
         "repair_proposer_completed",
-        "repair_proposer_failed",
+        "repair_proposer_unusable",
         "repair_reviewer_completed",
-        "repair_reviewer_failed",
+        "repair_reviewer_unusable",
         "repair_final_diff_selected",
         "repair_apply_started",
         "repair_apply_failed",
@@ -3767,11 +3767,26 @@ def create_app(
                 created_at=latest_event.created_at,
                 allowed_actions=("view_failure_summary", "view_attempt_history"),
             ))
+        if event_type == "repair_cycle_started":
+            attempt_number = int(payload.get("attempt_number", 0))
+            remaining = int(payload.get("remaining_attempts", 3))
+            detail = latest_event.message or (
+                f"Repair generation in progress (attempt {attempt_number})."
+            )
+            return repair_unavailable_state_to_dict(RepairUnavailableState(
+                attempted=True,
+                status="generating",
+                reason_code="REPAIR_GENERATION_IN_PROGRESS",
+                detail=detail,
+                event_type=event_type,
+                created_at=latest_event.created_at,
+                allowed_actions=("view_failure_summary", "view_attempt_history"),
+            ))
         return repair_unavailable_state_to_dict(RepairUnavailableState(
             attempted=True,
             status="error",
-            reason_code="UNKNOWN_REPAIR_UNAVAILABLE",
-            detail=latest_event.message or "Unknown repair unavailable reason.",
+            reason_code="UNHANDLED_REPAIR_EVENT",
+            detail=latest_event.message or "Unhandled repair event type.",
             event_type=event_type,
             created_at=latest_event.created_at,
             allowed_actions=("view_failure_summary", "view_attempt_history"),
@@ -3788,10 +3803,24 @@ def create_app(
             return repair_unavailable_state_to_dict(RepairUnavailableState(
                 attempted=True,
                 status="ready",
-                detail="Reviewed repair proposal ready for user review.",
+                detail=(
+                    "Repair proposal ready; reviewer unavailable; human review required."
+                    if str(getattr(record, "final_diff_source", "") or "") == "proposer_fallback"
+                    else "Reviewed repair proposal ready for user review."
+                ),
                 event_type="repair_proposal_ready",
                 created_at=created_at,
                 allowed_actions=allowed + ("view_failure_summary",),
+            ))
+        if status == "generating":
+            return repair_unavailable_state_to_dict(RepairUnavailableState(
+                attempted=True,
+                status="generating",
+                reason_code="REPAIR_GENERATION_IN_PROGRESS",
+                detail="Repair generation is in progress.",
+                event_type="repair_cycle_started",
+                created_at=created_at,
+                allowed_actions=("view_failure_summary", "view_attempt_history"),
             ))
         if status == "repair_generation_failed":
             return repair_unavailable_state_to_dict(RepairUnavailableState(
@@ -3922,7 +3951,11 @@ def create_app(
                         rerun_status=getattr(record, "rerun_status", None),
                         validation_proof_status=getattr(record, "validation_proof_status", None),
                         final_diff_source=getattr(record, "final_diff_source", None),
-                        generation_status="failed" if record.status == "repair_generation_failed" else "ready",
+                        generation_status=(
+                            "failed" if record.status == "repair_generation_failed"
+                            else "in_progress" if record.status == "generating"
+                            else "ready"
+                        ),
                         generation_reason=(
                             getattr(record, "status_reason", None)
                             if record.status == "repair_generation_failed"
@@ -3986,7 +4019,11 @@ def create_app(
                         rerun_status=getattr(record, "rerun_status", None),
                         validation_proof_status=getattr(record, "validation_proof_status", None),
                         final_diff_source=getattr(record, "final_diff_source", None),
-                        generation_status="failed" if record.status == "repair_generation_failed" else "ready",
+                        generation_status=(
+                            "failed" if record.status == "repair_generation_failed"
+                            else "in_progress" if record.status == "generating"
+                            else "ready"
+                        ),
                         generation_reason=(
                             getattr(record, "status_reason", None)
                             if record.status == "repair_generation_failed"
@@ -4914,11 +4951,30 @@ def create_app(
                     remaining_attempts = next_result.remaining_attempts
                     if next_result.proposal_id:
                         with unit_of_work_factory() as lineage_uow:
-                            lineage_uow.connection.execute(
-                                "UPDATE v2_pom_changes SET repair_proposal_id = ?, updated_at = ? "
-                                "WHERE job_id = ? AND repair_proposal_id = ? AND operation = 'target_version_batch'",
-                                (str(next_result.proposal_id), utc_now_text(), job_id, proposal_id),
-                            )
+                            if next_result.status == "created":
+                                lineage_uow.connection.execute(
+                                    "UPDATE v2_pom_changes SET repair_proposal_id = ?, updated_at = ? "
+                                    "WHERE job_id = ? AND repair_proposal_id = ? AND operation = 'target_version_batch'",
+                                    (str(next_result.proposal_id), utc_now_text(), job_id, proposal_id),
+                                )
+                            else:
+                                # Keep Attempt 1 as the last applied proposal.
+                                # Retain failed Attempt 2 identity in lineage,
+                                # but never expose it as reviewable.
+                                lineage_uow.connection.execute(
+                                    "UPDATE v2_pom_changes SET status = 'repair_generation_failed', "
+                                    "repair_linkage_json = ?, updated_at = ? "
+                                    "WHERE job_id = ? AND repair_proposal_id = ? AND operation = 'target_version_batch'",
+                                    (
+                                        json.dumps({
+                                            "last_applied_proposal_id": str(proposal_id),
+                                            "failed_generation_proposal_id": str(next_result.proposal_id),
+                                            "attempt_number": int(next_result.attempt_number or 0),
+                                            "generation_status": str(next_result.generation_status or next_result.status),
+                                        }, sort_keys=True),
+                                        utc_now_text(), job_id, proposal_id,
+                                    ),
+                                )
                 else:
                     next_gate_status = "attempts_exhausted"
                     remaining_attempts = 0
@@ -13966,24 +14022,25 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
     )
     if unit_of_work_factory is None:
         raise ValueError("unit_of_work_factory is required for retry proposal events")
-    with unit_of_work_factory() as event_uow:
-        event_uow.v2_events.save(
-            job_id=job_id,
-            stage=stage_index,
-            event_type="next_repair_cycle_started" if result.status == "created" else "repair_generation_failed",
-            status="started" if result.status == "created" else "failed",
-            message=result.reason or f"Next reviewed repair proposal ready for command {command_id}",
-            payload={
-                "proposal_id": result.proposal_id,
-                "job_id": job_id,
-                "stage_index": stage_index,
-                "command_id": command_id,
-                "diff_checksum": result.diff_checksum,
-                "reviewer_decision": result.reviewer_decision,
-                "attempt_number": result.attempt_number,
-                "remaining_attempts": result.remaining_attempts,
-            },
-        )
+    if result.status == "created":
+        with unit_of_work_factory() as event_uow:
+            event_uow.v2_events.save(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="next_repair_cycle_started",
+                status="started",
+                message=result.reason or f"Next reviewed repair proposal ready for command {command_id}",
+                payload={
+                    "proposal_id": result.proposal_id,
+                    "job_id": job_id,
+                    "stage_index": stage_index,
+                    "command_id": command_id,
+                    "diff_checksum": result.diff_checksum,
+                    "reviewer_decision": result.reviewer_decision,
+                    "attempt_number": result.attempt_number,
+                    "remaining_attempts": result.remaining_attempts,
+                },
+            )
     return result
 
 
@@ -14007,9 +14064,13 @@ def _validation_proof_status(validation: ValidationResult) -> str:
     """Truthful proof state; failed builds/tests never become verified."""
     if any("validation execution context" in str(error).lower() for error in validation.errors):
         return "VALIDATION_CONTEXT_MISSING"
-    if validation.test_status in {"TEST_FAILED", "TEST_ERROR"}:
-        return "TEST_FAILED"
     if validation.build_status != "BUILD_PASSED_IN_SANDBOX":
+        if any(
+            token in str(error).lower()
+            for error in validation.errors
+            for token in ("compilation", "compile")
+        ) or validation.test_status == "TEST_BLOCKED":
+            return "COMPILATION_FAILED"
         return "BUILD_FAILED"
     if validation.test_status == "TEST_PASSED":
         return "BUILD_AND_TEST_VERIFIED"
@@ -14017,9 +14078,11 @@ def _validation_proof_status(validation: ValidationResult) -> str:
         return "BUILD_AND_TEST_VERIFIED_WITH_WARNINGS"
     if validation.test_status == "TESTS_NOT_FOUND":
         return "BUILD_PASSED_TESTS_NOT_FOUND"
-    if validation.test_status in {"TEST_FAILED", "TEST_ERROR"}:
+    if validation.test_status == "TEST_FAILED":
         return "TEST_FAILED"
-    return "VALIDATION_CONTEXT_MISSING" if not validation.validation_commands else "TEST_FAILED"
+    if validation.test_status in {"TEST_BLOCKED", "TEST_NOT_EXECUTED", "TEST_ERROR"}:
+        return "TEST_BLOCKED" if validation.test_status == "TEST_BLOCKED" else "TEST_NOT_EXECUTED"
+    return "VALIDATION_CONTEXT_MISSING" if not validation.validation_commands else "TEST_NOT_EXECUTED"
 
 
 def _parse_reviewed_repair_gate_refs(source_artifact_refs_json: str) -> tuple[dict[str, str], tuple[str, ...]]:

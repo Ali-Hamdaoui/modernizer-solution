@@ -15,6 +15,8 @@ BUILD_FAILED = "BUILD_FAILED_IN_SANDBOX"
 TEST_PASSED = "TEST_PASSED"
 TEST_PASS_WITH_WARNINGS = "PASS_WITH_WARNINGS"
 TESTS_NOT_FOUND = "TESTS_NOT_FOUND"
+TEST_BLOCKED = "TEST_BLOCKED"
+TEST_NOT_EXECUTED = "TEST_NOT_EXECUTED"
 H2_SKIPPED = "H2_STARTUP_SKIPPED"
 
 
@@ -175,7 +177,13 @@ def run_validation_after_patch(
         require_test_reports=context.require_test_reports,
         pre_snapshot=pre_surefire_snapshot,
     )
-    test_status = test_result.test_status
+    test_status = (
+        TEST_BLOCKED
+        if not build_result.succeeded and build_result.result_kind == "compilation_error"
+        else TEST_NOT_EXECUTED
+        if not build_result.succeeded
+        else test_result.test_status
+    )
     if observer is not None:
         if not build_result.succeeded:
             observer("test_blocked", {

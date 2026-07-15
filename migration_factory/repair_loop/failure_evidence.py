@@ -8,6 +8,7 @@ Two checksum layers:
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass, field
 from enum import Enum
 import json
@@ -17,6 +18,17 @@ from typing import Any
 from migration_factory.control_tower.domain.checksums import (
     sha256_canonical_json,
     utc_now_text,
+)
+
+
+_PKIX_TLS_PATTERNS = (
+    "PKIX path building failed",
+    "certificate_unknown",
+    "unable to find valid certification path",
+    "sun.security.validator.ValidatorException",
+    "javax.net.ssl.SSLHandshakeException",
+    "Could not transfer artifact",
+    "Could not resolve artifact",
 )
 
 
@@ -50,6 +62,9 @@ class NormalizedTestFailure:
 class FailureEvidence:
     failure_source: FailureSource = FailureSource.UNKNOWN
     stage_index: int = 0
+    logical_stage_index: int = 0
+    execution_stage_index: int = 0
+    route_step_index: int = 0
     job_id: str = ""
     command_id: str = ""
     failure_summary: str = ""
@@ -119,6 +134,12 @@ def compute_failure_content_checksum(evidence: FailureEvidence) -> str:
         "diagnostic_metadata": dict(sorted(evidence.diagnostic_metadata.items())),
         "safe_log_preview": evidence.safe_log_preview,
     }
+    if evidence.logical_stage_index:
+        payload["logical_stage_index"] = evidence.logical_stage_index
+    if evidence.execution_stage_index:
+        payload["execution_stage_index"] = evidence.execution_stage_index
+    if evidence.route_step_index:
+        payload["route_step_index"] = evidence.route_step_index
     return sha256_canonical_json(payload)
 
 
@@ -132,10 +153,32 @@ def compute_failure_artifact_checksum(evidence: FailureEvidence) -> str:
     return sha256_canonical_json(payload)
 
 
+def _detect_and_relabel_pkix_failure(
+    *,
+    failure_summary: str,
+    metadata: dict[str, str],
+    compiler_errors: tuple[NormalizedCompilerError, ...],
+) -> str:
+    for item in itertools.chain(
+        metadata.values(),
+        metadata.keys(),
+        (failure_summary,),
+        (e.message for e in compiler_errors),
+    ):
+        lower = item.lower()
+        for pat in _PKIX_TLS_PATTERNS:
+            if pat.lower() in lower:
+                return "Repository TLS/certificate trust failure"
+    return failure_summary
+
+
 def build_failure_evidence(
     *,
     failure_source: FailureSource,
     stage_index: int = 0,
+    logical_stage_index: int = 0,
+    execution_stage_index: int = 0,
+    route_step_index: int = 0,
     job_id: str = "",
     command_id: str = "",
     failure_summary: str = "",
@@ -151,9 +194,18 @@ def build_failure_evidence(
     stderr_tail: str = "",
     safe_log_preview: str = "",
 ) -> FailureEvidence:
+    metadata = {str(k): str(v) for k, v in (diagnostic_metadata or {}).items()}
+    failure_summary = _detect_and_relabel_pkix_failure(
+        failure_summary=failure_summary,
+        metadata=metadata,
+        compiler_errors=compiler_errors or (),
+    )
     evidence = FailureEvidence(
         failure_source=failure_source,
         stage_index=stage_index,
+        logical_stage_index=logical_stage_index,
+        execution_stage_index=execution_stage_index,
+        route_step_index=route_step_index,
         job_id=job_id,
         command_id=command_id,
         failure_summary=failure_summary,
@@ -164,7 +216,7 @@ def build_failure_evidence(
         target_profile=target_profile,
         accepted_artifact_checksums=tuple(sorted(accepted_artifact_checksums or ())),
         artifact_refs=artifact_refs or {},
-        diagnostic_metadata={str(k): str(v) for k, v in (diagnostic_metadata or {}).items()},
+        diagnostic_metadata=metadata,
         stdout_tail=stdout_tail[:FailureEvidence.MAX_LOG_TAIL_LENGTH] if stdout_tail else "",
         stderr_tail=stderr_tail[:FailureEvidence.MAX_LOG_TAIL_LENGTH] if stderr_tail else "",
         safe_log_preview=safe_log_preview[:FailureEvidence.MAX_LOG_TAIL_LENGTH] if safe_log_preview else "",
@@ -175,6 +227,9 @@ def build_failure_evidence(
         FailureEvidence(
             failure_source=evidence.failure_source,
             stage_index=evidence.stage_index,
+            logical_stage_index=evidence.logical_stage_index,
+            execution_stage_index=evidence.execution_stage_index,
+            route_step_index=evidence.route_step_index,
             job_id=evidence.job_id,
             command_id=evidence.command_id,
             failure_summary=evidence.failure_summary,
@@ -197,6 +252,9 @@ def build_failure_evidence(
     return FailureEvidence(
         failure_source=evidence.failure_source,
         stage_index=evidence.stage_index,
+        logical_stage_index=evidence.logical_stage_index,
+        execution_stage_index=evidence.execution_stage_index,
+        route_step_index=evidence.route_step_index,
         job_id=evidence.job_id,
         command_id=evidence.command_id,
         failure_summary=evidence.failure_summary,
@@ -222,6 +280,9 @@ def failure_evidence_to_dict(evidence: FailureEvidence) -> dict[str, Any]:
     return {
         "failure_source": evidence.failure_source.value,
         "stage_index": evidence.stage_index,
+        "logical_stage_index": evidence.logical_stage_index,
+        "execution_stage_index": evidence.execution_stage_index,
+        "route_step_index": evidence.route_step_index,
         "job_id": evidence.job_id,
         "command_id": evidence.command_id,
         "failure_summary": evidence.failure_summary,

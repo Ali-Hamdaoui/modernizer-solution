@@ -192,6 +192,12 @@ def _safe_model_status(value: Any) -> dict[str, Any]:
             "available": bool(raw.get("available")),
             "status": str(raw.get("status") or ("available" if raw.get("available") else "blocked")),
             "fallback_used": bool(raw.get("fallback_used")),
+            "primary_failure_reason": str(raw.get("primary_failure_reason") or ""),
+            "fallback_failure_reason": str(raw.get("fallback_failure_reason") or ""),
+            "timeout_occurred": bool(raw.get("timeout_occurred")),
+            "primary_http_status": str(raw.get("primary_http_status") or ""),
+            "fallback_http_status": str(raw.get("fallback_http_status") or ""),
+            "schema_validation_error": str(raw.get("schema_validation_error") or ""),
         }
     return safe
 
@@ -217,7 +223,7 @@ class RepairUnavailableState:
 
 
 def repair_unavailable_state_to_dict(state: RepairUnavailableState) -> dict[str, Any]:
-    return {
+    result: dict[str, Any] = {
         "attempted": state.attempted,
         "status": state.status,
         "reason_code": state.reason_code,
@@ -225,6 +231,30 @@ def repair_unavailable_state_to_dict(state: RepairUnavailableState) -> dict[str,
         "event_type": state.event_type,
         "created_at": state.created_at,
         "allowed_actions": list(state.allowed_actions),
+    }
+    if state.status == "generating":
+        result["generation_status"] = "in_progress"
+    return result
+
+
+@dataclass(frozen=True)
+class RepairGenerationProgress:
+    attempted: bool = True
+    status: str = "generating"
+    reason_code: str = "REPAIR_GENERATION_IN_PROGRESS"
+    attempt_number: int = 0
+    remaining_attempts: int = 3
+    detail: str = ""
+
+
+def repair_generation_progress_to_dict(state: RepairGenerationProgress) -> dict[str, Any]:
+    return {
+        "attempted": state.attempted,
+        "status": state.status,
+        "reason_code": state.reason_code,
+        "attempt_number": state.attempt_number,
+        "remaining_attempts": state.remaining_attempts,
+        "detail": state.detail,
     }
 
 
@@ -276,6 +306,8 @@ class ReviewedDiffProposal:
     final_diff_source: str | None = None
     generation_status: str | None = None
     generation_reason: str | None = None
+    root_cause: str | None = None
+    fix_strategy: str | None = None
 
 
 def build_reviewed_diff_proposal_projection(
@@ -350,6 +382,8 @@ def build_reviewed_diff_proposal_projection(
         final_diff_source=_maybe_str(chain.get("final_diff_source")),
         generation_status=_maybe_str(chain.get("generation_status")),
         generation_reason=_bounded_redacted_text(str(chain.get("generation_failure_reason") or "")) if chain.get("generation_failure_reason") else None,
+        root_cause=_maybe_str(chain.get("root_cause")),
+        fix_strategy=_maybe_str(chain.get("fix_strategy")),
     )
 
 
@@ -384,6 +418,8 @@ def reviewed_diff_proposal_to_safe_dict(proposal: ReviewedDiffProposal) -> dict[
         "final_diff_source": proposal.final_diff_source,
         "generation_status": proposal.generation_status,
         "generation_reason": proposal.generation_reason,
+        "root_cause": proposal.root_cause,
+        "fix_strategy": proposal.fix_strategy,
     }
 
 
@@ -541,6 +577,8 @@ def build_reviewed_diff_proposal_from_record(
     build_reviewed_diff_proposal_projection which builds from a
     review_chain dict, this function reads from persisted column values.
     """
+    if status == "generating":
+        generation_status = "in_progress"
     if diff_ref is None:
         raise ValueError("reviewed diff ref is required for projection")
 

@@ -17,6 +17,7 @@ Reuses:
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import threading
@@ -449,7 +450,11 @@ class V2RepairGateService:
                         stage=stage_index,
                         event_type="repair_proposal_ready",
                         status="ready",
-                        message=f"Reviewed repair proposal ready for command {command_id}",
+                        message=(
+                            "Repair proposal ready; reviewer unavailable; human review required."
+                            if str(result.final_diff_source or "") == "proposer_fallback"
+                            else f"Reviewed repair proposal ready for command {command_id}"
+                        ),
                         payload={
                             "proposal_id": result.proposal_id,
                             "job_id": job_id,
@@ -658,16 +663,28 @@ class V2RepairGateService:
                 write_uow.v2_events.save(
                     job_id=job_id,
                     stage=stage_index,
-                    event_type=f"repair_{role_key}_{'completed' if success else 'failed'}",
-                    status="completed" if success else "failed",
+                    event_type=f"repair_{role_key}_{'completed' if success else 'unusable'}",
+                    status="completed" if success else "unusable",
                     message=f"{role_key.title()} repair model result recorded.",
-                    payload={
-                        "command_id": command_id,
-                        "model": role,
-                        "success": success,
-                        "diff_usable": usable,
-                        "failure_reason": review_chain.get(f"{role_key}_usability_reason", "") if not usable else "",
-                    },
+                payload={
+                    "command_id": command_id,
+                    "model": role,
+                    "success": success,
+                    "diff_usable": usable,
+                    "failure_reason": review_chain.get(f"{role_key}_usability_reason", "") if not usable else "",
+                    "role_deployment": role.get("configured_deployment", ""),
+                    "role_fallback_deployment": role.get("fallback_deployment", ""),
+                    "role_primary_failure_reason": role.get("primary_failure_reason", ""),
+                    "role_fallback_failure_reason": role.get("fallback_failure_reason", ""),
+                    "role_parser_failure_reason": role.get("parser_failure_reason", ""),
+                    "role_fallback_attempted": role.get("fallback_attempted", False),
+                    "role_fallback_used": role.get("fallback_used", False),
+                    "role_actual_deployment": role.get("actual_deployment", ""),
+                    "role_timeout_occurred": role.get("timeout_occurred", False),
+                    "role_schema_validation_error": role.get("schema_validation_error", ""),
+                    "role_primary_http_status": role.get("primary_http_status", ""),
+                    "role_fallback_http_status": role.get("fallback_http_status", ""),
+                },
                 )
         _persist(_save_role_events)
 
@@ -698,7 +715,7 @@ class V2RepairGateService:
                 reviewer_decision=reviewer_decision,
                 deterministic_rule_id=str(review_chain.get("deterministic_rule_id", "")) or None,
                 risk=str(review_chain.get("risk", "")) or None,
-                status_reason=str(review_chain.get("generation_failure_reason") or "Repair generation failed."),
+                status_reason=str(review_chain.get("abstention_reason") or review_chain.get("generation_failure_reason") or "Repair generation failed."),
                 validation_context_ref=validation_context_ref or None,
                 validation_context_checksum=validation_context_checksum or None,
                 completed_at=utc_now_text(),
@@ -1952,13 +1969,19 @@ def _context_pack_from_dict(data: dict[str, Any]) -> Any:
     source_contexts: list[RepairSourceContext] = []
     for sc in raw_contexts:
         if isinstance(sc, dict):
+            content = str(sc.get("content", ""))
+            source_file_sha256 = str(sc.get("source_file_sha256") or sc.get("content_checksum", ""))
+            excerpt_sha256 = str(sc.get("context_excerpt_sha256") or hashlib.sha256(content.encode("utf-8")).hexdigest())
             source_contexts.append(RepairSourceContext(
                 path=str(sc.get("path", "")),
-                content_checksum=str(sc.get("content_checksum", "")),
-                start_line=int(sc.get("start_line", 0)),
-                end_line=int(sc.get("end_line", 0)),
-                content=str(sc.get("content", "")),
+                content_checksum=source_file_sha256,
+                start_line=int(sc.get("line_start", sc.get("start_line", 0))),
+                end_line=int(sc.get("line_end", sc.get("end_line", 0))),
+                content=content,
                 reason_included=str(sc.get("reason_included", "")),
+                source_file_sha256=source_file_sha256,
+                context_excerpt_sha256=excerpt_sha256,
+                context_is_complete=bool(sc.get("context_is_complete", False)),
             ))
     return RepairContextPack(
         job_id=str(data.get("job_id", "")),

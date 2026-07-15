@@ -59,6 +59,10 @@ class RepairSourceContext:
     end_line: int
     content: str
     reason_included: str
+    # Backward-compatible content_checksum remains the full-file checksum.
+    source_file_sha256: str = ""
+    context_excerpt_sha256: str = ""
+    context_is_complete: bool = False
 
 
 def _normalize_and_check_path(
@@ -158,7 +162,9 @@ def build_bounded_source_context(
                 excerpt = excerpt[:remaining]
             else:
                 continue
-        checksum = _sha256_file(normalized)
+        source_file_sha256 = _sha256_file(normalized)
+        context_excerpt_sha256 = hashlib.sha256(excerpt.encode("utf-8")).hexdigest()
+        context_is_complete = start_line == 0 and end_line == len(lines) and excerpt == "".join(lines)
         reason = (
             "compiler_error"
             if file_path in {e[0] for e in (compiler_errors or [])}
@@ -172,11 +178,14 @@ def build_bounded_source_context(
             continue
         contexts.append(RepairSourceContext(
             path=relative_path,
-            content_checksum=checksum,
+            content_checksum=source_file_sha256,
             start_line=start_line + 1,
             end_line=end_line,
             content=excerpt,
             reason_included=reason,
+            source_file_sha256=source_file_sha256,
+            context_excerpt_sha256=context_excerpt_sha256,
+            context_is_complete=context_is_complete,
         ))
         total_chars += len(excerpt)
     return tuple(contexts)
@@ -302,8 +311,13 @@ def compute_context_pack_checksum(pack: RepairContextPack) -> str:
             {
                 "path": sc.path,
                 "content_checksum": sc.content_checksum,
+                "source_file_sha256": sc.source_file_sha256 or sc.content_checksum,
+                "context_excerpt_sha256": sc.context_excerpt_sha256 or hashlib.sha256(sc.content.encode("utf-8")).hexdigest(),
+                "context_is_complete": sc.context_is_complete,
                 "start_line": sc.start_line,
                 "end_line": sc.end_line,
+                "line_start": sc.start_line,
+                "line_end": sc.end_line,
                 "reason_included": sc.reason_included,
             }
             for sc in pack.source_contexts
@@ -473,8 +487,13 @@ def context_pack_to_dict(pack: RepairContextPack) -> dict[str, Any]:
             {
                 "path": sc.path,
                 "content_checksum": sc.content_checksum,
+                "source_file_sha256": sc.source_file_sha256 or sc.content_checksum,
+                "context_excerpt_sha256": sc.context_excerpt_sha256 or hashlib.sha256(sc.content.encode("utf-8")).hexdigest(),
+                "context_is_complete": sc.context_is_complete,
                 "start_line": sc.start_line,
                 "end_line": sc.end_line,
+                "line_start": sc.start_line,
+                "line_end": sc.end_line,
                 "content": sc.content,
                 "reason_included": sc.reason_included,
             }

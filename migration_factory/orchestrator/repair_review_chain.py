@@ -385,8 +385,10 @@ def _format_authoritative_source_contexts(source_contexts: list[Any]) -> str:
         path = get("path")
         parts.append(
             f"FILE_PATH: {path}\n"
-            f"CURRENT_SOURCE_SHA256: {get('content_checksum')}\n"
-            f"SOURCE_LINES: {get('start_line')}-{get('end_line')}\n"
+            f"SOURCE_FILE_SHA256: {get('source_file_sha256') or get('content_checksum')}\n"
+            f"CONTEXT_EXCERPT_SHA256: {get('context_excerpt_sha256')}\n"
+            f"CONTEXT_IS_COMPLETE: {bool(get('context_is_complete', False))}\n"
+            f"SOURCE_LINES: {get('start_line') or get('line_start')}-{get('end_line') or get('line_end')}\n"
             f"CURRENT_AUTHORITATIVE_SOURCE:\n{get('content')}\n"
             f"END_CURRENT_AUTHORITATIVE_SOURCE: {path}"
         )
@@ -395,7 +397,9 @@ def _format_authoritative_source_contexts(source_contexts: list[Any]) -> str:
 
 _STRUCTURED_REPAIR_EDIT_CONTRACT = (
     "STRUCTURED EDIT CONTRACT (required when bounded authoritative source context is present):\n"
-    "- Prefer non-empty proposed_edits whenever authoritative bounded source context is present; use proposed_diff only as the raw-diff fallback.\n"
+    "- Source excerpts may be incomplete. Never infer file termination or add synthetic closing braces from an excerpt.\n"
+    "- When CONTEXT_IS_COMPLETE is false, proposed_edits is mandatory for any touched file; do not emit a whole-file replacement hunk.\n"
+    "- Prefer non-empty proposed_edits whenever authoritative bounded source context is present; use proposed_diff only as the raw-diff fallback for complete files.\n"
     "- proposed_diff remains a permitted raw unified-diff fallback only when structured exact edits cannot be safely authored.\n"
     "- Each edit MUST contain path, expected_source_sha256, exact_old_text, and exact_new_text.\n"
     "- Use the exact per-file CURRENT_SOURCE_SHA256 for expected_source_sha256; never reuse a SHA across files or use a context-pack checksum.\n"
@@ -439,6 +443,7 @@ def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checks
         "- Do NOT include plain source code without diff headers.\n"
         "- Do NOT include JSON embedded inside proposed_diff.\n"
         "- In normal repair mode, either proposed_edits or proposed_diff must be non-empty.\n"
+        "- Never treat the last supplied excerpt line as EOF.\n"
         "- Empty proposed_diff is valid only when proposed_edits is supplied; an empty repair is unavailable.\n"
         "- Do not skip or disable tests as a fix.\n"
         "- The fix must stay within the sandbox scope and declared changed files.\n\n"
@@ -521,7 +526,10 @@ def _coerce_primary_repair_output(content: str) -> dict[str, Any]:
 
     proposed_diff = str(parsed.get("proposed_diff") or "")
     edits = _structured_edits(parsed.get("proposed_edits"))
+    no_fix_reason = str(parsed.get("no_fix_reason") or "")
     if not proposed_diff.strip() and not edits:
+        if no_fix_reason.strip():
+            return parsed
         raise RepairReviewChainProductionError(
             "invalid_response_missing_repair: proposed_diff and proposed_edits are both empty"
         )
@@ -639,8 +647,10 @@ def _validate_primary_repair_output(output: dict[str, Any]) -> list[str]:
 
     diff = str(output.get("proposed_diff", ""))
     edits = _structured_edits(output.get("proposed_edits"))
+    no_fix_reason = str(output.get("no_fix_reason") or "")
     if not diff.strip() and not edits:
-        failures.append("one of proposed_diff or proposed_edits must be non-empty")
+        if not no_fix_reason.strip():
+            failures.append("one of proposed_diff or proposed_edits must be non-empty")
     if diff.strip():
         if "```" in diff:
             failures.append("proposed_diff appears to be Markdown fenced")
@@ -711,6 +721,12 @@ def _validate_model_candidate(
 ) -> tuple[str, list[str], list[str]]:
     """Return canonical diff, validation failures, and touched paths."""
     edits = _structured_edits(output.get("proposed_edits"))
+    structured_paths = {str(edit.get("path") or "").replace("\\", "/") for edit in edits}
+    no_fix_reason = str(output.get("no_fix_reason") or "")
+    if not edits and no_fix_reason.strip():
+        proposed_diff_check = str(output.get("proposed_diff") or "")
+        if not proposed_diff_check.strip():
+            return "", [], []
     if edits:
         if sandbox_path is None:
             return "", [f"{role} structured edits require sandbox_path for canonicalization"], []
@@ -731,6 +747,7 @@ def _validate_model_candidate(
         changed_files=list(output.get("changed_files") or []),
         context_pack=context_pack,
         sandbox_path=sandbox_path,
+        allow_bounded_paths=structured_paths,
     )
     if not failures:
         failures.extend(_strict_git_applicability(
@@ -825,19 +842,67 @@ def _candidate_correction_prompt(
     )
 
 
-def _unusable_primary_output(reason: str, raw_content: str = "") -> dict[str, Any]:
-    """Shape proposer failure as reviewer input without treating it as a final diff."""
+def _unusable_primary_output(
+    reason: str,
+    raw_content: str = "",
+    preserved_fields: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Shape proposer failure as reviewer input without treating it as a final diff.
+
+    When preserved_fields contains safely parseable semantic values
+    (root_cause, fix_strategy, rationale, no_fix_reason, confidence,
+    abstention_reason, raw_output_ref, etc.), they are used instead of
+    generic fallback text. Only fields that are truly missing fall back
+    to the generic ''unavailable/unusable'' text.
+    """
+    preserved = preserved_fields or {}
+
+    root_cause = preserved.get("root_cause")
+    if not root_cause or not isinstance(root_cause, str) or not root_cause.strip():
+        root_cause = "Proposer output unavailable or unusable."
+
+    fix_strategy = preserved.get("fix_strategy")
+    if not fix_strategy or not isinstance(fix_strategy, str) or not fix_strategy.strip():
+        fix_strategy = "Reviewer must independently author a repair if evidence permits."
+
+    rationale = preserved.get("rationale")
+    no_fix_reason = preserved.get("no_fix_reason")
+    abstention_reason = preserved.get("abstention_reason")
+    raw_output_ref = preserved.get("raw_output_ref")
+    confidence = preserved.get("confidence")
+
     return {
-        "root_cause": "Proposer output unavailable or unusable.",
-        "fix_strategy": "Reviewer must independently author a repair if evidence permits.",
-        "changed_files": [],
-        "proposed_diff": "",
-        "deterministic_rule_id": None,
-        "risk": None,
-        "confidence": 0.0,
-        "rationale": str(reason)[:2000],
-        "no_fix_reason": str(reason)[:2000],
+        "root_cause": root_cause,
+        "fix_strategy": fix_strategy,
+        "changed_files": list(preserved.get("changed_files", [])),
+        "proposed_diff": str(preserved.get("proposed_diff", "")),
+        "deterministic_rule_id": preserved.get("deterministic_rule_id"),
+        "risk": preserved.get("risk"),
+        "confidence": float(confidence) if confidence is not None else 0.0,
+        "rationale": str(rationale)[:2000] if rationale else str(reason)[:2000],
+        "no_fix_reason": str(no_fix_reason)[:2000] if no_fix_reason else str(reason)[:2000],
+        "abstention_reason": str(abstention_reason)[:2000] if abstention_reason else str(reason)[:2000],
+        "raw_output_ref": str(raw_output_ref)[:2000] if raw_output_ref else "",
         "proposer_raw_output_available": bool(raw_content),
+    }
+
+
+def _safe_abstention_primary_output(preserved_fields: dict[str, Any] | None = None) -> dict[str, Any]:
+    no_fix = str((preserved_fields or {}).get("no_fix_reason", ""))
+    return {
+        "root_cause": str((preserved_fields or {}).get("root_cause", "")),
+        "fix_strategy": str((preserved_fields or {}).get("fix_strategy", "")),
+        "changed_files": list((preserved_fields or {}).get("changed_files", [])),
+        "proposed_diff": str((preserved_fields or {}).get("proposed_diff", "")),
+        "deterministic_rule_id": (preserved_fields or {}).get("deterministic_rule_id"),
+        "risk": (preserved_fields or {}).get("risk"),
+        "confidence": float((preserved_fields or {}).get("confidence", 0.0)),
+        "rationale": str((preserved_fields or {}).get("rationale", "")),
+        "no_fix_reason": no_fix,
+        "abstention_reason": no_fix,
+        "usability_reason": "MODEL_INSUFFICIENT_EVIDENCE_ABSTENTION",
+        "raw_output_ref": str((preserved_fields or {}).get("raw_output_ref", "")),
+        "proposer_raw_output_available": bool((preserved_fields or {}).get("raw_content", "")),
     }
 
 
@@ -881,7 +946,7 @@ def _source_contexts_by_path(context_pack: RepairContextPack) -> dict[str, Any]:
 
 def _source_paths_from_context(context_pack: RepairContextPack) -> dict[str, str]:
     return {
-        path: str(context.content_checksum)
+        path: str(getattr(context, "source_file_sha256", "") or context.content_checksum)
         for path, context in _source_contexts_by_path(context_pack).items()
     }
 
@@ -937,6 +1002,15 @@ def _apply_structured_edits_to_shadow(
         if context_source is None:
             failures.append(f"structured edit source context is missing for {path}")
             continue
+        excerpt_sha256 = str(getattr(context_source, "context_excerpt_sha256", "") or "")
+        if excerpt_sha256:
+            actual_excerpt_sha256 = hashlib.sha256(str(context_source.content).encode("utf-8")).hexdigest()
+            if excerpt_sha256 != actual_excerpt_sha256:
+                failures.append(
+                    f"source context excerpt checksum mismatch for {path}: "
+                    f"context {excerpt_sha256}, content {actual_excerpt_sha256}"
+                )
+                continue
         # EOL-normalized preimage comparison (CRLF/LF-agnostic)
         _norm_old = _eol_normalize(old_text)
         _norm_context = _eol_normalize(str(context_source.content))
@@ -1053,6 +1127,7 @@ def _candidate_source_validation(
     changed_files: list[Any],
     context_pack: RepairContextPack,
     sandbox_path: str | Path | None,
+    allow_bounded_paths: set[str] | None = None,
 ) -> list[str]:
     sections, failures = _strict_parse_unified_diff(proposed_diff)
     failures.extend(_check_forbidden_paths_in_diff(proposed_diff))
@@ -1066,6 +1141,18 @@ def _candidate_source_validation(
         return failures
 
     context_checksums = _source_paths_from_context(context_pack)
+    bounded_paths = {
+        str(context.path).replace("\\", "/")
+        for context in context_pack.source_contexts
+        if not bool(getattr(context, "context_is_complete", False))
+    }
+    allowed_bounded_paths = {str(path).replace("\\", "/") for path in (allow_bounded_paths or set())}
+    raw_bounded_paths = (actual & bounded_paths) - allowed_bounded_paths
+    if raw_bounded_paths:
+        failures.append(
+            "raw unified diff is forbidden for incomplete source context; "
+            f"use exact proposed_edits for: {sorted(raw_bounded_paths)}"
+        )
     matched_ranges: dict[str, list[tuple[int, int]]] = {}
     for section in sections:
         path = str(section["path"])
@@ -1239,6 +1326,10 @@ def _build_final_reviewed_repair_artifact(
         "base_repo_state_checksum": context_pack.base_repo_state_checksum,
         "root_cause": str(primary_output.get("root_cause", "")),
         "fix_strategy": str(primary_output.get("fix_strategy", "")),
+        "rationale": str(primary_output.get("rationale", "")),
+        "no_fix_reason": str(primary_output.get("no_fix_reason", "")),
+        "abstention_reason": str(primary_output.get("abstention_reason", "")),
+        "raw_output_ref": str(primary_output.get("raw_output_ref", "")),
         "deterministic_rule_id": str(primary_output.get("deterministic_rule_id", "")),
         "risk": str(primary_output.get("risk", "")),
         "confidence": float(primary_output.get("confidence", 0.0)),
@@ -1346,6 +1437,47 @@ def _persist_proposer_diagnostic(
         "created_at": utc_now_text(),
     }
     path = output_dir / "repair_diagnostic_proposer.json"
+    _write_json(path, diagnostic)
+    return path
+
+
+def _persist_reviewer_diagnostic(
+    *,
+    output_dir: Path,
+    reviewer_result: Any,
+    primary_failure_reason: str,
+    fallback_failure_reason: str,
+    timeout_occurred: bool,
+    schema_validation_error: str,
+) -> Path:
+    configured_deployment = str(getattr(reviewer_result, "configured_deployment", "") or "")
+    actual_deployment = str(getattr(reviewer_result, "actual_deployment", "") or "")
+    fallback_deployment = str(getattr(reviewer_result, "fallback_deployment", "") or "")
+    source = str(getattr(reviewer_result, "source", "") or "")
+    fallback_used = bool(getattr(reviewer_result, "fallback_used", False)) or source == "deterministic"
+    primary_http = str(getattr(reviewer_result, "primary_http_status", "") or "")
+    fallback_http = str(getattr(reviewer_result, "fallback_http_status", "") or "")
+
+    diagnostic: dict[str, Any] = {
+        "diagnostic_kind": "reviewer_unavailable",
+        "role": "reviewer",
+        "configured_deployment": configured_deployment,
+        "actual_deployment": actual_deployment,
+        "fallback_attempted": bool(getattr(reviewer_result, "fallback_attempted", False)) or bool(fallback_deployment),
+        "fallback_deployment": fallback_deployment,
+        "fallback_used": fallback_used,
+        "primary_success": False,
+        "primary_failure_reason": primary_failure_reason or "",
+        "fallback_failure_reason": fallback_failure_reason or "",
+        "parser_failure_reason": str(getattr(reviewer_result, "parser_failure_reason", "") or ""),
+        "timeout_occurred": timeout_occurred,
+        "schema_validation_error": schema_validation_error or "",
+        "primary_http_status": primary_http,
+        "fallback_http_status": fallback_http,
+        "model_status": str(getattr(reviewer_result, "model_status", "") or ""),
+        "created_at": utc_now_text(),
+    }
+    path = output_dir / "repair_diagnostic_reviewer.json"
     _write_json(path, diagnostic)
     return path
 
@@ -1548,7 +1680,16 @@ def produce_repair_review_chain(
                 redacted_summary=primary_result.redacted_summary,
                 fallback_used=fallback_used_primary,
             )
-        primary_output = _unusable_primary_output(_safe_diagnostic_text(validation_error), primary_result.content)
+        preserved = {}
+        try:
+            parsed = json.loads(primary_result.content)
+            if isinstance(parsed, dict):
+                for key in ("root_cause", "fix_strategy", "rationale", "no_fix_reason", "abstention_reason", "raw_output_ref", "confidence", "changed_files", "proposed_diff", "deterministic_rule_id", "risk"):
+                    if key in parsed:
+                        preserved[key] = parsed[key]
+        except (json.JSONDecodeError, TypeError):
+            pass
+        primary_output = _unusable_primary_output(_safe_diagnostic_text(validation_error), primary_result.content, preserved_fields=preserved)
         primary_failures = []
 
     if primary_failures:
@@ -1664,6 +1805,14 @@ def produce_repair_review_chain(
     reviewer_reason = ""
     if not reviewer_result.success:
         reviewer_reason = f"reviewer unavailable: {reviewer_result.failure_reason or reviewer_result.model_status}"
+        _persist_reviewer_diagnostic(
+            output_dir=output_dir,
+            reviewer_result=reviewer_result,
+            primary_failure_reason=str(getattr(reviewer_result, "primary_failure_reason", "") or ""),
+            fallback_failure_reason=str(getattr(reviewer_result, "fallback_failure_reason", "") or ""),
+            timeout_occurred=bool(getattr(reviewer_result, "timeout_occurred", False)),
+            schema_validation_error=str(getattr(reviewer_result, "schema_validation_error", "") or ""),
+        )
     else:
         try:
             reviewer_output = _coerce_reviewer_repair_output(
@@ -1706,6 +1855,9 @@ def produce_repair_review_chain(
     proposer_failures = list(primary_candidate_failures)
     proposer_reason = "; ".join(proposer_failures)
     primary_output["usability_reason"] = proposer_reason
+    if not proposer_reason and str(primary_output.get("no_fix_reason", "")).strip() and not proposer_diff.strip():
+        primary_output["abstention_reason"] = str(primary_output["no_fix_reason"])
+        primary_output["usability_reason"] = "MODEL_INSUFFICIENT_EVIDENCE_ABSTENTION"
     final_diff = str(reviewer_output.get("proposed_diff") or "") if not reviewer_reason else ""
     final_diff_source = "reviewer" if final_diff else "proposer_fallback" if not proposer_reason else ""
     if not final_diff and not proposer_reason:
@@ -1870,6 +2022,13 @@ def produce_repair_review_chain(
             "reviewer_output_checksum": reviewer_checksum,
             "final_diff_source": "", "final_diff_ref": "",
             "model_roles": {"proposer": _safe_model_role_status(primary_result), "reviewer": _safe_model_role_status(reviewer_result)},
+            "root_cause": str(primary_output.get("root_cause", "")),
+            "fix_strategy": str(primary_output.get("fix_strategy", "")),
+            "rationale": str(primary_output.get("rationale", "")),
+            "confidence": float(primary_output.get("confidence", 0.0)),
+            "no_fix_reason": str(primary_output.get("no_fix_reason", "")),
+            "abstention_reason": str(primary_output.get("abstention_reason", "")),
+            "raw_output_ref": str(primary_output.get("raw_output_ref", "")),
         }}
     if final_failures:
         return {"artifact_refs": {
@@ -1888,6 +2047,13 @@ def produce_repair_review_chain(
             "reviewer_output_checksum": reviewer_checksum,
             "final_diff_source": "", "final_diff_ref": "",
             "model_roles": {"proposer": _safe_model_role_status(primary_result), "reviewer": _safe_model_role_status(reviewer_result)},
+            "root_cause": str(primary_output.get("root_cause", "")),
+            "fix_strategy": str(primary_output.get("fix_strategy", "")),
+            "rationale": str(primary_output.get("rationale", "")),
+            "confidence": float(primary_output.get("confidence", 0.0)),
+            "no_fix_reason": str(primary_output.get("no_fix_reason", "")),
+            "abstention_reason": str(primary_output.get("abstention_reason", "")),
+            "raw_output_ref": str(primary_output.get("raw_output_ref", "")),
         }}
     if not final_diff.endswith(("\n", "\r")):
         final_diff += "\n"
@@ -1939,6 +2105,10 @@ def produce_repair_review_chain(
         "risk": str(final_artifact.get("risk", "")),
         "root_cause": str(final_artifact.get("root_cause", "")),
         "fix_strategy": str(final_artifact.get("fix_strategy", "")),
+        "rationale": str(final_artifact.get("rationale", "")),
+        "no_fix_reason": str(final_artifact.get("no_fix_reason", "")),
+        "abstention_reason": str(final_artifact.get("abstention_reason", "")),
+        "raw_output_ref": str(final_artifact.get("raw_output_ref", "")),
         "changed_files": list(final_artifact.get("changed_files", [])),
         "confidence": float(final_artifact.get("confidence", 0.0)),
         "reviewer_notes": list(final_artifact.get("reviewer_notes", [])),
@@ -1987,8 +2157,15 @@ def _safe_model_role_status(result: Any) -> dict[str, Any]:
         "status": "available" if bool(getattr(result, "success", False)) else "blocked",
         "fallback_used": bool(getattr(result, "fallback_used", False)) or str(getattr(result, "source", "") or "") == "azure_openai_fallback",
         "configured_deployment": str(getattr(result, "configured_deployment", "") or ""),
-        "actual_deployment": str(getattr(result, "configured_deployment", "") or ""),
+        "actual_deployment": str(getattr(result, "actual_deployment", "") or ""),
         "fallback_deployment": str(getattr(result, "fallback_deployment", "") or ""),
         "primary_failure_reason": str(getattr(result, "primary_failure_reason", "") or ""),
-        "fallback_reason": str(getattr(result, "primary_failure_reason", "") or ""),
+        "fallback_failure_reason": str(getattr(result, "fallback_failure_reason", "") or ""),
+        "parser_failure_reason": str(getattr(result, "parser_failure_reason", "") or ""),
+        "fallback_attempted": bool(getattr(result, "fallback_attempted", False)),
+        "fallback_used": bool(getattr(result, "fallback_used", False)),
+        "timeout_occurred": bool(getattr(result, "timeout_occurred", False)),
+        "primary_http_status": str(getattr(result, "primary_http_status", "") or ""),
+        "fallback_http_status": str(getattr(result, "fallback_http_status", "") or ""),
+        "schema_validation_error": str(getattr(result, "schema_validation_error", "") or ""),
     }

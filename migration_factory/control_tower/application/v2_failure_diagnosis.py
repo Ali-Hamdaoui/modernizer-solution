@@ -154,6 +154,9 @@ class V2FailureDiagnosisService:
         test_status = str(payload_data.get("test_status", ""))
         transform_status = str(payload_data.get("transform_status", ""))
 
+        source_profile = str(payload_data.get("source_profile") or "")
+        target_profile = str(payload_data.get("target_profile") or "")
+
         # 4. Optional: resolve run_dir and sandbox_path from payload
         #    (prod callers pass artifact_refs; test callers may omit)
         artifact_refs = payload_data.get("artifact_refs", {})
@@ -284,6 +287,8 @@ class V2FailureDiagnosisService:
             command_id=command_id,
             event_type=event_type,
             diagnosis=diagnosis,
+            source_profile=source_profile,
+            target_profile=target_profile,
         )
 
         return diagnosis
@@ -449,6 +454,8 @@ class V2FailureDiagnosisService:
         command_id: str,
         event_type: str,
         diagnosis: FailureDiagnosisRecord,
+        source_profile: str = "",
+        target_profile: str = "",
     ) -> None:
         """Emit ai_diagnosis_created event via the configured event sink."""
         if self._event_sink is None:
@@ -465,6 +472,10 @@ class V2FailureDiagnosisService:
             "model_invocation_id": diagnosis.model_invocation_id,
             "redaction_status": diagnosis.redaction_status,
         }
+        if source_profile:
+            event_payload["source_profile"] = source_profile
+        if target_profile:
+            event_payload["target_profile"] = target_profile
         self._event_sink(
             job_id=job_id,
             stage=stage_index,
@@ -486,7 +497,83 @@ class V2FailureDiagnosisService:
         Without concrete evidence, this must NOT convert the raw event type into
         a justified concrete failure classification (e.g. BUILD_FAILED, TEST_FAILED).
         Fabricating certainty when evidence was unavailable contaminates retry cycles.
+
+        When build_status contains a recognized BuildResultKind value, map it to
+        the corresponding failure type so infrastructure/environment failures
+        (e.g. TLS certificate trust) do not waste proposer/reviewer tokens.
         """
+        build_status_lower = build_status.strip().lower()
+
+        if build_status_lower == "repository_tls_failure":
+            return {
+                "failure_type": "ENVIRONMENT_FAILURE",
+                "severity": "BLOCKER",
+                "migration_blocker": True,
+                "security_env_warning": False,
+                "likely_root_cause": (
+                    "Repository TLS certificate trust failure — "
+                    "environment/infrastructure issue"
+                ),
+                "evidence": [],
+                "recommended_next_step": (
+                    "Verify TLS truststore and certificate configuration "
+                    "on the build environment."
+                ),
+                "requires_human_review": True,
+            }
+
+        if build_status_lower == "dependency_error":
+            return {
+                "failure_type": "DEPENDENCY_CONFIGURATION_FAILURE",
+                "severity": "BLOCKER",
+                "migration_blocker": True,
+                "security_env_warning": False,
+                "likely_root_cause": (
+                    "Maven dependency resolution failed — "
+                    "check repository coordinates or dependency declarations."
+                ),
+                "evidence": [],
+                "recommended_next_step": (
+                    "Review dependency declarations in pom.xml for "
+                    "correct coordinates, versions, and repository access."
+                ),
+                "requires_human_review": True,
+            }
+
+        if build_status_lower == "compilation_error":
+            return {
+                "failure_type": "APPLICATION_CODE_FAILURE",
+                "severity": "BLOCKER",
+                "migration_blocker": True,
+                "security_env_warning": False,
+                "likely_root_cause": (
+                    "Java compilation error — "
+                    "application source code failed to compile."
+                ),
+                "evidence": [],
+                "recommended_next_step": (
+                    "Review compiler error output and fix "
+                    "source code compilation issues."
+                ),
+                "requires_human_review": True,
+            }
+
+        if test_status in {"TEST_FAILED", "TEST_ERROR"}:
+            return {
+                "failure_type": "TEST_FAILURE",
+                "severity": "BLOCKER",
+                "migration_blocker": True,
+                "security_env_warning": False,
+                "likely_root_cause": (
+                    f"Test validation reported as failed ({test_status})."
+                ),
+                "evidence": [],
+                "recommended_next_step": (
+                    "Review test report and fix failing tests."
+                ),
+                "requires_human_review": True,
+            }
+
         failure_type = "UNKNOWN_MIGRATION_FAILURE"
         severity = "UNKNOWN"
 
