@@ -8,6 +8,7 @@ Core rule: A model reviews another model for repair. Reviewer is mandatory.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import re
@@ -377,11 +378,17 @@ def _build_deterministic_repair_payload(
 # ── F5-T4/T5: Primary/Reviewer repair contracts ─────────────────────
 
 
+def _source_context_value(source_context: Any, key: str, default: Any = "") -> Any:
+    if isinstance(source_context, dict):
+        return source_context.get(key, default)
+    return getattr(source_context, key, default)
+
+
 def _format_authoritative_source_contexts(source_contexts: list[Any]) -> str:
     """Render bounded current source consistently in repair prompts."""
     parts = []
     for source_context in source_contexts:
-        get = source_context.get if isinstance(source_context, dict) else lambda key: getattr(source_context, key, "")
+        get = functools.partial(_source_context_value, source_context)
         path = get("path")
         parts.append(
             f"FILE_PATH: {path}\n"
@@ -398,11 +405,10 @@ def _format_authoritative_source_contexts(source_contexts: list[Any]) -> str:
 _STRUCTURED_REPAIR_EDIT_CONTRACT = (
     "STRUCTURED EDIT CONTRACT (required when bounded authoritative source context is present):\n"
     "- Source excerpts may be incomplete. Never infer file termination or add synthetic closing braces from an excerpt.\n"
-    "- When CONTEXT_IS_COMPLETE is false, proposed_edits is mandatory for any touched file; do not emit a whole-file replacement hunk.\n"
-    "- Prefer non-empty proposed_edits whenever authoritative bounded source context is present; use proposed_diff only as the raw-diff fallback for complete files.\n"
-    "- proposed_diff remains a permitted raw unified-diff fallback only when structured exact edits cannot be safely authored.\n"
+        "- When CONTEXT_IS_COMPLETE is false, proposed_edits is mandatory for any touched file; do not emit a whole-file replacement hunk; raw unified-diff fallback is NOT permitted for that incomplete file.\n"
+        "- proposed_diff is permitted only for touched files whose authoritative source context is complete, or for files not governed by an incomplete source context.\n"
     "- Each edit MUST contain path, expected_source_sha256, exact_old_text, and exact_new_text.\n"
-    "- Use the exact per-file CURRENT_SOURCE_SHA256 for expected_source_sha256; never reuse a SHA across files or use a context-pack checksum.\n"
+    "- Use the exact per-file SOURCE_FILE_SHA256 for expected_source_sha256; never reuse a SHA across files or use a context-pack checksum.\n"
     "- exact_old_text MUST be copied verbatim from CURRENT_AUTHORITATIVE_SOURCE and must occur exactly once in that current file.\n"
     "- Use the smallest exact replacement possible: preserve unrelated code and do not reconstruct whole methods or classes.\n"
     "- Use multiple independent, non-overlapping edits instead of one large replacement spanning unrelated changes.\n"
@@ -421,7 +427,9 @@ def _primary_repair_prompt(context_pack: RepairContextPack, deterministic_checks
     retry_contract = _post_apply_retry_contract(context_pack)
     return (
         "You are the AMF-252 repair proposer.\n"
-        "Your task is to produce a minimal, safe, raw Git unified diff that fixes the failing build/test evidence.\n\n"
+        "Your task is to produce a minimal, safe repair that fixes the failing build/test evidence. "
+        "Use structured exact edits (proposed_edits) when bounded source context is present; "
+        "fall back to a raw Git unified diff (proposed_diff) only for complete-file contexts.\n\n"
         "Return ONLY valid JSON. Do NOT wrap in Markdown fences or code blocks. "
         "Do NOT include any text before or after the JSON.\n\n"
         "Required JSON keys: "
@@ -801,10 +809,10 @@ def _candidate_correction_prompt(
             "Both upstream candidates (proposer and reviewer) were technically rejected.\n"
             "Do not attempt to repair an empty diff textually.\n"
             "Use the supplied CURRENT_AUTHORITATIVE_SOURCE contexts below.\n"
-            "Prefer non-empty proposed_edits when authoritative bounded source context is present; use proposed_diff only as the raw-diff fallback.\n"
+            "For touched files with CONTEXT_IS_COMPLETE=false: structured edits are required; no raw-diff fallback for that incomplete file. Complete touched files may preserve existing raw-diff compatibility.\n"
             "Use minimal exact replacements from current source only.\n"
-            "Use the exact supplied per-file CURRENT_SOURCE_SHA256 values as expected_source_sha256.\n"
-            "expected_source_sha256 MUST equal the supplied CURRENT_SOURCE_SHA256 for that exact path.\n"
+            "Use the exact supplied per-file SOURCE_FILE_SHA256 values as expected_source_sha256.\n"
+            "expected_source_sha256 MUST equal the supplied SOURCE_FILE_SHA256 for that exact path.\n"
             "exact_old_text MUST be copied verbatim from CURRENT_AUTHORITATIVE_SOURCE.\n"
             "exact_old_text MUST identify exactly one current-source occurrence.\n"
             "Never reuse one file's SHA for another file.\n"
@@ -817,9 +825,9 @@ def _candidate_correction_prompt(
         "You are correcting one failed AMF-252 repair candidate. Return only JSON matching "
         "RepairReviewerOutput.\n\n"
         + _STRUCTURED_REPAIR_EDIT_CONTRACT
-        + "- Prefer non-empty proposed_edits when authoritative bounded source context is present; use proposed_diff only as the raw-diff fallback.\n"
+        + "- For touched files with CONTEXT_IS_COMPLETE=false: structured edits are required; no raw-diff fallback for that incomplete file. Complete touched files may preserve existing raw-diff compatibility.\n"
         "- path MUST identify exactly one supplied source file.\n"
-        "- expected_source_sha256 MUST equal the CURRENT_SOURCE_SHA256 for that exact file.\n"
+        "- expected_source_sha256 MUST equal the SOURCE_FILE_SHA256 for that exact file.\n"
         "- Never reuse one file's SHA for another file.\n"
         "- Do not use context_pack_checksum as a file checksum.\n"
         "- exact_old_text MUST be copied verbatim from CURRENT_AUTHORITATIVE_SOURCE.\n"
