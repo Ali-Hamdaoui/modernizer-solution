@@ -729,3 +729,108 @@ class TestDirectRepairRevisionIntegration:
 
         assert old_row["apply_claim_status"] is None or old_row["apply_claim_status"] == ""
         assert new_row["apply_claim_status"] is None or new_row["apply_claim_status"] == ""
+
+    def test_revision_same_command_id_does_not_conflict(self, tmp_path: Path) -> None:
+        """Revision with same command_id as original must not be rejected.
+
+        The conflict check in _create_reviewed_repair_proposal_from_refs
+        excludes the source_proposal_id when checking for active proposals
+        with the same command_id. This test proves the first revision of
+        a user_review_required proposal succeeds even with identical command_id.
+        """
+        service, conn, uow_factory = _make_svc_and_conn(tmp_path)
+        sandbox = _make_git_sandbox(tmp_path)
+        run_dir = tmp_path / "run_dir_same_cmd"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        output_dir1 = tmp_path / "repair_chain_same" / "proposal_orig"
+        output_dir1.mkdir(parents=True, exist_ok=True)
+
+        evidence, evidence_ref = _make_evidence(tmp_path)
+        context_pack, context_ref = _make_context_pack(evidence, tmp_path)
+        diff_ref1 = _make_diff_file(output_dir1, name="orig.diff")
+
+        self.mock_produce.return_value = _mock_repair_chain(diff_ref1, reviewer_decision="accept")
+
+        request1 = RepairRevisionRequest(
+            job_id="job-same-cmd",
+            stage_index=2,
+            command_id="cmd-same",
+            failure_evidence_ref=evidence_ref,
+            repair_context_ref=context_ref,
+            run_dir=run_dir,
+            sandbox_path=sandbox,
+            legacy_path=None,
+            source_profile="java11",
+            target_profile="java17",
+            validation_context_ref="",
+            validation_context_checksum="",
+            source_proposal_id="",
+            revision_of="",
+            revision_number=1,
+            output_dir=output_dir1,
+        )
+
+        with self._mock_subprocess_run():
+            result1 = service.create_reviewed_repair_revision(
+                request=request1, model_client=None, uow_factory=uow_factory,
+            )
+
+        assert result1.status == "created"
+        old_id = result1.proposal_id
+
+        output_dir2 = tmp_path / "repair_chain_same" / "proposal_rev"
+        output_dir2.mkdir(parents=True, exist_ok=True)
+        diff_ref2 = output_dir2 / "revised.diff"
+        diff_ref2.write_text(
+            "diff --git a/src/main/java/com/example/App.java "
+            "b/src/main/java/com/example/App.java\n"
+            "index e69de29..0000000 100644\n"
+            "--- a/src/main/java/com/example/App.java\n"
+            "+++ b/src/main/java/com/example/App.java\n"
+            "@@ -1,4 +1,5 @@\n"
+            " public class App {\n"
+            "     public static void main(String[] args) {\n"
+            '-        System.out.println("Hello");\n'
+            '+        System.out.println("Hello, World!");\n'
+            "     }\n"
+            "}\n",
+            encoding="utf-8",
+        )
+
+        self.mock_produce.return_value = _mock_repair_chain(str(diff_ref2), reviewer_decision="accept")
+
+        request2 = RepairRevisionRequest(
+            job_id="job-same-cmd",
+            stage_index=2,
+            command_id="cmd-same",
+            failure_evidence_ref=evidence_ref,
+            repair_context_ref=context_ref,
+            run_dir=run_dir,
+            sandbox_path=sandbox,
+            legacy_path=None,
+            source_profile="java11",
+            target_profile="java17",
+            validation_context_ref="",
+            validation_context_checksum="",
+            source_proposal_id=old_id,
+            revision_of=old_id,
+            revision_number=2,
+            output_dir=output_dir2,
+        )
+
+        with self._mock_subprocess_run():
+            result2 = service.create_reviewed_repair_revision(
+                request=request2, model_client=None, uow_factory=uow_factory,
+            )
+
+        assert result2.status == "created", (
+            f"Expected 'created' with same command_id, got '{result2.status}': {result2.reason}"
+        )
+        assert result2.proposal_id != old_id
+
+        proposals = list(conn.execute(
+            "SELECT * FROM v2_repair_proposals WHERE proposal_id = ?",
+            (result2.proposal_id,),
+        ))
+        assert len(proposals) == 1
+        assert proposals[0]["revision_of"] == old_id

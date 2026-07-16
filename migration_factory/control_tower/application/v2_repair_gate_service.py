@@ -990,9 +990,13 @@ class V2RepairGateService:
             )
 
         # 9. Persist proposal (duplicate check for same command_id)
+        # Exclude the source proposal when creating a revision, so the
+        # original proposal being revised does not block the new revision.
         existing = _persist(lambda write_uow: list(write_uow.v2_repairs.list_proposals_by_command(command_id))) or []
         if existing:
             for existing_record in existing:
+                if source_proposal_id and getattr(existing_record, "proposal_id", None) == source_proposal_id:
+                    continue
                 if (getattr(existing_record, "status", "") in
                     frozenset({"user_review_required", "approvable", "reviewer_accepted"})):
                     return ReviewedRepairProposalCreationResult(
