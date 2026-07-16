@@ -6,6 +6,7 @@ or execution details. Full diff loaded by backend artifact ref endpoint only.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -205,6 +206,29 @@ READ_ONLY_REPAIR_ACTIONS: tuple[str, ...] = (
 
 
 @dataclass(frozen=True)
+class RepairUnavailableState:
+    attempted: bool
+    status: str
+    reason_code: str = ""
+    detail: str = ""
+    event_type: str = ""
+    created_at: str = ""
+    allowed_actions: tuple[str, ...] = ()
+
+
+def repair_unavailable_state_to_dict(state: RepairUnavailableState) -> dict[str, Any]:
+    return {
+        "attempted": state.attempted,
+        "status": state.status,
+        "reason_code": state.reason_code,
+        "detail": state.detail,
+        "event_type": state.event_type,
+        "created_at": state.created_at,
+        "allowed_actions": list(state.allowed_actions),
+    }
+
+
+@dataclass(frozen=True)
 class FilesChangedSummary:
     path: str
     change_type: str
@@ -246,6 +270,12 @@ class ReviewedDiffProposal:
     required_validation: tuple[str, ...] = ()
     allowed_actions: tuple[str, ...] = READ_ONLY_REPAIR_ACTIONS
     redactions: tuple[str, ...] = ()
+    apply_status: str | None = None
+    rerun_status: str | None = None
+    validation_proof_status: str | None = None
+    final_diff_source: str | None = None
+    generation_status: str | None = None
+    generation_reason: str | None = None
 
 
 def build_reviewed_diff_proposal_projection(
@@ -317,6 +347,9 @@ def build_reviewed_diff_proposal_projection(
         required_validation=required_validation,
         allowed_actions=allowed_actions,
         redactions=tuple(dict.fromkeys(redactions)),
+        final_diff_source=_maybe_str(chain.get("final_diff_source")),
+        generation_status=_maybe_str(chain.get("generation_status")),
+        generation_reason=_bounded_redacted_text(str(chain.get("generation_failure_reason") or "")) if chain.get("generation_failure_reason") else None,
     )
 
 
@@ -334,7 +367,9 @@ def reviewed_diff_proposal_to_safe_dict(proposal: ReviewedDiffProposal) -> dict[
         "failure_summary": proposal.failure_summary,
         "diagnosis_ref": proposal.diagnosis_ref,
         "repair_plan_ref": proposal.repair_plan_ref,
-        "diff_ref": proposal.diff_ref,
+        # Raw authoritative artifact paths remain server-side. The dedicated
+        # diff endpoint exposes only the safe preview.
+        "diff_ref": None,
         "diff_checksum": proposal.diff_checksum,
         "safe_diff_preview": safe_diff_preview_to_dict(proposal.safe_diff_preview) if proposal.safe_diff_preview is not None else None,
         "reviewer_verdict": reviewer_verdict_projection_to_safe_dict(proposal.reviewer_verdict) if proposal.reviewer_verdict is not None else None,
@@ -343,6 +378,12 @@ def reviewed_diff_proposal_to_safe_dict(proposal: ReviewedDiffProposal) -> dict[
         "required_validation": list(proposal.required_validation),
         "allowed_actions": list(proposal.allowed_actions),
         "redactions": list(proposal.redactions),
+        "apply_status": proposal.apply_status,
+        "rerun_status": proposal.rerun_status,
+        "validation_proof_status": proposal.validation_proof_status,
+        "final_diff_source": proposal.final_diff_source,
+        "generation_status": proposal.generation_status,
+        "generation_reason": proposal.generation_reason,
     }
 
 
@@ -487,6 +528,12 @@ def build_reviewed_diff_proposal_from_record(
     final_diff_text: str | None = None,
     reviewer_decision: str | None = None,
     reviewer_reasoning: str | None = None,
+    apply_status: str | None = None,
+    rerun_status: str | None = None,
+    validation_proof_status: str | None = None,
+    final_diff_source: str | None = None,
+    generation_status: str | None = None,
+    generation_reason: str | None = None,
 ) -> ReviewedDiffProposal:
     """Build a ReviewedDiffProposal from persisted V2RepairProposalRecord fields.
 
@@ -502,10 +549,23 @@ def build_reviewed_diff_proposal_from_record(
         diff_ref=diff_ref,
         diff_text=final_diff_text,
     )
+    persisted_reviewer_reasoning = reviewer_reasoning
+    artifact_path = Path(diff_ref).with_name("final_reviewed_repair_artifact.json")
+    try:
+        artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+        reviewer_notes = artifact.get("reviewer_notes") if isinstance(artifact, dict) else None
+        if isinstance(reviewer_notes, list) and reviewer_notes:
+            persisted_reviewer_reasoning = "\n".join(str(note) for note in reviewer_notes if str(note).strip())
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
     verdict = ReviewerVerdictProjection(
         reviewer_verdict_id=reviewer_verdict_id,
         decision=reviewer_decision or "unknown",
-        reasoning=_bounded_redacted_text(reviewer_reasoning) if reviewer_reasoning else None,
+        reasoning=(
+            _bounded_redacted_text(persisted_reviewer_reasoning)
+            if persisted_reviewer_reasoning
+            else None
+        ),
         output_checksum=reviewer_output_checksum,
     )
     files_changed = [
@@ -541,6 +601,12 @@ def build_reviewed_diff_proposal_from_record(
         required_validation=required_validation,
         allowed_actions=allowed_actions,
         redactions=tuple(dict.fromkeys(redactions)),
+        apply_status=_maybe_str(apply_status),
+        rerun_status=_maybe_str(rerun_status),
+        validation_proof_status=_maybe_str(validation_proof_status),
+        final_diff_source=_maybe_str(final_diff_source),
+        generation_status=_maybe_str(generation_status),
+        generation_reason=_bounded_redacted_text(generation_reason) if generation_reason else None,
     )
 
 
@@ -564,6 +630,8 @@ def record_to_attempt_summary(record: Any) -> dict[str, Any]:
         "reviewer_decision": getattr(record, "reviewer_decision", None),
         "diff_checksum": getattr(record, "diff_checksum", None),
         "policy_validation_checksum": getattr(record, "policy_validation_checksum", None),
+        "validation_proof_status": getattr(record, "validation_proof_status", None),
+        "final_diff_source": getattr(record, "final_diff_source", None),
         "validation_result_ref": getattr(record, "validation_result_ref", None),
         "next_gate_id": getattr(record, "next_gate_id", None),
         "next_gate_status": getattr(record, "next_gate_status", None),

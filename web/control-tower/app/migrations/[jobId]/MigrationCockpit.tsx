@@ -1006,6 +1006,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [artifactPreviewBusy, setArtifactPreviewBusy] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const [liveRefreshWarning, setLiveRefreshWarning] = useState<string | null>(null);
+  const [repairRefreshKey, setRepairRefreshKey] = useState(0);
   const [gateState, setGateState] = useState<GatePanelState>({ status: "loading" });
   const [report, setReport] = useState<V2FinalReportResponse | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
@@ -1187,6 +1188,26 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       "pom_validation_failed",
       "pom_repair_plan_created",
       "pom_change_rolled_back",
+      // PR-C repair state events
+      "repair_proposal_ready",
+      "repair_proposer_completed",
+      "repair_proposer_failed",
+      "repair_reviewer_completed",
+      "repair_reviewer_failed",
+      "repair_cycle_started",
+      "repair_generation_failed",
+      "repair_final_diff_selected",
+      "next_repair_cycle_started",
+      "migration_continuation_queued",
+      "repair_outcome_persisted",
+      "repair_apply_started",
+      "repair_apply_failed",
+      "repair_validation_started",
+      "reviewed_repair_unavailable",
+      "repair_callback_error",
+      "repair_attempts_exhausted",
+      "repair_validation_failed",
+      "repair_validation_passed",
     ]) {
       source.addEventListener(type, (event) => {
         appendEventFromSse((event as MessageEvent).data);
@@ -1240,6 +1261,9 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         void refreshGateState().catch(() => {
           // keep existing gate state on refresh failure
         });
+      }
+      if (AMF252_REPAIR_EVENTS.has(event.type)) {
+        setRepairRefreshKey((k) => k + 1);
       }
     } catch {
       setStreamState("reconnecting");
@@ -1897,7 +1921,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
 
       {/* PR-C — Repair Proposal Panel */}
       {normalizedJobId && (
-        <RepairProposalPanel jobId={normalizedJobId} />
+        <RepairProposalPanel jobId={normalizedJobId} repairRefreshKey={repairRefreshKey} />
       )}
 
       {/* Assistant Panel */}
@@ -2214,4 +2238,48 @@ const IMPORTANT_SSE_TYPES = new Set([
   "pom_validation_failed",
   "pom_repair_plan_created",
   "pom_change_rolled_back",
+  // PR-C repair state events
+  "repair_proposal_ready",
+      "repair_cycle_started",
+      "repair_proposer_completed",
+      "repair_proposer_failed",
+      "repair_reviewer_completed",
+      "repair_reviewer_failed",
+  "repair_generation_failed",
+  "repair_final_diff_selected",
+  "next_repair_cycle_started",
+  "migration_continuation_queued",
+  "repair_outcome_persisted",
+  "repair_apply_started",
+  "repair_apply_failed",
+  "repair_validation_started",
+  "reviewed_repair_unavailable",
+  "repair_callback_error",
+  "repair_attempts_exhausted",
+  "repair_validation_failed",
+  "repair_validation_passed",
+  "repair_completed",
+]);
+
+const AMF252_REPAIR_EVENTS = new Set([
+  "repair_proposal_ready",
+  "repair_cycle_started",
+  "repair_proposer_completed",
+  "repair_proposer_failed",
+  "repair_reviewer_completed",
+  "repair_reviewer_failed",
+  "repair_generation_failed",
+  "repair_final_diff_selected",
+  "next_repair_cycle_started",
+  "migration_continuation_queued",
+  "repair_outcome_persisted",
+  "repair_apply_started",
+  "repair_apply_failed",
+  "repair_validation_started",
+  "reviewed_repair_unavailable",
+  "repair_callback_error",
+  "repair_attempts_exhausted",
+  "repair_validation_failed",
+  "repair_validation_passed",
+  "repair_completed",
 ]);

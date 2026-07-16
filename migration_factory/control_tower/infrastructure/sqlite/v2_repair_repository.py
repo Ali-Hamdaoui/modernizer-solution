@@ -52,6 +52,18 @@ class V2RepairProposalRecord:
     remaining_attempts: int | None = None
     completed_at: str | None = None
     reviewer_decision: str | None = None
+    deterministic_rule_id: str | None = None
+    risk: str | None = None
+    lineage_manifest_ref: str | None = None
+    lineage_manifest_checksum: str | None = None
+    validation_context_ref: str | None = None
+    validation_context_checksum: str | None = None
+    apply_idempotency_key: str | None = None
+    apply_claim_status: str | None = None
+    apply_claim_version: int | None = None
+    continuation_command_id: str | None = None
+    validation_proof_status: str | None = None
+    final_diff_source: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,10 +99,11 @@ class SqliteV2RepairRepository:
                 policy_validation_checksum, gate_id, status_reason,
                 apply_status, rerun_status, rollback_status,
                 validation_result_ref, next_gate_id, next_gate_status,
-                remaining_attempts, completed_at, reviewer_decision
+                remaining_attempts, completed_at, reviewer_decision,
+                deterministic_rule_id, risk
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                       ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                      ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.proposal_id,
                 record.command_id,
@@ -132,7 +145,22 @@ class SqliteV2RepairRepository:
                 record.remaining_attempts,
                 record.completed_at,
                 record.reviewer_decision,
+                record.deterministic_rule_id,
+                record.risk,
             ),
+        )
+        self._connection.execute(
+            """UPDATE v2_repair_proposals SET
+               lineage_manifest_ref = ?, lineage_manifest_checksum = ?,
+               validation_context_ref = ?, validation_context_checksum = ?,
+               apply_idempotency_key = ?, apply_claim_status = ?,
+               apply_claim_version = ?, continuation_command_id = ?,
+               validation_proof_status = ?, final_diff_source = ? WHERE proposal_id = ?""",
+            (record.lineage_manifest_ref, record.lineage_manifest_checksum,
+             record.validation_context_ref, record.validation_context_checksum,
+             record.apply_idempotency_key, record.apply_claim_status,
+             record.apply_claim_version, record.continuation_command_id,
+             record.validation_proof_status, record.final_diff_source, record.proposal_id),
         )
 
     def update_proposal_status(self, proposal_id: str, status: str, approval_checksum: str | None = None) -> None:
@@ -168,6 +196,11 @@ class SqliteV2RepairRepository:
             "validation_result_ref", "next_gate_id", "next_gate_status",
             "remaining_attempts", "completed_at", "reviewer_decision",
             "status", "status_reason",
+            "lineage_manifest_ref", "lineage_manifest_checksum",
+            "validation_context_ref", "validation_context_checksum",
+            "apply_idempotency_key", "apply_claim_status", "apply_claim_version",
+            "continuation_command_id", "validation_proof_status",
+            "final_diff_source",
         })
         bad = [k for k in fields if k not in allowed]
         if bad:
@@ -189,6 +222,42 @@ class SqliteV2RepairRepository:
         if row is None:
             return None
         return self._row_to_proposal(row)
+
+    def claim_apply(self, job_id: str, proposal_id: str, idempotency_key: str, *, expected_checksum: str) -> str:
+        """Claim one Apply before filesystem/build work is started.
+
+        The caller commits this short transaction before doing external work.
+        A repeated key is replayable only for the same proposal/checksum.
+        """
+        existing = self._connection.execute(
+            "SELECT job_id, proposal_id, diff_checksum, apply_claim_status FROM v2_repair_proposals "
+            "WHERE apply_idempotency_key = ?", (idempotency_key,)
+        ).fetchone()
+        if existing is not None:
+            if str(existing["job_id"]) != job_id or str(existing["proposal_id"]) != proposal_id or str(existing["diff_checksum"] or "") != expected_checksum:
+                return "idempotency_conflict"
+            existing_status = str(existing["apply_claim_status"] or "in_flight")
+            return "in_flight" if existing_status == "claimed" else existing_status
+        cursor = self._connection.execute(
+            """UPDATE v2_repair_proposals
+               SET apply_idempotency_key = ?, apply_claim_status = 'claimed',
+                   apply_claim_version = COALESCE(apply_claim_version, 0) + 1
+               WHERE job_id = ? AND proposal_id = ? AND diff_checksum = ?
+                 AND (apply_claim_status IS NULL OR apply_claim_status IN ('failed', 'replayable'))""",
+            (idempotency_key, job_id, proposal_id, expected_checksum),
+        )
+        if cursor.rowcount == 1:
+            return "newly_claimed"
+        current = self._connection.execute(
+            "SELECT apply_claim_status FROM v2_repair_proposals WHERE job_id = ? AND proposal_id = ?",
+            (job_id, proposal_id),
+        ).fetchone()
+        current_status = str(current["apply_claim_status"] or "") if current is not None else ""
+        if current_status == "claimed":
+            return "in_flight"
+        if current_status in {"completed", "failed"}:
+            return current_status
+        return "idempotency_conflict"
 
     def list_proposals_by_command(self, command_id: str) -> tuple[V2RepairProposalRecord, ...]:
         rows = self._connection.execute(
@@ -220,7 +289,8 @@ class SqliteV2RepairRepository:
         row = self._connection.execute(
             """SELECT * FROM v2_repair_proposals
                WHERE job_id = ?
-                 AND (status = 'user_review_required'
+                 AND (status IN ('user_review_required', 'reviewer_revision_required', 'reviewer_rejected')
+                      OR (gate_id IS NULL AND status = 'approve_failed')
                       OR (gate_id IS NOT NULL AND status IN ('user_review_required', 'reviewer_accepted', 'diff_materialized')))
                ORDER BY created_at DESC
                LIMIT 1""",
@@ -316,6 +386,18 @@ class SqliteV2RepairRepository:
             remaining_attempts=int(row["remaining_attempts"]) if "remaining_attempts" in keys and row["remaining_attempts"] is not None else None,
             completed_at=str(row["completed_at"]) if "completed_at" in keys and row["completed_at"] else None,
             reviewer_decision=str(row["reviewer_decision"]) if "reviewer_decision" in keys and row["reviewer_decision"] else None,
+            deterministic_rule_id=str(row["deterministic_rule_id"]) if "deterministic_rule_id" in keys and row["deterministic_rule_id"] else None,
+            risk=str(row["risk"]) if "risk" in keys and row["risk"] else None,
+            lineage_manifest_ref=str(row["lineage_manifest_ref"]) if "lineage_manifest_ref" in keys and row["lineage_manifest_ref"] else None,
+            lineage_manifest_checksum=str(row["lineage_manifest_checksum"]) if "lineage_manifest_checksum" in keys and row["lineage_manifest_checksum"] else None,
+            validation_context_ref=str(row["validation_context_ref"]) if "validation_context_ref" in keys and row["validation_context_ref"] else None,
+            validation_context_checksum=str(row["validation_context_checksum"]) if "validation_context_checksum" in keys and row["validation_context_checksum"] else None,
+            apply_idempotency_key=str(row["apply_idempotency_key"]) if "apply_idempotency_key" in keys and row["apply_idempotency_key"] else None,
+            apply_claim_status=str(row["apply_claim_status"]) if "apply_claim_status" in keys and row["apply_claim_status"] else None,
+            apply_claim_version=int(row["apply_claim_version"]) if "apply_claim_version" in keys and row["apply_claim_version"] is not None else None,
+            continuation_command_id=str(row["continuation_command_id"]) if "continuation_command_id" in keys and row["continuation_command_id"] else None,
+            validation_proof_status=str(row["validation_proof_status"]) if "validation_proof_status" in keys and row["validation_proof_status"] else None,
+            final_diff_source=str(row["final_diff_source"]) if "final_diff_source" in keys and row["final_diff_source"] else None,
         )
 
     def _row_to_action(self, row: sqlite3.Row) -> V2SandboxActionRecord:

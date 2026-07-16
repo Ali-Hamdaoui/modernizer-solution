@@ -105,6 +105,7 @@ class TransformSandboxResult:
     copilot_dependency_advisory_status: str = "SKIPPED"
     policy_patch_applied: bool = False
     dependency_policy_artifact_refs: dict[str, str] | None = None
+    validation_execution_context: dict[str, Any] | None = None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -270,6 +271,7 @@ def _run_transformer_with_build_validation(
     source_unit_ids = _source_changing_unit_ids(plan)
     max_transformer_runs = len(plan.units) + 1
     build_status: str | None = None
+    validation_execution_context: dict[str, Any] | None = None
 
     for _ in range(max_transformer_runs):
         status_writer(STATUS_RUNNING)
@@ -314,6 +316,20 @@ def _run_transformer_with_build_validation(
                 "source_changing_unit": unit_id in source_unit_ids,
                 "validation_command": _validation_command_for_unit(plan, unit_id),
             }
+            validation_execution_context = {
+                "job_id": run_id,
+                "run_dir": str(run_dir),
+                "sandbox_path": str(sandbox_path),
+                "validation_unit_id": unit_id,
+                "validation_command": build_kwargs["validation_command"] or (),
+                "source_changing_unit": unit_id in source_unit_ids,
+                "source_jdk_home_env": (jdk_env or {}).get("source_jdk_home_env"),
+                "target_jdk_home_env": (jdk_env or {}).get("target_jdk_home_env"),
+                "build_timeout_seconds": build_timeout_seconds,
+                "stop_after_start": True,
+                "require_test_reports": False,
+                "working_directory": str(sandbox_path),
+            }
             if jdk_env:
                 build_kwargs.update(jdk_env)
             if build_timeout_seconds is not None:
@@ -323,6 +339,10 @@ def _run_transformer_with_build_validation(
                 log_file=log_file,
                 verbose=verbose,
             )
+            if build_result.command:
+                validation_execution_context["validation_command"] = list(build_result.command)
+            if build_result.cwd is not None:
+                validation_execution_context["working_directory"] = str(build_result.cwd)
             if build_result.command:
                 _record_transform_command_timing(
                     run_dir,
@@ -351,6 +371,7 @@ def _run_transformer_with_build_validation(
                     plugin_xml=plugin_xml,
                     ledger_file=result.ledger_file,
                     build_status=build_status,
+                    validation_execution_context=validation_execution_context,
                 )
 
             build_status = STATUS_BUILD_PASSED
@@ -372,6 +393,7 @@ def _run_transformer_with_build_validation(
                     ledger_file=result.ledger_file,
                     build_status=build_status,
                     status_writer=status_writer,
+                    validation_execution_context=validation_execution_context,
                 )
             continue
 
@@ -415,6 +437,7 @@ def _run_transformer_with_build_validation(
                 ledger_file=result.ledger_file,
                 build_status=build_status,
                 status_writer=status_writer,
+                validation_execution_context=validation_execution_context,
             )
 
         raise TransformV1AfterApprovalError(f"Unexpected Transformer status: {result.status}")
@@ -514,6 +537,7 @@ def _finalize_with_test_validation(
     ledger_file: Path,
     build_status: str | None,
     status_writer: Callable[[str], None],
+    validation_execution_context: dict[str, Any] | None = None,
 ) -> TransformSandboxResult:
     dependency_policy = _run_dependency_policy_layer(
         sandbox_path=sandbox_path,
@@ -548,7 +572,7 @@ def _finalize_with_test_validation(
         duration_seconds=test_result.parse_duration_seconds,
     )
 
-    if test_result.test_status in {STATUS_TEST_PASSED, STATUS_TEST_PASS_WITH_WARNINGS, STATUS_TESTS_NOT_FOUND}:
+    if test_result.test_status in {STATUS_TEST_PASSED, STATUS_TEST_PASS_WITH_WARNINGS}:
         _write_partial_timing_artifacts(run_dir)
         status_writer(STATUS_APPLIED)
         status_writer("Sandbox migration candidate ready.")
@@ -576,6 +600,7 @@ def _finalize_with_test_validation(
             copilot_dependency_advisory_status=str(dependency_policy.get("copilot_dependency_advisory_status") or "SKIPPED"),
             policy_patch_applied=bool(dependency_policy.get("policy_patch_applied", False)),
             dependency_policy_artifact_refs=dict(dependency_policy.get("artifact_refs", {}) or {}),
+            validation_execution_context=validation_execution_context,
         )
 
     status_writer(test_result.test_status)
@@ -604,6 +629,7 @@ def _finalize_with_test_validation(
         copilot_dependency_advisory_status=str(dependency_policy.get("copilot_dependency_advisory_status") or "SKIPPED"),
         policy_patch_applied=bool(dependency_policy.get("policy_patch_applied", False)),
         dependency_policy_artifact_refs=dict(dependency_policy.get("artifact_refs", {}) or {}),
+        validation_execution_context=validation_execution_context,
     )
 
 

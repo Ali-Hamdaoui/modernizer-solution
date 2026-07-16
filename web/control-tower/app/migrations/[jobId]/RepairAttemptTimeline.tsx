@@ -43,13 +43,11 @@ export function RepairAttemptTimeline({
             )}
           </div>
           <p className="meta">Proposal: {attempt.proposal_id}</p>
-          {attempt.gate_id && <p className="meta">Gate: {attempt.gate_id}</p>}
           {attempt.apply_status && <p className="meta">Apply: {attempt.apply_status}</p>}
           {attempt.rerun_status && <p className="meta">Validation: {attempt.rerun_status}</p>}
           {attempt.rollback_status && <p className="meta">Rollback: {attempt.rollback_status}</p>}
           {attempt.diff_checksum && <p className="checksum">Diff checksum: {attempt.diff_checksum}</p>}
-          {attempt.next_gate_id && <p className="meta">Next gate: {attempt.next_gate_id}</p>}
-          {attempt.next_gate_status && <p className="meta">Next gate status: {attempt.next_gate_status}</p>}
+          {attempt.next_gate_status && <p className="meta">Next status: {attempt.next_gate_status}</p>}
           {attempt.status_reason && <p className="meta">Reason: {attempt.status_reason}</p>}
           {attempt.created_at && <p className="meta">Created: {new Date(attempt.created_at).toLocaleString()}</p>}
           {attempt.completed_at && <p className="meta">Completed: {new Date(attempt.completed_at).toLocaleString()}</p>}

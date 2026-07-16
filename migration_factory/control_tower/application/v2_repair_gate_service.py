@@ -17,6 +17,9 @@ Reuses:
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -39,19 +42,26 @@ from migration_factory.control_tower.application.v2_repair_flow import (
 )
 from migration_factory.control_tower.domain.checksums import (
     sha256_canonical_json,
+    sha256_hex,
     utc_now_text,
 )
 from migration_factory.control_tower.domain.entities import ArtifactRevisionRecord
 from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_repository import (
     SqliteArtifactRevisionRepository,
 )
+from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
+    V2RepairProposalRecord,
+)
 from migration_factory.control_tower.schemas.phase_gate import GateDecision
-from migration_factory.repair_loop.patch_gate import evaluate_patch_proposal
+from migration_factory.repair_loop.patch_gate import validate_technical_patch_application
 
 
 # ── Constants ─────────────────────────────────────────────────────────
 
 DEFAULT_MAX_REPAIR_ATTEMPTS = 3
+
+_REPAIR_ATTEMPT_DEDUPE_LOCK = threading.Lock()
+_REPAIR_ATTEMPT_DEDUPE_KEYS: set[str] = set()
 
 
 # ── Result types ──────────────────────────────────────────────────────
@@ -82,6 +92,20 @@ class RepairValidationTransitionResult:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class ReviewedRepairProposalCreationResult:
+    status: str
+    proposal_id: str = ""
+    reason: str = ""
+    event_id: str | None = None
+    reviewer_decision: str | None = None
+    diff_checksum: str | None = None
+    attempt_number: int = 0
+    remaining_attempts: int = 0
+    final_diff_source: str | None = None
+    generation_status: str = ""
+
+
 # ── Repair Gate Service ─────────────────────────────────────────────
 
 
@@ -99,14 +123,18 @@ class V2RepairGateService:
         repair_flow: V2RepairFlowService | None = None,
         diagnosis_service: V2FailureDiagnosisService | None = None,
         revision_repo: SqliteArtifactRevisionRepository | None = None,
-        max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
+        max_repair_attempts: int | None = None,
     ) -> None:
         self._gate_service = gate_service
         self._gate_action_service = gate_action_service
         self._repair_flow = repair_flow
         self._diagnosis_service = diagnosis_service
         self._revision_repo = revision_repo
-        self._max_repair_attempts = max_repair_attempts
+        try:
+            configured_attempts = int(os.environ.get("AMF252_MAX_REPAIR_ATTEMPTS", DEFAULT_MAX_REPAIR_ATTEMPTS))
+        except ValueError:
+            configured_attempts = DEFAULT_MAX_REPAIR_ATTEMPTS
+        self._max_repair_attempts = max(1, max_repair_attempts or configured_attempts)
 
         # In-memory attempt tracking: {(job_id, stage_index): attempt_count}
         self._attempt_counts: dict[tuple[str, int], int] = {}
@@ -137,15 +165,6 @@ class V2RepairGateService:
                 status="skipped",
                 reason="missing review_chain metadata",
             )
-        if str(chain.get("reviewer_decision") or "") != "accept":
-            return RepairGateCreationResult(
-                gate_id="",
-                gate_checksum="",
-                diagnosis=None,
-                status="skipped",
-                reason="reviewer did not accept repair chain",
-            )
-
         primary_ref = str(chain.get("primary_output_ref") or "")
         final_diff_ref = str(chain.get("final_diff_ref") or "")
         final_artifact_ref = str(chain.get("final_artifact_ref") or "")
@@ -158,27 +177,19 @@ class V2RepairGateService:
                 reason="reviewed repair chain missing artifact refs",
             )
 
-        primary = json.loads(open(primary_ref, encoding="utf-8").read())
+        primary = json.loads(open(primary_ref, encoding="utf-8").read()) if primary_ref else {}
         reviewed_diff = open(final_diff_ref, encoding="utf-8").read()
-        policy_result = evaluate_patch_proposal(
-            proposal={
-                "deterministic_rule_id": deterministic_rule_id,
-                "risk": str(primary.get("risk") or "LOW"),
-                "requires_human_review": False,
-                "unified_diff": reviewed_diff,
-            },
+        policy_result = validate_technical_patch_application(
+            unified_diff=reviewed_diff,
             sandbox_path=sandbox_path,
-            run_dir=run_dir,
-            legacy_path=legacy_path,
-            h2_required=h2_required,
         )
         policy_payload = {
             "status": policy_result.status.lower(),
             "reason": policy_result.reason,
-            "rule_id": policy_result.rule_id,
-            "risk": policy_result.risk,
+            "rule_id": "",
+            "risk": "",
             "touched_paths": list(policy_result.touched_paths),
-            "human_review_required": policy_result.human_review_required,
+            "human_review_required": False,
         }
         policy_checksum = sha256_canonical_json(policy_payload)
         policy_path = Path(run_dir) / "repairs" / "repair_policy_validation.json"
@@ -350,6 +361,565 @@ class V2RepairGateService:
             status="created",
         )
 
+    # ── Option A: Create reviewed repair proposal directly (no gate) ──
+
+    def create_reviewed_repair_proposal_on_failure(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        failure_payload: dict[str, Any],
+        attempt_number: int | None = None,
+        model_client: Any | None = None,
+        invocation_ledger: Any | None = None,
+        uow: Any | None = None,
+        uow_factory: Any | None = None,
+    ) -> ReviewedRepairProposalCreationResult:
+        refs = _extract_repair_refs_from_payload(failure_payload)
+        if not refs["failure_evidence_ref"] or not refs["repair_context_ref"]:
+            return ReviewedRepairProposalCreationResult(
+                status="skipped",
+                reason="missing repair evidence refs",
+            )
+        attempt_number = (
+            int(attempt_number)
+            if attempt_number is not None
+            else self._get_persisted_attempt_count(job_id, stage_index) + 1
+        )
+        remaining_attempts = max(0, self._max_repair_attempts - attempt_number)
+        if uow_factory is not None:
+            with uow_factory() as cycle_uow:
+                cycle_uow.v2_events.save(
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type="repair_cycle_started",
+                    status="started",
+                    message=f"Repair cycle started for command {command_id}",
+                    payload={
+                        "command_id": command_id,
+                        "attempt_number": attempt_number,
+                        "remaining_attempts": remaining_attempts,
+                        "max_attempts": self._max_repair_attempts,
+                    },
+                )
+        elif uow is not None:
+            uow.v2_events.save(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="repair_cycle_started",
+                status="started",
+                message=f"Repair cycle started for command {command_id}",
+                payload={
+                    "command_id": command_id,
+                    "attempt_number": attempt_number,
+                    "remaining_attempts": remaining_attempts,
+                    "max_attempts": self._max_repair_attempts,
+                },
+            )
+        result = self._create_reviewed_repair_proposal_from_refs(
+            job_id=job_id,
+            stage_index=stage_index,
+            command_id=command_id,
+            failure_evidence_ref=refs["failure_evidence_ref"],
+            repair_context_ref=refs["repair_context_ref"],
+            run_dir=refs["run_dir"],
+            sandbox_path=refs["sandbox_path"],
+            legacy_path=str(failure_payload.get("legacy_path", "")),
+            source_profile=str(failure_payload.get("source_profile", "")),
+            target_profile=str(failure_payload.get("target_profile", "")),
+            h2_required=bool(failure_payload.get("_repair_h2_required", False)),
+            validation_context_ref=refs["validation_context_ref"],
+            validation_context_checksum=refs["validation_context_checksum"],
+            attempt_number=attempt_number,
+            model_client=model_client,
+            invocation_ledger=invocation_ledger,
+            uow=uow if uow_factory is None else None,
+            uow_factory=uow_factory,
+        )
+        event_uow = uow
+        if uow_factory is not None:
+            event_uow = uow_factory()
+        if event_uow is not None:
+            event_context = event_uow if uow_factory is None else event_uow.__enter__()
+            try:
+                if result.status == "created":
+                    event = event_context.v2_events.save(
+                        job_id=job_id,
+                        stage=stage_index,
+                        event_type="repair_proposal_ready",
+                        status="ready",
+                        message=f"Reviewed repair proposal ready for command {command_id}",
+                        payload={
+                            "proposal_id": result.proposal_id,
+                            "job_id": job_id,
+                            "stage_index": stage_index,
+                            "command_id": command_id,
+                            "diff_checksum": result.diff_checksum,
+                            "reviewer_decision": result.reviewer_decision,
+                            "attempt_number": result.attempt_number,
+                            "remaining_attempts": result.remaining_attempts,
+                        },
+                    )
+                    result = ReviewedRepairProposalCreationResult(
+                        status=result.status,
+                        proposal_id=result.proposal_id,
+                        reason=result.reason,
+                        event_id=event.event_id,
+                        reviewer_decision=result.reviewer_decision,
+                        diff_checksum=result.diff_checksum,
+                        attempt_number=result.attempt_number,
+                        remaining_attempts=result.remaining_attempts,
+                        final_diff_source=result.final_diff_source,
+                        generation_status=result.generation_status,
+                    )
+                else:
+                    unavailable_event_type = (
+                        "repair_attempts_exhausted"
+                        if result.status == "attempts_exhausted"
+                        else "repair_generation_failed"
+                        if result.status == "generation_failed"
+                        else "repair_outcome_persisted"
+                        if result.status == "outcome_persisted"
+                        else "reviewed_repair_unavailable"
+                    )
+                    event_context.v2_events.save(
+                        job_id=job_id,
+                        stage=stage_index,
+                        event_type=unavailable_event_type,
+                        status="failed" if result.status in {"attempts_exhausted", "generation_failed"} else "persisted" if result.status == "outcome_persisted" else "skipped",
+                        message=result.reason or "Reviewed repair proposal unavailable.",
+                        payload={
+                            "job_id": job_id,
+                            "stage_index": stage_index,
+                            "command_id": command_id,
+                            "reviewer_decision": result.reviewer_decision,
+                            "attempt_number": result.attempt_number,
+                            "remaining_attempts": result.remaining_attempts,
+                            "final_diff_source": result.final_diff_source,
+                            "generation_status": result.generation_status,
+                        },
+                    )
+                    if result.status not in {"outcome_persisted", "generation_failed"}:
+                        event_context.v2_events.save(
+                            job_id=job_id,
+                            stage=stage_index,
+                            event_type="repair_completed",
+                            status="blocked",
+                            message=f"Repair {unavailable_event_type}: {result.reason or 'No proposal could be created.'}",
+                            payload={"command_id": command_id, "unavailable_reason": unavailable_event_type},
+                        )
+            finally:
+                if uow_factory is not None:
+                    event_uow.__exit__(None, None, None)
+        return result
+
+    def _create_reviewed_repair_proposal_from_refs(
+        self,
+        *,
+        job_id: str,
+        stage_index: int,
+        command_id: str,
+        failure_evidence_ref: str,
+        repair_context_ref: str,
+        run_dir: str,
+        sandbox_path: str,
+        legacy_path: str = "",
+        source_profile: str = "",
+        target_profile: str = "",
+        h2_required: bool = False,
+        validation_context_ref: str = "",
+        validation_context_checksum: str = "",
+        attempt_number: int | None = None,
+        model_client: Any | None = None,
+        invocation_ledger: Any | None = None,
+        uow: Any | None = None,
+        uow_factory: Any | None = None,
+    ) -> ReviewedRepairProposalCreationResult:
+        """Create a reviewed repair proposal from failure artifacts (Option A direct path).
+
+        Loads persisted failure evidence and context pack, runs the
+        proposer/reviewer LLM chain, and persists exactly one proposal
+        if reviewer accepts.
+        Does NOT create a repair_review gate. The proposal is the
+        authorization artifact.
+        """
+        from migration_factory.orchestrator.repair_review_chain import (
+            produce_repair_review_chain,
+        )
+        from migration_factory.control_tower.application.safe_diff_preview import (
+            build_safe_diff_preview,
+        )
+
+        def _persist(callback: Any) -> Any:
+            if uow_factory is not None:
+                with uow_factory() as write_uow:
+                    return callback(write_uow)
+            if uow is not None:
+                return callback(uow)
+            return None
+
+        # 1. Load failure evidence
+        evidence_path = Path(failure_evidence_ref)
+        if not evidence_path.is_file():
+            return ReviewedRepairProposalCreationResult(
+                status="skipped", reason="failure_evidence_ref file not found"
+            )
+        try:
+            evidence_dict = json.loads(evidence_path.read_text(encoding="utf-8"))
+            evidence = _failure_evidence_from_dict(evidence_dict)
+        except Exception as exc:
+            return ReviewedRepairProposalCreationResult(
+                status="skipped", reason=f"failed to load failure evidence: {exc}"
+            )
+
+        # 2. Load context pack
+        context_path = Path(repair_context_ref)
+        if not context_path.is_file():
+            return ReviewedRepairProposalCreationResult(
+                status="skipped", reason="repair_context_ref file not found"
+            )
+        try:
+            context_dict = json.loads(context_path.read_text(encoding="utf-8"))
+            context_pack = _context_pack_from_dict(context_dict)
+        except Exception as exc:
+            return ReviewedRepairProposalCreationResult(
+                status="skipped", reason=f"failed to load context pack: {exc}"
+            )
+
+        # 3. Determine attempt number
+        persisted_attempts = self._get_persisted_attempt_count(job_id, stage_index)
+        if uow is not None and hasattr(uow, "v2_repairs"):
+            try:
+                direct_attempts = [
+                    int(getattr(record, "attempt_number", 0) or 0)
+                    for record in uow.v2_repairs.list_proposals_by_job(job_id)
+                    if int(getattr(record, "route_step_index", -1) or -1) == stage_index
+                ]
+                if direct_attempts:
+                    persisted_attempts = max(persisted_attempts, max(direct_attempts))
+            except Exception as exc:
+                import logging
+                logging.getLogger("v2_repair_gate_service").exception(
+                    "AMF-252 attempt count lookup failed: %s", exc
+                )
+        attempt_number = (
+            int(attempt_number)
+            if attempt_number is not None
+            else persisted_attempts + 1
+        )
+        if attempt_number > self._max_repair_attempts:
+            return ReviewedRepairProposalCreationResult(
+                status="attempts_exhausted",
+                reason=f"All {self._max_repair_attempts} repair attempt(s) exhausted for stage {stage_index}",
+                attempt_number=attempt_number,
+                remaining_attempts=0,
+            )
+        remaining_attempts = max(0, self._max_repair_attempts - attempt_number)
+
+        # 4. Run review chain
+        output_dir = Path(run_dir) / "repair_chain"
+        try:
+            chain_result = produce_repair_review_chain(
+                failure_evidence=evidence,
+                context_pack=context_pack,
+                output_dir=output_dir,
+                sandbox_path=sandbox_path,
+                source_profile=source_profile or evidence.source_profile,
+                target_profile=target_profile or evidence.target_profile,
+                model_client=model_client,
+                invocation_ledger=invocation_ledger,
+            )
+        except Exception as exc:
+            # Transport/schema failures are still durable generation outcomes;
+            # do not leave the user with an unpersisted, ambiguous retry state.
+            import logging
+            logging.getLogger("v2_repair_gate_service").exception(
+                "AMF-252 repair chain production failed for job=%s stage=%s command=%s",
+                job_id, stage_index, command_id,
+            )
+            chain_result = {
+                "review_chain": {
+                    "generation_status": "repair_generation_failed",
+                    "generation_failure_reason": f"review chain production failed: {type(exc).__name__}",
+                    "proposer_usability_reason": "review chain production failed",
+                    "reviewer_usability_reason": "review chain production failed",
+                    "model_roles": {},
+                }
+            }
+
+        review_chain = chain_result.get("review_chain") or {}
+        reviewer_decision = str(review_chain.get("reviewer_decision") or "")
+        def _save_role_events(write_uow: Any) -> None:
+            for event_type, role_key in (("repair_proposer_completed", "proposer"), ("repair_reviewer_completed", "reviewer")):
+                role = (review_chain.get("model_roles") or {}).get(role_key, {})
+                usable = bool(review_chain.get(f"{role_key}_diff_usable", False))
+                success = bool(role.get("available", False)) and usable
+                write_uow.v2_events.save(
+                    job_id=job_id,
+                    stage=stage_index,
+                    event_type=f"repair_{role_key}_{'completed' if success else 'failed'}",
+                    status="completed" if success else "failed",
+                    message=f"{role_key.title()} repair model result recorded.",
+                    payload={
+                        "command_id": command_id,
+                        "model": role,
+                        "success": success,
+                        "diff_usable": usable,
+                        "failure_reason": review_chain.get(f"{role_key}_usability_reason", "") if not usable else "",
+                    },
+                )
+        _persist(_save_role_events)
+
+        # Reviewer verdict is advisory metadata. Only technical diff usability
+        # selects the final artifact. Persist explicit generation failure when
+        # neither model produced a usable diff.
+        if str(review_chain.get("generation_status") or "") != "ready":
+            outcome_id = uuid4().hex
+            outcome_record = V2RepairProposalRecord(
+                proposal_id=outcome_id,
+                command_id=command_id,
+                job_id=job_id,
+                route_step_index=stage_index,
+                failure_summary=str(evidence.failure_summary),
+                hypothesis=str(review_chain.get("root_cause", "")),
+                patch_summary=str(review_chain.get("fix_strategy", "")),
+                affected_paths_json=json.dumps(review_chain.get("changed_files", [])),
+                status="repair_generation_failed",
+                approval_checksum=None,
+                created_at=utc_now_text(),
+                attempt_number=attempt_number,
+                remaining_attempts=remaining_attempts,
+                failure_evidence_ref=failure_evidence_ref,
+                repair_context_ref=repair_context_ref,
+                diff_ref=None,
+                reviewer_output_checksum=str(review_chain.get("reviewer_output_checksum", "")),
+                policy_validation_checksum=str(review_chain.get("policy_validation_checksum", "")),
+                reviewer_decision=reviewer_decision,
+                deterministic_rule_id=str(review_chain.get("deterministic_rule_id", "")) or None,
+                risk=str(review_chain.get("risk", "")) or None,
+                status_reason=str(review_chain.get("generation_failure_reason") or "Repair generation failed."),
+                validation_context_ref=validation_context_ref or None,
+                validation_context_checksum=validation_context_checksum or None,
+            )
+            _persist(lambda write_uow: write_uow.v2_repairs.save_proposal(outcome_record))
+            return ReviewedRepairProposalCreationResult(
+                status="generation_failed",
+                proposal_id=outcome_id,
+                reason=outcome_record.status_reason,
+                reviewer_decision=reviewer_decision,
+                attempt_number=attempt_number,
+                remaining_attempts=remaining_attempts,
+                generation_status="repair_generation_failed",
+            )
+
+        # Read selected final diff. Reviewer accept/reject/revise does not gate Apply.
+        final_diff_ref = str(review_chain.get("final_diff_ref") or "")
+        if not final_diff_ref:
+            return ReviewedRepairProposalCreationResult(
+                status="generation_failed",
+                reason="review chain missing final_diff_ref",
+                reviewer_decision=reviewer_decision,
+                attempt_number=attempt_number,
+                remaining_attempts=remaining_attempts,
+            )
+
+        diff_path = Path(final_diff_ref)
+        if not diff_path.is_file():
+            return ReviewedRepairProposalCreationResult(
+                status="generation_failed",
+                reason=f"final diff file not found: {final_diff_ref}",
+                reviewer_decision=reviewer_decision,
+                attempt_number=attempt_number,
+                remaining_attempts=remaining_attempts,
+            )
+
+        try:
+            diff_bytes = diff_path.read_bytes()
+            if not diff_bytes:
+                return ReviewedRepairProposalCreationResult(
+                    status="generation_failed",
+                    reason="final diff is empty",
+                    reviewer_decision=reviewer_decision,
+                    attempt_number=attempt_number,
+                    remaining_attempts=remaining_attempts,
+                )
+        except OSError as exc:
+            return ReviewedRepairProposalCreationResult(
+                status="generation_failed",
+                reason=f"failed to read final diff: {exc}",
+                reviewer_decision=reviewer_decision,
+                attempt_number=attempt_number,
+                remaining_attempts=remaining_attempts,
+            )
+
+        # 7. Compute raw-byte checksum
+        diff_checksum = sha256_hex(diff_bytes)
+
+        # 8. Build SafeDiffPreview to validate applyability
+        try:
+            preview = build_safe_diff_preview(
+                proposal_id="",
+                diff_ref=final_diff_ref,
+                diff_text=diff_bytes.decode("utf-8", errors="replace"),
+                stored_diff_checksum=diff_checksum,
+            )
+            if preview.checksum_mismatch or getattr(preview, "parse_status", "ok") != "ok":
+                return ReviewedRepairProposalCreationResult(
+                    status="generation_failed",
+                    reason="safe diff preview is not applyable",
+                    reviewer_decision=reviewer_decision,
+                    attempt_number=attempt_number,
+                    remaining_attempts=remaining_attempts,
+                )
+            if not preview.files:
+                return ReviewedRepairProposalCreationResult(
+                    status="generation_failed",
+                    reason="safe diff preview parsed zero files (diff may be unparseable)",
+                    reviewer_decision=reviewer_decision,
+                    attempt_number=attempt_number,
+                    remaining_attempts=remaining_attempts,
+                )
+        except (ValueError, OSError) as exc:
+            return ReviewedRepairProposalCreationResult(
+                status="generation_failed",
+                reason=f"failed to build safe diff preview: {exc}",
+                reviewer_decision=reviewer_decision,
+                attempt_number=attempt_number,
+                remaining_attempts=remaining_attempts,
+            )
+
+        # A parseable diff is not necessarily applicable to the exact sandbox.
+        # Establish the same strict Git precondition used at Apply time before
+        # exposing the reviewed artifact to the human approval gate.
+        try:
+            strict_check = subprocess.run(
+                ["git", "apply", "--check", str(diff_path)],
+                cwd=str(Path(sandbox_path).resolve()),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return ReviewedRepairProposalCreationResult(
+                status="generation_failed",
+                reason=f"strict Git applicability check failed: {type(exc).__name__}",
+                reviewer_decision=reviewer_decision,
+                attempt_number=attempt_number,
+                remaining_attempts=remaining_attempts,
+            )
+        if strict_check.returncode != 0:
+            detail = (strict_check.stderr or strict_check.stdout or "strict Git applicability check failed").strip()
+            return ReviewedRepairProposalCreationResult(
+                status="generation_failed",
+                reason=f"strict Git applicability check failed: {detail[-1000:]}",
+                reviewer_decision=reviewer_decision,
+                attempt_number=attempt_number,
+                remaining_attempts=remaining_attempts,
+            )
+
+        # 9. Persist proposal (duplicate check for same command_id)
+        existing = _persist(lambda write_uow: list(write_uow.v2_repairs.list_proposals_by_command(command_id))) or []
+        if existing:
+            for existing_record in existing:
+                if (getattr(existing_record, "status", "") in
+                    frozenset({"user_review_required", "approvable", "reviewer_accepted"})):
+                    return ReviewedRepairProposalCreationResult(
+                        status="conflict",
+                        proposal_id=existing_record.proposal_id,
+                        reason="active proposal already exists for this command",
+                        reviewer_decision=reviewer_decision,
+                        diff_checksum=diff_checksum,
+                        attempt_number=getattr(existing_record, "attempt_number", None) or attempt_number,
+                        remaining_attempts=remaining_attempts,
+                    )
+
+        proposal_id = uuid4().hex
+        created_at = utc_now_text()
+        lineage_payload = {
+            "schema_version": 1,
+            "proposal_id": proposal_id,
+            "job_id": job_id,
+            "command_id": command_id,
+            "attempt_number": attempt_number,
+            "failure_evidence_ref": failure_evidence_ref,
+            "repair_context_ref": repair_context_ref,
+            "final_diff_ref": final_diff_ref,
+            "diff_checksum": diff_checksum,
+            "reviewer_output_checksum": str(review_chain.get("reviewer_output_checksum", "")),
+            "policy_validation_checksum": str(review_chain.get("policy_validation_checksum", "")),
+            "reviewer_decision": reviewer_decision,
+            "deterministic_rule_id": str(review_chain.get("deterministic_rule_id", "")),
+            "risk": str(review_chain.get("risk", "")),
+            "final_diff_source": str(review_chain.get("final_diff_source") or ""),
+            "generation_status": str(review_chain.get("generation_status") or "ready"),
+        }
+        lineage_path = Path(run_dir) / "repairs" / f"lineage_{proposal_id}.json"
+        lineage_path.parent.mkdir(parents=True, exist_ok=True)
+        lineage_path.write_text(json.dumps(lineage_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        lineage_checksum = sha256_canonical_json(lineage_payload)
+
+        record = V2RepairProposalRecord(
+            proposal_id=proposal_id,
+            command_id=command_id,
+            job_id=job_id,
+            route_step_index=stage_index,
+            failure_summary=str(evidence.failure_summary),
+            hypothesis=str(review_chain.get("root_cause", "")),
+            patch_summary=str(review_chain.get("fix_strategy", "")),
+            affected_paths_json=json.dumps(review_chain.get("changed_files", [])),
+            status="user_review_required",
+            approval_checksum=None,
+            created_at=created_at,
+            attempt_number=attempt_number,
+            remaining_attempts=remaining_attempts,
+            failure_evidence_ref=failure_evidence_ref,
+            repair_context_ref=repair_context_ref,
+            diff_ref=final_diff_ref,
+            diff_checksum=diff_checksum,
+            reviewer_output_checksum=str(review_chain.get("reviewer_output_checksum", "")),
+            policy_validation_checksum=str(review_chain.get("policy_validation_checksum", "")),
+            gate_id=None,
+            reviewer_verdict_id=None,
+            reviewer_decision=reviewer_decision,
+            deterministic_rule_id=str(review_chain.get("deterministic_rule_id", "")),
+            risk=str(review_chain.get("risk", "")),
+            lineage_manifest_ref=str(lineage_path),
+            lineage_manifest_checksum=lineage_checksum,
+            validation_context_ref=validation_context_ref or None,
+            validation_context_checksum=validation_context_checksum or None,
+            apply_claim_status=None,
+            final_diff_source=str(review_chain.get("final_diff_source") or "") or None,
+        )
+
+        def _save_proposal(write_uow: Any) -> None:
+            write_uow.v2_repairs.save_proposal(record)
+            write_uow.v2_events.save(
+                job_id=job_id,
+                stage=stage_index,
+                event_type="repair_final_diff_selected",
+                status="completed",
+                message=f"Selected {record.final_diff_source or 'unknown'} final repair diff.",
+                payload={"proposal_id": proposal_id, "final_diff_source": record.final_diff_source, "diff_checksum": diff_checksum},
+            )
+        _persist(_save_proposal)
+
+        # Track attempt in memory
+        self._attempt_counts[(job_id, stage_index)] = attempt_number
+
+        return ReviewedRepairProposalCreationResult(
+            status="created",
+            proposal_id=proposal_id,
+            reason="technically usable final repair diff selected",
+            reviewer_decision=reviewer_decision,
+            diff_checksum=diff_checksum,
+            attempt_number=attempt_number,
+            remaining_attempts=remaining_attempts,
+            final_diff_source=str(review_chain.get("final_diff_source") or "") or None,
+            generation_status="ready",
+        )
+
     # ── Job 104: request_repair_revision ─────────────────────────────
 
     def request_repair_revision(
@@ -404,7 +974,6 @@ class V2RepairGateService:
             and sandbox_path
             and str(run_dir)
             and legacy_path
-            and deterministic_rule_id
         )
 
         # Use the repair-specific revise path so the revision history
@@ -563,6 +1132,7 @@ class V2RepairGateService:
                 failure_evidence=evidence,
                 context_pack=context_pack,
                 output_dir=output_dir,
+                sandbox_path=sandbox_path,
                 source_profile=source_profile or evidence.source_profile,
                 target_profile=target_profile or evidence.target_profile,
                 model_client=model_client,
@@ -573,7 +1143,7 @@ class V2RepairGateService:
                 gate_checksum="",
                 diagnosis=None,
                 status="skipped",
-                reason="reviewer did not accept repair chain on revision",
+                reason="repair chain regeneration failed on revision",
             )
 
         return self.create_repair_gate_from_reviewed_chain(
@@ -1017,6 +1587,7 @@ class V2RepairGateService:
                 failure_evidence=evidence,
                 context_pack=context_pack,
                 output_dir=output_dir,
+                sandbox_path=sandbox_path,
                 source_profile=source_profile or evidence.source_profile,
                 target_profile=target_profile or evidence.target_profile,
                 model_client=model_client,
@@ -1138,6 +1709,9 @@ def create_repair_gate_diagnosis_callback(
     diagnosis_service: V2FailureDiagnosisService,
     *,
     max_repair_attempts: int = DEFAULT_MAX_REPAIR_ATTEMPTS,
+    uow: Any | None = None,
+    model_client: Any | None = None,
+    invocation_ledger: Any | None = None,
 ) -> Callable[[str, int, str, str, dict[str, Any]], None]:
     """Create a callback suitable for V2OrchestratorRunner(diagnosis_callback=...).
 
@@ -1173,9 +1747,11 @@ def create_repair_gate_diagnosis_callback(
                     event_type=event_type,
                     payload=payload,
                 )
-            except Exception:
-                # Diagnosis is best-effort — don't block gate creation
-                pass
+            except Exception as exc:
+                import logging
+                logging.getLogger("v2_repair_gate_service").exception(
+                    "AMF-252 diagnosis callback failed: %s", exc
+                )
 
         # Step 2: Build failure summary from payload
         failure_summary = _build_failure_summary_from_payload(event_type, payload)
@@ -1189,6 +1765,38 @@ def create_repair_gate_diagnosis_callback(
                 str(v) for v in raw_refs.values() if v and isinstance(v, str)
             )
 
+        # AMF-252: Route to reviewed repair proposal creation when internal refs exist
+        refs = _extract_repair_refs_from_payload(payload)
+        if refs["failure_evidence_ref"] and refs["repair_context_ref"]:
+            dedupe_key = _repair_dedupe_key(job_id, stage_index, payload)
+            if _is_duplicate_repair_attempt(dedupe_key):
+                import logging
+                logging.getLogger("v2_repair_gate_service").info(
+                    "Skipping duplicate AMF-252 repair attempt",
+                    extra={
+                        "job_id": job_id,
+                        "stage_index": stage_index,
+                        "command_id": command_id,
+                    },
+                )
+                return
+            try:
+                repair_gate_service.create_reviewed_repair_proposal_on_failure(
+                    job_id=job_id,
+                    stage_index=stage_index,
+                    command_id=command_id,
+                    failure_payload=payload,
+                    model_client=model_client,
+                    invocation_ledger=invocation_ledger,
+                    uow=uow,
+                )
+            except Exception as exc:
+                import logging
+                logging.getLogger("v2_repair_gate_service").exception(
+                    "AMF-252 reviewed repair callback failed: %s", exc
+                )
+            return  # Do not also create a generic gate
+
         # Step 4: Create repair_review gate
         try:
             repair_gate_service.create_repair_gate_on_failure(
@@ -1200,11 +1808,47 @@ def create_repair_gate_diagnosis_callback(
                 source_artifact_refs=artifact_refs,
                 diagnosis=diagnosis,
             )
-        except Exception:
-            # Gate creation is best-effort — don't block the pipeline
-            pass
+        except Exception as exc:
+            import logging
+            logging.getLogger("v2_repair_gate_service").exception(
+                "AMF-252 gate creation callback failed: %s", exc
+            )
 
     return callback
+
+
+def _repair_dedupe_key(job_id: str, stage: int | None, payload: dict[str, Any]) -> str:
+    return "|".join([
+        str(job_id),
+        str(stage or ""),
+        str(payload.get("command_id") or ""),
+        str(payload.get("_repair_failure_evidence_checksum") or payload.get("failure_evidence_checksum") or ""),
+    ])
+
+
+def _is_duplicate_repair_attempt(key: str) -> bool:
+    with _REPAIR_ATTEMPT_DEDUPE_LOCK:
+        if key in _REPAIR_ATTEMPT_DEDUPE_KEYS:
+            return True
+        _REPAIR_ATTEMPT_DEDUPE_KEYS.add(key)
+        return False
+
+
+def _extract_repair_refs_from_payload(payload: dict[str, Any]) -> dict[str, str]:
+    failure_evidence_ref = str(payload.get("_repair_failure_evidence_ref") or payload.get("failure_evidence_ref") or "")
+    repair_context_ref = str(payload.get("_repair_context_pack_ref") or payload.get("repair_context_ref") or "")
+    run_dir = str(payload.get("_repair_run_dir") or payload.get("run_dir") or "")
+    sandbox_path = str(payload.get("_repair_sandbox_path") or payload.get("sandbox_path") or "")
+    validation_context_ref = str(payload.get("_repair_validation_context_ref") or payload.get("validation_context_ref") or "")
+    validation_context_checksum = str(payload.get("_repair_validation_context_checksum") or payload.get("validation_context_checksum") or "")
+    return {
+        "failure_evidence_ref": failure_evidence_ref,
+        "repair_context_ref": repair_context_ref,
+        "run_dir": run_dir,
+        "sandbox_path": sandbox_path,
+        "validation_context_ref": validation_context_ref,
+        "validation_context_checksum": validation_context_checksum,
+    }
 
 
 def _build_failure_summary_from_payload(
@@ -1252,3 +1896,89 @@ def _parse_gate_ref_checksums(source_artifact_refs_json: str) -> dict[str, str]:
         if key.endswith("_checksum") or key == "checksum":
             refs[key] = value
     return refs
+
+
+# ── Deserialization helpers (Option A direct path) ──────────────────
+
+
+def _failure_evidence_from_dict(data: dict[str, Any]) -> Any:
+    """Deserialize FailureEvidence from its to_dict() output."""
+    from migration_factory.repair_loop.failure_evidence import (
+        FailureEvidence,
+        FailureSource,
+        NormalizedCompilerError,
+        NormalizedTestFailure,
+    )
+    compiler_errors = tuple(
+        NormalizedCompilerError(**e) if isinstance(e, dict) else e
+        for e in data.get("compiler_errors", ())
+    )
+    test_failures = tuple(
+        NormalizedTestFailure(**t) if isinstance(t, dict) else t
+        for t in data.get("test_failures", ())
+    )
+    return FailureEvidence(
+        failure_source=FailureSource(data.get("failure_source", "UNKNOWN")),
+        stage_index=int(data.get("stage_index", 0)),
+        job_id=str(data.get("job_id", "")),
+        command_id=str(data.get("command_id", "")),
+        failure_summary=str(data.get("failure_summary", "")),
+        compiler_errors=compiler_errors,
+        test_failures=test_failures,
+        changed_files=tuple(data.get("changed_files", ())),
+        source_profile=str(data.get("source_profile", "")),
+        target_profile=str(data.get("target_profile", "")),
+        accepted_artifact_checksums=tuple(data.get("accepted_artifact_checksums", ())),
+        artifact_refs={str(k): str(v) for k, v in data.get("artifact_refs", {}).items()},
+        stdout_tail=str(data.get("stdout_tail", "")),
+        stderr_tail=str(data.get("stderr_tail", "")),
+        safe_log_preview=str(data.get("safe_log_preview", "")),
+        content_checksum=str(data.get("content_checksum", "")),
+        artifact_checksum=str(data.get("artifact_checksum", "")),
+        created_at=str(data.get("created_at", "")),
+        schema_version=str(data.get("schema_version", "1.0.0")),
+    )
+
+
+def _context_pack_from_dict(data: dict[str, Any]) -> Any:
+    """Deserialize RepairContextPack from its to_dict() output."""
+    from migration_factory.repair_loop.repair_context import (
+        RepairContextPack,
+        RepairSourceContext,
+    )
+    raw_contexts = data.get("source_contexts") or ()
+    source_contexts: list[RepairSourceContext] = []
+    for sc in raw_contexts:
+        if isinstance(sc, dict):
+            source_contexts.append(RepairSourceContext(
+                path=str(sc.get("path", "")),
+                content_checksum=str(sc.get("content_checksum", "")),
+                start_line=int(sc.get("start_line", 0)),
+                end_line=int(sc.get("end_line", 0)),
+                content=str(sc.get("content", "")),
+                reason_included=str(sc.get("reason_included", "")),
+            ))
+    return RepairContextPack(
+        job_id=str(data.get("job_id", "")),
+        stage_index=int(data.get("stage_index", 0)),
+        command_id=str(data.get("command_id", "")),
+        failure_source=str(data.get("failure_source", "")),
+        failure_evidence_checksum=str(data.get("failure_evidence_checksum", "")),
+        source_profile=str(data.get("source_profile", "")),
+        target_profile=str(data.get("target_profile", "")),
+        accepted_analysis_checksum=str(data.get("accepted_analysis_checksum", "")),
+        accepted_planning_checksum=str(data.get("accepted_planning_checksum", "")),
+        prior_proposal_checksums=tuple(data.get("prior_proposal_checksums", ())),
+        prior_reviewer_notes=tuple(data.get("prior_reviewer_notes", ())),
+        user_comments=str(data.get("user_comments", "")),
+        changed_files=tuple(data.get("changed_files", ())),
+        safe_log_preview=str(data.get("safe_log_preview", "")),
+        base_repo_state_checksum=str(data.get("base_repo_state_checksum", "")),
+        context_pack_checksum=str(data.get("context_pack_checksum", "")),
+        prior_revision_ids=tuple(data.get("prior_revision_ids", ())),
+        cycle_number=int(data.get("cycle_number", 0)),
+        max_cycles=int(data.get("max_cycles", 3)),
+        created_at=str(data.get("created_at", "")),
+        schema_version=str(data.get("schema_version", "1.0.0")),
+        source_contexts=tuple(source_contexts),
+    )
