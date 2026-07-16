@@ -1505,7 +1505,7 @@ export type GateEvidencePack = {
 
 // ── RA — Repair Assistant Chat types ─────────────────────────────────────
 
-export type RepairAssistantAction = "ANSWER_ONLY" | "REQUEST_REVISION" | "CLARIFICATION_REQUIRED";
+export type RepairAssistantAction = "ANSWER_ONLY" | "REQUEST_REVISION" | "CLARIFICATION_REQUIRED" | "error" | "blocked" | "revision_failed";
 
 export type RepairAssistantMessageStatus = "answered" | "clarification_required" | "revision_generating" | "revision_created" | "revision_failed" | "blocked" | "error";
 
@@ -1518,6 +1518,10 @@ export interface RepairAssistantMessage {
   action?: RepairAssistantAction | null;
   status?: RepairAssistantMessageStatus | null;
   created_at: string;
+  failure_stage?: string | null;
+  failure_code?: string | null;
+  safe_failure_message?: string | null;
+  correlation_id?: string | null;
 }
 
 export interface RepairAssistantMessagesListResponse {
@@ -1549,5 +1553,6 @@ export interface RepairAssistantSendResponse {
   status: RepairAssistantMessageStatus;
   failure_stage?: string | null;
   failure_code?: string | null;
+  safe_failure_message?: string | null;
   correlation_id?: string | null;
 }

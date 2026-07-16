@@ -151,6 +151,15 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
     }
   }
 
+  async function handleNewProposal(newProposalId: string) {
+    await refreshProposalData(newProposalId);
+  }
+
+  async function handleRefreshProposal() {
+    if (proposalState.status !== "available") return;
+    await refreshProposalData(proposalState.proposal.proposal_id);
+  }
+
   async function handleRequestRevision(instruction: string) {
     if (!jobId) return;
     setRevisionPending(true);
@@ -351,7 +360,8 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
             reviewerDecision={proposal.reviewer_verdict?.decision ?? null}
             finalDiffSource={proposal.final_diff_source ?? null}
             diffChecksum={proposal.diff_checksum}
-            onNewProposal={(newProposalId) => refreshProposalData(newProposalId)}
+            onNewProposal={handleNewProposal}
+            onRefreshProposal={handleRefreshProposal}
           />
         </div>
       </div>

@@ -16,6 +16,7 @@ interface UseRepairAssistantOptions {
   proposalId: string;
   baseDiffChecksum: string;
   onNewProposal?: (newProposalId: string) => void;
+  onRefreshProposal?: () => void;
 }
 
 export function useRepairAssistant({
@@ -23,6 +24,7 @@ export function useRepairAssistant({
   proposalId,
   baseDiffChecksum,
   onNewProposal,
+  onRefreshProposal,
 }: UseRepairAssistantOptions) {
   const [messages, setMessages] = useState<RepairAssistantMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -30,6 +32,10 @@ export function useRepairAssistant({
   const [error, setError] = useState<string | null>(null);
   const [revisionStatus, setRevisionStatus] = useState<"idle" | "generating" | "created" | null>(null);
   const [newProposalId, setNewProposalId] = useState<string | null>(null);
+  const [failureStage, setFailureStage] = useState<string | null>(null);
+  const [failureCode, setFailureCode] = useState<string | null>(null);
+  const [correlationId, setCorrelationId] = useState<string | null>(null);
+  const [safeFailureMessage, setSafeFailureMessage] = useState<string | null>(null);
 
   const lastProposalRef = useRef(proposalId);
   const pendingRef = useRef(false);
@@ -70,6 +76,10 @@ export function useRepairAssistant({
       setError(null);
       setRevisionStatus(null);
       setNewProposalId(null);
+      setFailureStage(null);
+      setFailureCode(null);
+      setCorrelationId(null);
+      setSafeFailureMessage(null);
       loadMessages();
     }
   }, [proposalId, loadMessages]);
@@ -106,6 +116,10 @@ export function useRepairAssistant({
 
       if (response.status === "revision_failed") {
         if (mountedRef.current) {
+          setFailureStage(response.failure_stage ?? null);
+          setFailureCode(response.failure_code ?? null);
+          setCorrelationId(response.correlation_id ?? null);
+          setSafeFailureMessage(response.safe_failure_message ?? null);
           setError(`Revision failed (${response.failure_stage ?? "generation"}/${response.failure_code ?? "unknown"}).`);
           setRevisionStatus(null);
         }
@@ -125,6 +139,7 @@ export function useRepairAssistant({
         if (newId && newId !== proposalId) {
           if (mountedRef.current) setNewProposalId(newId);
           await onNewProposal?.(newId);
+          onRefreshProposal?.();
         }
       }
 
@@ -139,7 +154,7 @@ export function useRepairAssistant({
       }
       pendingRef.current = false;
     }
-  }, [jobId, proposalId, baseDiffChecksum, loadMessages, onNewProposal]);
+  }, [jobId, proposalId, baseDiffChecksum, loadMessages, onNewProposal, onRefreshProposal]);
 
   const reloadMessages = useCallback(async () => {
     await loadMessages();
@@ -155,9 +170,13 @@ export function useRepairAssistant({
     isSending,
     error,
     revisionStatus,
+    newProposalId,
+    failureStage,
+    failureCode,
+    correlationId,
+    safeFailureMessage,
     sendMessage,
     reloadMessages,
-    newProposalId,
     clearError,
   } as const;
 }

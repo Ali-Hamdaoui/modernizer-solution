@@ -13,6 +13,7 @@ interface RepairAssistantChatProps {
   finalDiffSource: string | null;
   diffChecksum: string;
   onNewProposal?: (newProposalId: string) => void;
+  onRefreshProposal?: () => void;
 }
 
 const QUICK_ACTIONS = [
@@ -32,6 +33,7 @@ export function RepairAssistantChat({
   finalDiffSource,
   diffChecksum,
   onNewProposal,
+  onRefreshProposal,
 }: RepairAssistantChatProps) {
   const {
     messages,
@@ -39,11 +41,15 @@ export function RepairAssistantChat({
     isSending,
     error,
     revisionStatus,
+    newProposalId,
+    failureStage,
+    failureCode,
+    correlationId,
+    safeFailureMessage,
     sendMessage,
     reloadMessages,
-    newProposalId,
     clearError,
-  } = useRepairAssistant({ jobId, proposalId, baseDiffChecksum: diffChecksum, onNewProposal });
+  } = useRepairAssistant({ jobId, proposalId, baseDiffChecksum: diffChecksum, onNewProposal, onRefreshProposal });
 
   const [inputText, setInputText] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -497,6 +503,50 @@ export function RepairAssistantChat({
           font-family: monospace;
           color: #166534;
         }
+        .rac-failure-diagnostic {
+          margin: 0.5rem 1rem;
+          padding: 0.75rem;
+          border-radius: 0.5rem;
+          background: #fef2f2;
+          border: 1px solid #fecaca;
+          font-size: 0.8rem;
+        }
+        .rac-failure-header {
+          display: flex;
+          align-items: center;
+          gap: 0.35rem;
+          font-weight: 600;
+          color: #991b1b;
+          margin-bottom: 0.5rem;
+        }
+        .rac-failure-body {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.5rem;
+          margin-bottom: 0.5rem;
+        }
+        .rac-failure-label,
+        .rac-failure-code,
+        .rac-failure-correlation {
+          font-size: 0.78rem;
+          color: #7f1d1d;
+          background: #fee2e2;
+          padding: 0.15rem 0.5rem;
+          border-radius: 0.3rem;
+        }
+        .rac-failure-message {
+          margin: 0.25rem 0 0;
+          font-size: 0.78rem;
+          color: #7f1d1d;
+          width: 100%;
+        }
+        .rac-failure-unaffected {
+          margin: 0.25rem 0 0;
+          font-size: 0.78rem;
+          color: #92400e;
+          font-style: italic;
+          font-weight: 500;
+        }
       `}</style>
 
       <div className="rac-header">
@@ -539,6 +589,35 @@ export function RepairAssistantChat({
             <path d="M20 6L9 17l-5-5" />
           </svg>
           <span>Revised proposal created: <span className="rac-revision-id">{newProposalId}</span></span>
+        </div>
+      )}
+
+      {failureStage && (
+        <div className="rac-failure-diagnostic" data-testid="rac-failure-diagnostic">
+          <div className="rac-failure-header">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <span>Revision failed</span>
+          </div>
+          <div className="rac-failure-body">
+            <span className="rac-failure-label">Stage: <strong>{failureStage}</strong></span>
+            {failureCode && <span className="rac-failure-code">Code: <strong>{failureCode}</strong></span>}
+            {correlationId && <span className="rac-failure-correlation">ID: <strong>{correlationId}</strong></span>}
+            {safeFailureMessage && <p className="rac-failure-message">{safeFailureMessage}</p>}
+          </div>
+          <p className="rac-failure-unaffected">The current proposal remains unchanged.</p>
+        </div>
+      )}
+
+      {revisionStatus === "created" && !newProposalId && failureStage === null && (
+        <div className="rac-revision-status rac-revision-created">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M20 6L9 17l-5-5" />
+          </svg>
+          <span>Revised proposal created</span>
         </div>
       )}
 
