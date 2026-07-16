@@ -107,6 +107,26 @@ class ReviewedRepairProposalCreationResult:
     generation_status: str = ""
 
 
+@dataclass(frozen=True)
+class RepairRevisionRequest:
+    job_id: str
+    stage_index: int
+    command_id: str
+    failure_evidence_ref: str
+    repair_context_ref: str
+    run_dir: Path
+    sandbox_path: Path
+    legacy_path: Path | None
+    source_profile: str
+    target_profile: str
+    validation_context_ref: str
+    validation_context_checksum: str
+    source_proposal_id: str
+    revision_of: str
+    revision_number: int
+    output_dir: Path
+
+
 # ── Repair Gate Service ─────────────────────────────────────────────
 
 
@@ -536,6 +556,46 @@ class V2RepairGateService:
                 if uow_factory is not None:
                     event_uow.__exit__(None, None, None)
         return result
+
+    def create_reviewed_repair_revision(
+        self,
+        *,
+        request: RepairRevisionRequest,
+        model_client: Any | None = None,
+        invocation_ledger: Any | None = None,
+        uow_factory: Callable[[], Any] | None = None,
+        pre_persist_hook: Callable[..., Any] | None = None,
+    ) -> ReviewedRepairProposalCreationResult:
+        """Create a reviewed repair revision from a typed request.
+
+        Public typed contract for direct (non-gate) revision paths.
+        Delegates internally to the authoritative _create_reviewed_repair_proposal_from_refs().
+
+        This is the ONLY public method for direct revisions.
+        create_reviewed_repair_proposal_on_failure() remains for failure-payload callers only.
+        """
+        return self._create_reviewed_repair_proposal_from_refs(
+            job_id=request.job_id,
+            stage_index=request.stage_index,
+            command_id=request.command_id,
+            failure_evidence_ref=request.failure_evidence_ref,
+            repair_context_ref=request.repair_context_ref,
+            run_dir=str(request.run_dir),
+            sandbox_path=str(request.sandbox_path),
+            legacy_path=str(request.legacy_path or ""),
+            source_profile=request.source_profile,
+            target_profile=request.target_profile,
+            validation_context_ref=request.validation_context_ref,
+            validation_context_checksum=request.validation_context_checksum,
+            source_proposal_id=request.source_proposal_id,
+            revision_of=request.revision_of,
+            revision_number=request.revision_number,
+            output_dir=request.output_dir,
+            model_client=model_client,
+            invocation_ledger=invocation_ledger,
+            uow_factory=uow_factory,
+            pre_persist_hook=pre_persist_hook,
+        )
 
     def _create_reviewed_repair_proposal_from_refs(
         self,

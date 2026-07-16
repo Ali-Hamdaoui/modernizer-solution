@@ -4225,256 +4225,6 @@ def create_app(
                     "event_ids": [],
                     "artifact_refs": {},
                 }
-
-                # Unified non-gate regeneration path: load refs, produce chain, persist.
-                from migration_factory.orchestrator.repair_review_chain import (
-                    produce_repair_review_chain,
-                )
-                from migration_factory.repair_loop.failure_evidence import (
-                    FailureEvidence,
-                    FailureSource,
-                )
-                from migration_factory.repair_loop.repair_context import (
-                    RepairContextPack,
-                    RepairSourceContext,
-                    compute_context_pack_checksum,
-                    context_pack_to_dict,
-                )
-                from migration_factory.control_tower.application.v2_repair_gate_service import (
-                    _failure_evidence_from_dict,
-                    _context_pack_from_dict,
-                )
-
-                failure_evidence_ref = getattr(record, "failure_evidence_ref", None)
-                repair_context_ref = getattr(record, "repair_context_ref", None)
-                diff_ref = getattr(record, "diff_ref", None)
-                diff_checksum = getattr(record, "diff_checksum", None)
-
-                if not failure_evidence_ref or not repair_context_ref:
-                    raise _error(
-                        status.HTTP_400_BAD_REQUEST,
-                        "PROPOSAL_MISSING_REFS",
-                        "Proposal has no failure_evidence_ref or repair_context_ref; cannot regenerate.",
-                    )
-
-                evidence_path = Path(failure_evidence_ref)
-                if not evidence_path.is_file():
-                    raise _error(
-                        status.HTTP_400_BAD_REQUEST,
-                        "EVIDENCE_FILE_NOT_FOUND",
-                        f"Failure evidence file not found: {failure_evidence_ref}",
-                    )
-                try:
-                    evidence_dict = json.loads(evidence_path.read_text(encoding="utf-8"))
-                    evidence = _failure_evidence_from_dict(evidence_dict)
-                except Exception as exc:
-                    raise _error(
-                        status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        "EVIDENCE_LOAD_FAILED",
-                        f"Failed to load failure evidence: {exc}",
-                    )
-
-                context_path = Path(repair_context_ref)
-                if not context_path.is_file():
-                    raise _error(
-                        status.HTTP_400_BAD_REQUEST,
-                        "CONTEXT_FILE_NOT_FOUND",
-                        f"Context file not found: {repair_context_ref}",
-                    )
-                try:
-                    context_dict = json.loads(context_path.read_text(encoding="utf-8"))
-                    context_pack = _context_pack_from_dict(context_dict)
-                    # Inject user revision instruction
-                    context_pack = RepairContextPack(
-                        job_id=context_pack.job_id,
-                        stage_index=context_pack.stage_index,
-                        command_id=context_pack.command_id,
-                        failure_source=context_pack.failure_source,
-                        failure_evidence_checksum=context_pack.failure_evidence_checksum,
-                        source_profile=context_pack.source_profile,
-                        target_profile=context_pack.target_profile,
-                        accepted_analysis_checksum=context_pack.accepted_analysis_checksum,
-                        accepted_planning_checksum=context_pack.accepted_planning_checksum,
-                        prior_proposal_checksums=context_pack.prior_proposal_checksums + (diff_checksum or "",),
-                        prior_reviewer_notes=context_pack.prior_reviewer_notes,
-                        user_comments=user_instruction,
-                        changed_files=context_pack.changed_files,
-                        safe_log_preview=context_pack.safe_log_preview,
-                        base_repo_state_checksum=context_pack.base_repo_state_checksum,
-                        context_pack_checksum="",
-                        prior_revision_ids=context_pack.prior_revision_ids,
-                        cycle_number=context_pack.cycle_number + 1,
-                        max_cycles=context_pack.max_cycles,
-                        created_at=context_pack.created_at,
-                        schema_version=context_pack.schema_version,
-                        source_contexts=context_pack.source_contexts,
-                    )
-                    context_pack_checksum = compute_context_pack_checksum(context_pack)
-                    context_pack = RepairContextPack(
-                        job_id=context_pack.job_id,
-                        stage_index=context_pack.stage_index,
-                        command_id=context_pack.command_id,
-                        failure_source=context_pack.failure_source,
-                        failure_evidence_checksum=context_pack.failure_evidence_checksum,
-                        source_profile=context_pack.source_profile,
-                        target_profile=context_pack.target_profile,
-                        accepted_analysis_checksum=context_pack.accepted_analysis_checksum,
-                        accepted_planning_checksum=context_pack.accepted_planning_checksum,
-                        prior_proposal_checksums=context_pack.prior_proposal_checksums,
-                        prior_reviewer_notes=context_pack.prior_reviewer_notes,
-                        user_comments=context_pack.user_comments,
-                        changed_files=context_pack.changed_files,
-                        safe_log_preview=context_pack.safe_log_preview,
-                        base_repo_state_checksum=context_pack.base_repo_state_checksum,
-                        context_pack_checksum=context_pack_checksum,
-                        prior_revision_ids=context_pack.prior_revision_ids,
-                        cycle_number=context_pack.cycle_number,
-                        max_cycles=context_pack.max_cycles,
-                        created_at=context_pack.created_at,
-                        schema_version=context_pack.schema_version,
-                        source_contexts=context_pack.source_contexts,
-                    )
-                except Exception as exc:
-                    raise _error(
-                        status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        "CONTEXT_LOAD_FAILED",
-                        f"Failed to load repair context: {exc}",
-                    )
-
-                _append_v2_event(
-                    uow, job_id=job_id, stage=getattr(record, "route_step_index", None),
-                    event_type="repair_revision_requested", status="requested",
-                    message="Human requested regeneration of the reviewed repair proposal.",
-                    payload={"proposal_id": proposal_id, "idempotency_key": payload.idempotency_key or ""},
-                )
-
-                try:
-                    commands = tuple(uow.v2_commands.list_by_job(job_id))
-                    events = tuple(uow.v2_events.list_by_job(job_id))
-                    stage_index = int(getattr(record, "route_step_index", 0) or 0)
-                    sandbox_resolution = _resolve_stage_sandbox_root(
-                        stage_index=stage_index, events=events, commands=commands,
-                    )
-                    sandbox_path = str(sandbox_resolution[0]) if sandbox_resolution is not None else ""
-                    run_id = _approval_review_run_id_for_stage(uow, job_id=job_id, stage_index=stage_index)
-                    run_dir_val: str = ""
-                    if run_id:
-                        run_dir_val = _v2_resume_run_dir_from_commands(commands, stage_index, run_id)
-                    output_dir = Path(run_dir_val).resolve() / "repair_chain" if run_dir_val else Path(failure_evidence_ref).parent.parent / "repair_chain"
-                except Exception as exc:
-                    failure_correlation_id = uuid4().hex
-                    failure_code = type(exc).__name__
-                    output_dir = Path(failure_evidence_ref).parent.parent / "repair_chain"
-                    sandbox_path = ""
-
-                chain_result = produce_repair_review_chain(
-                    failure_evidence=evidence,
-                    context_pack=context_pack,
-                    output_dir=output_dir,
-                    sandbox_path=sandbox_path or None,
-                    source_profile=str(getattr(record, "source_profile", "") or ""),
-                    target_profile=str(getattr(record, "target_profile", "") or ""),
-                    model_client=getattr(app.state, "v2_assistant_model_client", None),
-                )
-
-                review_chain = chain_result.get("review_chain") or {}
-                if str(review_chain.get("generation_status") or "") != "ready":
-                    new_proposal_id = uuid4().hex
-                    diff_ref_val = str(review_chain.get("final_diff_ref") or "")
-                    diff_checksum_val = ""
-                    if diff_ref_val and Path(diff_ref_val).is_file():
-                        diff_checksum_val = sha256_hex(Path(diff_ref_val).read_bytes())
-                    uow.v2_repairs.save_proposal(V2RepairProposalRecord(
-                        proposal_id=new_proposal_id,
-                        command_id=str(getattr(record, "command_id", "")),
-                        failure_summary=str(getattr(evidence, "failure_summary", "")),
-                        hypothesis=str(review_chain.get("root_cause", "")),
-                        patch_summary=str(review_chain.get("fix_strategy", "")),
-                        affected_paths_json=json.dumps(review_chain.get("changed_files", [])),
-                        status="repair_generation_failed",
-                        approval_checksum=None,
-                        created_at=utc_now_text(),
-                        attempt_number=int(getattr(record, "attempt_number", 0) or 0) + 1,
-                        remaining_attempts=max(0, int(getattr(record, "remaining_attempts", 0) or 0)),
-                        failure_evidence_ref=failure_evidence_ref,
-                        repair_context_ref=repair_context_ref,
-                        diff_ref=diff_ref_val or None,
-                        diff_checksum=diff_checksum_val or None,
-                        reviewer_output_checksum=str(review_chain.get("reviewer_output_checksum", "")),
-                        policy_validation_checksum=str(review_chain.get("policy_validation_checksum", "")),
-                        reviewer_decision=str(review_chain.get("reviewer_decision", "")),
-                        status_reason=str(review_chain.get("generation_failure_reason") or "Repair regeneration failed."),
-                        final_diff_source=str(review_chain.get("final_diff_source") or "") or None,
-                    ))
-                    return {"job_id": job_id, "previous_proposal_id": proposal_id,
-                            "proposal": None, "status": "repair_generation_failed",
-                            "event_ids": [], "artifact_refs": {}}
-
-                final_diff_ref = str(review_chain.get("final_diff_ref") or "")
-                if not final_diff_ref or not Path(final_diff_ref).is_file():
-                    raise _error(
-                        status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        "REGENERATION_NO_DIFF",
-                        "Repair regeneration produced no usable diff.",
-                    )
-
-                diff_checksum_val = sha256_hex(Path(final_diff_ref).read_bytes())
-                new_proposal_id = uuid4().hex
-                lineage_payload = {
-                    "schema_version": 1,
-                    "proposal_id": new_proposal_id,
-                    "job_id": job_id,
-                    "command_id": str(getattr(record, "command_id", "")),
-                    "attempt_number": int(getattr(record, "attempt_number", 0) or 0) + 1,
-                    "failure_evidence_ref": failure_evidence_ref,
-                    "repair_context_ref": repair_context_ref,
-                    "final_diff_ref": final_diff_ref,
-                    "diff_checksum": diff_checksum_val,
-                    "reviewer_output_checksum": str(review_chain.get("reviewer_output_checksum", "")),
-                    "policy_validation_checksum": str(review_chain.get("policy_validation_checksum", "")),
-                    "reviewer_decision": str(review_chain.get("reviewer_decision", "")),
-                    "final_diff_source": str(review_chain.get("final_diff_source") or ""),
-                    "generation_status": "ready",
-                }
-
-                new_record = V2RepairProposalRecord(
-                    proposal_id=new_proposal_id,
-                    command_id=str(getattr(record, "command_id", "")),
-                    failure_summary=str(getattr(evidence, "failure_summary", "")),
-                    hypothesis=str(review_chain.get("root_cause", "")),
-                    patch_summary=str(review_chain.get("fix_strategy", "")),
-                    affected_paths_json=json.dumps(review_chain.get("changed_files", [])),
-                    status="user_review_required",
-                    approval_checksum=None,
-                    created_at=utc_now_text(),
-                    attempt_number=int(getattr(record, "attempt_number", 0) or 0) + 1,
-                    remaining_attempts=max(0, int(getattr(record, "remaining_attempts", 0) or 0)),
-                    failure_evidence_ref=failure_evidence_ref,
-                    repair_context_ref=repair_context_ref,
-                    diff_ref=final_diff_ref,
-                    diff_checksum=diff_checksum_val,
-                    reviewer_output_checksum=str(review_chain.get("reviewer_output_checksum", "")),
-                    policy_validation_checksum=str(review_chain.get("policy_validation_checksum", "")),
-                    reviewer_decision=str(review_chain.get("reviewer_decision", "")),
-                    deterministic_rule_id=str(getattr(record, "deterministic_rule_id", "")),
-                    risk=str(review_chain.get("risk", "")),
-                    final_diff_source=str(review_chain.get("final_diff_source") or "") or None,
-                )
-                uow.v2_repairs.save_proposal(new_record)
-                _append_v2_event(
-                    uow, job_id=job_id, stage=getattr(record, "route_step_index", None),
-                    event_type="repair_regeneration_completed", status="completed",
-                    message="Repair regeneration completed for non-gate proposal.",
-                    payload={"proposal_id": new_proposal_id, "previous_proposal_id": proposal_id},
-                )
-                return {"job_id": job_id, "previous_proposal_id": proposal_id,
-                        "proposal": new_proposal_id,
-                        "status": "user_review_required",
-                        "event_ids": [],
-                        "artifact_refs": {
-                            "new_diff_ref": final_diff_ref,
-                            "new_diff_checksum": diff_checksum_val,
-                        }}
             gate = uow.phase_gates.get(gate_id)
             if gate is None or gate.job_id != job_id:
                 raise _error(
@@ -4664,6 +4414,7 @@ def create_app(
         """Regenerate a direct proposal through the authoritative V2 service."""
         from migration_factory.control_tower.application.v2_repair_gate_service import (
             V2RepairGateService,
+            RepairRevisionRequest,
             _context_pack_from_dict,
         )
         from migration_factory.repair_loop.repair_context import (
@@ -4676,7 +4427,17 @@ def create_app(
             runtime = _resolve_repair_proposal_runtime_context(
                 uow=read_uow, job_id=job_id, record=proposal,
             )
+            if runtime is None:
+                raise TypeError("runtime context resolution returned None")
+            for required_key in ("run_dir", "sandbox_path", "source_profile", "target_profile", "command_id", "validation_execution_context"):
+                if required_key not in runtime:
+                    raise KeyError(f"runtime context missing required key: {required_key}")
+            if "stage_index" not in runtime["validation_execution_context"]:
+                raise KeyError("runtime validation_execution_context missing stage_index")
+
             context_ref = str(getattr(proposal, "repair_context_ref", "") or "")
+            if not context_ref or not Path(context_ref).is_file():
+                raise FileNotFoundError(f"repair_context_ref not found or empty: {context_ref}")
             context_data = json.loads(Path(context_ref).read_text(encoding="utf-8"))
             old_pack = _context_pack_from_dict(context_data)
             revision_id = uuid4().hex
@@ -4716,15 +4477,15 @@ def create_app(
             )
 
         service = V2RepairGateService(gate_service=None)
-        return service.create_reviewed_repair_proposal_on_failure(
+        request = RepairRevisionRequest(
             job_id=job_id,
             stage_index=int(runtime["validation_execution_context"]["stage_index"]),
             command_id=str(runtime["command_id"]),
             failure_evidence_ref=str(getattr(proposal, "failure_evidence_ref", "")),
             repair_context_ref=str(revised_context_ref),
-            run_dir=str(runtime["run_dir"]),
-            sandbox_path=str(runtime["sandbox_path"]),
-            legacy_path=str(runtime["legacy_path"]),
+            run_dir=Path(runtime["run_dir"]),
+            sandbox_path=Path(runtime["sandbox_path"]),
+            legacy_path=Path(runtime["legacy_path"]) if runtime.get("legacy_path") else None,
             source_profile=str(runtime["source_profile"]),
             target_profile=str(runtime["target_profile"]),
             validation_context_ref=str(getattr(proposal, "validation_context_ref", "") or ""),
@@ -4733,6 +4494,9 @@ def create_app(
             revision_of=str(getattr(proposal, "proposal_id", "")),
             revision_number=int(getattr(proposal, "revision_number", 0) or 0) + 1,
             output_dir=Path(runtime["run_dir"]) / "repair_chain" / f"proposal_{revision_id}",
+        )
+        return service.create_reviewed_repair_revision(
+            request=request,
             model_client=model_client,
             uow_factory=unit_of_work_factory,
             pre_persist_hook=pre_persist_hook,
