@@ -60,6 +60,12 @@ class V2RoleModelResult:
     fallback_http_status: str = ""
     timeout_occurred: bool = False
     schema_validation_error: str = ""
+    transport: str = ""
+    azure_request_id: str = ""
+    retry_count: int = 0
+    retry_after: str = ""
+    primary_raw_content: str = ""
+    fallback_raw_content: str = ""
 
 
 @dataclass(frozen=True)
@@ -115,9 +121,10 @@ class V2ModelRoleRouter:
         )
         if primary_result is not None:
             result = self._coerce_primary_result(primary_result, request)
+            primary_raw_content = result.content
             schema_error = ""
-            if result.success and not self._schema_ok(request, result.content):
-                schema_error = "schema_validation_failed"
+            if result.success:
+                schema_error = self._schema_error(request, result.content)
             if result.success and not schema_error:
                 return V2RoleModelResult(
                     content=result.content,
@@ -139,6 +146,11 @@ class V2ModelRoleRouter:
                     primary_http_status=primary_http,
                     timeout_occurred=primary_timeout,
                     schema_validation_error="",
+                    transport=result.transport,
+                    azure_request_id=result.azure_request_id,
+                    retry_count=result.retry_count,
+                    retry_after=result.retry_after,
+                    primary_raw_content=primary_raw_content,
                 )
             primary_failure = schema_error or result.failure_reason or primary_failure or "primary_model_failed"
             if not primary_http and primary_timeout:
@@ -161,9 +173,10 @@ class V2ModelRoleRouter:
                     request,
                     primary_failure_reason=primary_failure,
                 )
+                fallback_raw_content = result.content
                 schema_error = ""
-                if result.success and not self._schema_ok(request, result.content):
-                    schema_error = "schema_validation_failed"
+                if result.success:
+                    schema_error = self._schema_error(request, result.content)
                 if result.success and not schema_error:
                     return V2RoleModelResult(
                         content=result.content,
@@ -187,6 +200,12 @@ class V2ModelRoleRouter:
                         fallback_http_status=fallback_http,
                         timeout_occurred=primary_timeout or fallback_timeout,
                         schema_validation_error=schema_error,
+                        transport=result.transport,
+                        azure_request_id=result.azure_request_id,
+                        retry_count=result.retry_count,
+                        retry_after=result.retry_after,
+                        primary_raw_content=primary_raw_content,
+                        fallback_raw_content=fallback_raw_content,
                     )
                 fallback_failure = result.failure_reason or fallback_failure or "fallback_model_failed"
                 if schema_error:
@@ -204,7 +223,9 @@ class V2ModelRoleRouter:
             primary_http_status=primary_http,
             fallback_http_status=fallback_http,
             timeout_occurred=primary_timeout or fallback_timeout,
-            schema_validation_error=("schema_validation_failed" if "schema_validation_failed" in (primary_failure or fallback_failure) else ""),
+            schema_validation_error=(primary_failure if "schema_validation_failed" in primary_failure else fallback_failure if "schema_validation_failed" in fallback_failure else ""),
+            primary_raw_content=locals().get("primary_raw_content", ""),
+            fallback_raw_content=locals().get("fallback_raw_content", ""),
         )
 
     def resolve_budget(self, *, role: V2ModelRole, responsibility: str = "", output_schema_name: str | None = None) -> V2RoleBudget:
@@ -251,6 +272,10 @@ class V2ModelRoleRouter:
             timeout_occurred=bool(getattr(result, "timeout_occurred", False)),
             schema_validation_error=str(getattr(result, "schema_validation_error", "") or ""),
             fallback_failure_reason=str(getattr(result, "fallback_failure_reason", "") or ""),
+            transport=str(getattr(result, "transport", "") or ""),
+            azure_request_id=str(getattr(result, "azure_request_id", "") or ""),
+            retry_count=int(getattr(result, "retry_count", 0) or 0),
+            retry_after=str(getattr(result, "retry_after", "") or ""),
         )
 
     def _coerce_fallback_result(
@@ -281,22 +306,27 @@ class V2ModelRoleRouter:
             fallback_http_status=coerced.fallback_http_status,
             timeout_occurred=coerced.timeout_occurred,
             schema_validation_error=coerced.schema_validation_error,
+            transport=coerced.transport, azure_request_id=coerced.azure_request_id,
+            retry_count=coerced.retry_count, retry_after=coerced.retry_after,
         )
 
     def _schema_ok(self, request: V2RoleModelRequest, content: str) -> bool:
+        return not self._schema_error(request, content)
+
+    def _schema_error(self, request: V2RoleModelRequest, content: str) -> str:
         if not request.require_schema:
-            return True
+            return ""
         if not request.output_schema_name:
-            return False
+            return "schema_validation_failed: missing schema name"
         try:
             parsed = json.loads(content)
-        except json.JSONDecodeError:
-            return False
+        except json.JSONDecodeError as exc:
+            return f"json_parse_failed: {exc.msg} at position {exc.pos}"
         try:
             validate_model_output(request.output_schema_name, parsed)
-        except Exception:
-            return False
-        return True
+        except Exception as exc:
+            return f"schema_validation_failed: {type(exc).__name__}: {exc}"
+        return ""
 
     def _deterministic_result(
         self,
@@ -309,6 +339,12 @@ class V2ModelRoleRouter:
         fallback_http_status: str = "",
         timeout_occurred: bool = False,
         schema_validation_error: str = "",
+        transport: str = "",
+        azure_request_id: str = "",
+        retry_count: int = 0,
+        retry_after: str = "",
+        primary_raw_content: str = "",
+        fallback_raw_content: str = "",
     ) -> V2RoleModelResult:
         content = self._deterministic_content(request, primary_failure_reason, fallback_failure_reason)
         schema_validated = self._schema_ok(request, content)
@@ -335,6 +371,12 @@ class V2ModelRoleRouter:
             fallback_http_status=fallback_http_status,
             timeout_occurred=timeout_occurred,
             schema_validation_error=schema_validation_error,
+            transport=transport,
+            azure_request_id=azure_request_id,
+            retry_count=retry_count,
+            retry_after=retry_after,
+            primary_raw_content=primary_raw_content,
+            fallback_raw_content=fallback_raw_content,
         )
 
     def _deterministic_content(
@@ -390,7 +432,7 @@ class V2ModelRoleRouter:
     def _resolve_budget(self, *, role: V2ModelRole, responsibility: str = "", output_schema_name: str | None = None) -> V2RoleBudget:
         role_key = role.value.upper()
         max_input_tokens = self._read_int_env(f"AZURE_OPENAI_{role_key}_MAX_INPUT_TOKENS", 40000)
-        max_output_tokens = self._read_int_env(f"AZURE_OPENAI_{role_key}_MAX_OUTPUT_TOKENS", 20000)
+        max_output_tokens = self._read_int_env(f"AZURE_OPENAI_{role_key}_MAX_OUTPUT_TOKENS", 700)
         reasoning_effort = self._resolve_reasoning_effort(role)
         response_format = self._read_str_env(f"AZURE_OPENAI_{role_key}_RESPONSE_FORMAT")
         if not response_format and output_schema_name and responsibility == "repair_proposal":

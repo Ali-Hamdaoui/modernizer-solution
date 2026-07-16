@@ -178,6 +178,22 @@ class V2RepairGateService:
                 reason="reviewed repair chain missing artifact refs",
             )
 
+        reviewer_policy = _apply_reviewer_decision_policy(
+            reviewer_decision=str(chain.get("reviewer_decision") or ""),
+            proposer_diff_usable=bool(chain.get("proposer_diff_usable", False)),
+            reviewer_diff_usable=bool(chain.get("reviewer_diff_usable", False)),
+            deterministic_validators_pass=not bool(chain.get("final_validation_failures")),
+            final_validation_failures=list(chain.get("final_validation_failures", [])),
+        )
+        if reviewer_policy.get("status") != "user_review_required":
+            return RepairGateCreationResult(
+                gate_id="",
+                gate_checksum="",
+                diagnosis=None,
+                status="skipped",
+                reason=str(reviewer_policy.get("reason") or reviewer_policy.get("status") or "review policy blocked proposal"),
+            )
+
         primary = json.loads(open(primary_ref, encoding="utf-8").read()) if primary_ref else {}
         reviewed_diff = open(final_diff_ref, encoding="utf-8").read()
         policy_result = validate_technical_patch_application(
@@ -376,6 +392,7 @@ class V2RepairGateService:
         invocation_ledger: Any | None = None,
         uow: Any | None = None,
         uow_factory: Any | None = None,
+        pre_persist_hook: Any | None = None,
     ) -> ReviewedRepairProposalCreationResult:
         refs = _extract_repair_refs_from_payload(failure_payload)
         if not refs["failure_evidence_ref"] or not refs["repair_context_ref"]:
@@ -437,6 +454,7 @@ class V2RepairGateService:
             invocation_ledger=invocation_ledger,
             uow=uow if uow_factory is None else None,
             uow_factory=uow_factory,
+            pre_persist_hook=pre_persist_hook,
         )
         event_uow = uow
         if uow_factory is not None:
@@ -535,11 +553,16 @@ class V2RepairGateService:
         h2_required: bool = False,
         validation_context_ref: str = "",
         validation_context_checksum: str = "",
+        source_proposal_id: str | None = None,
+        revision_of: str | None = None,
+        revision_number: int | None = None,
+        output_dir: str | Path | None = None,
         attempt_number: int | None = None,
         model_client: Any | None = None,
         invocation_ledger: Any | None = None,
         uow: Any | None = None,
         uow_factory: Any | None = None,
+        pre_persist_hook: Any | None = None,
     ) -> ReviewedRepairProposalCreationResult:
         """Create a reviewed repair proposal from failure artifacts (Option A direct path).
 
@@ -559,8 +582,12 @@ class V2RepairGateService:
         def _persist(callback: Any) -> Any:
             if uow_factory is not None:
                 with uow_factory() as write_uow:
+                    if pre_persist_hook is not None:
+                        pre_persist_hook(write_uow)
                     return callback(write_uow)
             if uow is not None:
+                if pre_persist_hook is not None:
+                    pre_persist_hook(uow)
                 return callback(uow)
             return None
 
@@ -621,9 +648,14 @@ class V2RepairGateService:
                 remaining_attempts=0,
             )
         remaining_attempts = max(0, self._max_repair_attempts - attempt_number)
+        proposal_id = uuid4().hex
 
         # 4. Run review chain
-        output_dir = Path(run_dir) / "repair_chain"
+        output_dir = (
+            Path(output_dir)
+            if output_dir is not None
+            else Path(run_dir) / "repair_chain" / f"proposal_{proposal_id}"
+        )
         try:
             chain_result = produce_repair_review_chain(
                 failure_evidence=evidence,
@@ -688,9 +720,69 @@ class V2RepairGateService:
                 )
         _persist(_save_role_events)
 
-        # Reviewer verdict is advisory metadata. Only technical diff usability
-        # selects the final artifact. Persist explicit generation failure when
-        # neither model produced a usable diff.
+        # Apply explicit reviewer decision policy before selecting final artifact.
+        reviewer_decision_policy = _apply_reviewer_decision_policy(
+            reviewer_decision=reviewer_decision,
+            proposer_diff_usable=bool(review_chain.get("proposer_diff_usable", False)),
+            reviewer_diff_usable=bool(review_chain.get("reviewer_diff_usable", False)),
+            deterministic_validators_pass=not bool(review_chain.get("final_validation_failures")),
+            final_validation_failures=list(review_chain.get("final_validation_failures", [])),
+        )
+        policy_status = reviewer_decision_policy.get("status", "")
+        policy_final_diff_source = reviewer_decision_policy.get("final_diff_source", "")
+        policy_reason = reviewer_decision_policy.get("reason", "")
+        policy_status_reason = reviewer_decision_policy.get("status_reason", "")
+
+        if policy_status in ("reviewer_rejected", "reviewer_revision_required", "generation_failed"):
+            outcome_id = uuid4().hex
+            outcome_record = V2RepairProposalRecord(
+                proposal_id=outcome_id,
+                command_id=command_id,
+                job_id=job_id,
+                route_step_index=stage_index,
+                failure_summary=str(evidence.failure_summary),
+                hypothesis=str(review_chain.get("root_cause", "")),
+                patch_summary=str(review_chain.get("fix_strategy", "")),
+                affected_paths_json=json.dumps(review_chain.get("changed_files", [])),
+                status=policy_status,
+                approval_checksum=None,
+                created_at=utc_now_text(),
+                attempt_number=attempt_number,
+                remaining_attempts=remaining_attempts,
+                failure_evidence_ref=failure_evidence_ref,
+                repair_context_ref=repair_context_ref,
+                diff_ref=None,
+                reviewer_output_checksum=str(review_chain.get("reviewer_output_checksum", "")),
+                policy_validation_checksum=str(review_chain.get("policy_validation_checksum", "")),
+                reviewer_decision=reviewer_decision,
+                deterministic_rule_id=str(review_chain.get("deterministic_rule_id", "")) or None,
+                risk=str(review_chain.get("risk", "")) or None,
+                status_reason=policy_reason or str(review_chain.get("abstention_reason") or review_chain.get("generation_failure_reason") or policy_status_reason or policy_status),
+                validation_context_ref=validation_context_ref or None,
+                validation_context_checksum=validation_context_checksum or None,
+                completed_at=utc_now_text(),
+                final_diff_source=policy_final_diff_source or None,
+            )
+            _persist(lambda write_uow: write_uow.v2_repairs.save_proposal(outcome_record))
+            return ReviewedRepairProposalCreationResult(
+                status=policy_status,
+                proposal_id=outcome_id,
+                reason=outcome_record.status_reason or policy_reason,
+                reviewer_decision=reviewer_decision,
+                attempt_number=attempt_number,
+                remaining_attempts=remaining_attempts,
+                final_diff_source=policy_final_diff_source or None,
+                generation_status=policy_status,
+            )
+
+        # Policy allows — override final_diff_source if policy provides one.
+        reviewer_chain_final_diff_source = str(review_chain.get("final_diff_source") or "")
+        if policy_final_diff_source:
+            final_diff_source = policy_final_diff_source
+        else:
+            final_diff_source = reviewer_chain_final_diff_source
+
+        # Persist explicit generation failure when neither model produced a usable diff.
         if str(review_chain.get("generation_status") or "") != "ready":
             outcome_id = uuid4().hex
             outcome_record = V2RepairProposalRecord(
@@ -853,7 +945,6 @@ class V2RepairGateService:
                         remaining_attempts=remaining_attempts,
                     )
 
-        proposal_id = uuid4().hex
         created_at = utc_now_text()
         lineage_payload = {
             "schema_version": 1,
@@ -870,8 +961,14 @@ class V2RepairGateService:
             "reviewer_decision": reviewer_decision,
             "deterministic_rule_id": str(review_chain.get("deterministic_rule_id", "")),
             "risk": str(review_chain.get("risk", "")),
-            "final_diff_source": str(review_chain.get("final_diff_source") or ""),
+            "final_diff_source": final_diff_source,
             "generation_status": str(review_chain.get("generation_status") or "ready"),
+            "source_proposal_id": source_proposal_id,
+            "revision_of": revision_of,
+            "revision_number": revision_number,
+            "context_pack_checksum": context_pack.context_pack_checksum,
+            "source_profile": source_profile or evidence.source_profile,
+            "target_profile": target_profile or evidence.target_profile,
         }
         lineage_path = Path(run_dir) / "repairs" / f"lineage_{proposal_id}.json"
         lineage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -908,7 +1005,13 @@ class V2RepairGateService:
             validation_context_ref=validation_context_ref or None,
             validation_context_checksum=validation_context_checksum or None,
             apply_claim_status=None,
-            final_diff_source=str(review_chain.get("final_diff_source") or "") or None,
+            final_diff_source=final_diff_source or None,
+            source_proposal_id=source_proposal_id,
+            revision_of=revision_of,
+            revision_number=revision_number,
+            context_pack_checksum=context_pack.context_pack_checksum,
+            source_profile=source_profile or evidence.source_profile,
+            target_profile=target_profile or evidence.target_profile,
         )
 
         def _save_proposal(write_uow: Any) -> None:
@@ -934,7 +1037,7 @@ class V2RepairGateService:
             diff_checksum=diff_checksum,
             attempt_number=attempt_number,
             remaining_attempts=remaining_attempts,
-            final_diff_source=str(review_chain.get("final_diff_source") or "") or None,
+            final_diff_source=final_diff_source or None,
             generation_status="ready",
         )
 
@@ -2007,3 +2110,87 @@ def _context_pack_from_dict(data: dict[str, Any]) -> Any:
         schema_version=str(data.get("schema_version", "1.0.0")),
         source_contexts=tuple(source_contexts),
     )
+
+
+def _apply_reviewer_decision_policy(
+    reviewer_decision: str,
+    proposer_diff_usable: bool,
+    reviewer_diff_usable: bool,
+    deterministic_validators_pass: bool,
+    final_validation_failures: list[str] | None = None,
+) -> dict:
+    """Apply explicit reviewer decision policy.
+
+    REVIEWER_ACCEPT:
+      - reviewer candidate becomes final when diff is usable AND validators pass.
+
+    REVIEWER_REVISE:
+      - correction path required
+      - original reviewer candidate cannot silently become final
+      - proposer may retry with new proposed_diff
+
+    REVIEWER_REJECT:
+      - reviewer candidate CANNOT become final
+      - do not silently bypass with same proposer diff
+      - requires explicit human override to proceed
+
+    REVIEWER_UNAVAILABLE:
+      - proposer-only candidate may be shown ONLY if all deterministic validators pass
+      - label explicitly: final_diff_source = "proposer_fallback_reviewer_unavailable"
+      - human review required (status = user_review_required)
+    """
+    decision = (reviewer_decision or "").strip().lower()
+
+    if decision == "reject":
+        return {
+            "status": "reviewer_rejected",
+            "final_diff_source": "",
+            "reason": "Reviewer rejected the proposal; explicit human override required.",
+            "status_reason": "reviewer_rejected",
+        }
+
+    if decision == "request_revision":
+        return {
+            "status": "reviewer_revision_required",
+            "final_diff_source": "",
+            "reason": "Reviewer requested revision; correction path required.",
+            "status_reason": "reviewer_revision_required",
+        }
+
+    if decision == "unavailable" or (not reviewer_diff_usable and decision != "accept"):
+        # Reviewer unavailable or did not produce a usable candidate.
+        if not proposer_diff_usable:
+            return {
+                "status": "generation_failed",
+                "final_diff_source": "",
+                "reason": "Neither reviewer nor proposer produced a usable diff.",
+                "status_reason": "no_usable_diff",
+            }
+        if not deterministic_validators_pass:
+            return {
+                "status": "generation_failed",
+                "final_diff_source": "",
+                "reason": "Proposer diff available but deterministic validators did not pass; cannot use proposer fallback.",
+                "status_reason": "proposer_fallback_validators_failed",
+            }
+        return {
+            "status": "user_review_required",
+            "final_diff_source": "proposer_fallback_reviewer_unavailable",
+            "reason": "Proposer-only candidate with reviewer unavailable; human review required.",
+            "status_reason": "",
+        }
+
+    # REVIEWER_ACCEPT (default path)
+    if not deterministic_validators_pass:
+        return {
+            "status": "generation_failed",
+            "final_diff_source": "",
+            "reason": "Reviewer accepted but deterministic validators did not pass.",
+            "status_reason": "reviewer_accepted_validators_failed",
+        }
+    return {
+        "status": "user_review_required",
+        "final_diff_source": "reviewer",
+        "reason": "Reviewer accepted proposal; human review required.",
+        "status_reason": "",
+    }

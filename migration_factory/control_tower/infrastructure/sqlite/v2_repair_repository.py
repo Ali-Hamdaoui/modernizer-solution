@@ -64,6 +64,8 @@ class V2RepairProposalRecord:
     continuation_command_id: str | None = None
     validation_proof_status: str | None = None
     final_diff_source: str | None = None
+    source_profile: str | None = None
+    target_profile: str | None = None
 
 
 @dataclass(frozen=True)
@@ -155,12 +157,14 @@ class SqliteV2RepairRepository:
                validation_context_ref = ?, validation_context_checksum = ?,
                apply_idempotency_key = ?, apply_claim_status = ?,
                apply_claim_version = ?, continuation_command_id = ?,
-               validation_proof_status = ?, final_diff_source = ? WHERE proposal_id = ?""",
+               validation_proof_status = ?, final_diff_source = ?,
+               source_profile = ?, target_profile = ? WHERE proposal_id = ?""",
             (record.lineage_manifest_ref, record.lineage_manifest_checksum,
              record.validation_context_ref, record.validation_context_checksum,
              record.apply_idempotency_key, record.apply_claim_status,
              record.apply_claim_version, record.continuation_command_id,
-             record.validation_proof_status, record.final_diff_source, record.proposal_id),
+             record.validation_proof_status, record.final_diff_source,
+             record.source_profile, record.target_profile, record.proposal_id),
         )
 
     def update_proposal_status(self, proposal_id: str, status: str, approval_checksum: str | None = None) -> None:
@@ -398,6 +402,8 @@ class SqliteV2RepairRepository:
             continuation_command_id=str(row["continuation_command_id"]) if "continuation_command_id" in keys and row["continuation_command_id"] else None,
             validation_proof_status=str(row["validation_proof_status"]) if "validation_proof_status" in keys and row["validation_proof_status"] else None,
             final_diff_source=str(row["final_diff_source"]) if "final_diff_source" in keys and row["final_diff_source"] else None,
+            source_profile=str(row["source_profile"]) if "source_profile" in keys and row["source_profile"] else None,
+            target_profile=str(row["target_profile"]) if "target_profile" in keys and row["target_profile"] else None,
         )
 
     def _row_to_action(self, row: sqlite3.Row) -> V2SandboxActionRecord:

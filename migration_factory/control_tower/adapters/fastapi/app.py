@@ -7,12 +7,13 @@ import difflib
 import json
 import re
 import sqlite3
+import threading
 import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 import hashlib
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from contextlib import asynccontextmanager, contextmanager
 
@@ -169,6 +170,13 @@ from migration_factory.control_tower.application.v2_repair_gate_service import (
     DEFAULT_MAX_REPAIR_ATTEMPTS,
     V2RepairGateService,
     create_repair_gate_diagnosis_callback,
+)
+
+# Test/integration hook for the direct revision executor. The route uses the
+# authoritative local executor unless an application-level adapter replaces it.
+_create_direct_repair_revision: Any | None = None
+from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
+    V2RepairProposalRecord,
 )
 from migration_factory.control_tower.application.v2_reviewer_service import (
     V2ReviewerService,
@@ -658,6 +666,48 @@ class AssistantAskRequest(BaseModel):
     correlation_id: str | None = None
 
 
+class RepairAssistantMessageRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message: str = Field(min_length=1, max_length=4000)
+    idempotency_key: str = Field(min_length=1)
+    base_diff_checksum: str = Field(min_length=1)
+
+
+class RepairAssistantMessageResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message_id: str = ""
+    assistant_message: str = ""
+    action: str = ""
+    revision_intent: dict[str, Any] | None = None
+    revision_started: bool = False
+    new_proposal_id: str | None = None
+    new_attempt_number: int | None = None
+    new_diff_checksum: str | None = None
+    status: str = ""
+    failure_stage: str | None = None
+    failure_code: str | None = None
+    correlation_id: str | None = None
+
+
+class RepairAssistantHistoryItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    message_id: str
+    job_id: str
+    proposal_id: str
+    role: Literal["user", "assistant"]
+    message: str
+    action: str | None = None
+    status: str
+    created_at: str
+
+
+class RepairAssistantMessagesResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_id: str
+    proposal_id: str
+    messages: list[RepairAssistantHistoryItem] = Field(default_factory=list)
+
+
 class DraftActionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     job_id: str
@@ -1144,7 +1194,19 @@ def create_app(
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
-        del exc
+        import logging
+        errors = [
+            {key: value for key, value in item.items() if key in {"type", "loc", "msg", "ctx"}}
+            for item in exc.errors()
+        ]
+        fields = sorted({str(item.get("loc", ["body"])[-1]) for item in errors})
+        logging.getLogger("control_tower.validation").warning(
+            "validation_failed path=%s correlation_id=%s errors=%s body_fields=%s",
+            request.url.path,
+            request.state.correlation_id,
+            errors,
+            fields,
+        )
         return _json_error(
             request,
             status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -2652,7 +2714,7 @@ def create_app(
         launch_result: V2OrchestratorStart | None = None
         launch_status: str | None = None
         should_launch_resume = False
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
             card = uow.v2_approvals.get_card(card_id)
             if card is None:
@@ -4112,7 +4174,7 @@ def create_app(
         No patch is applied. No sandbox mutation. No validation rerun.
         The old proposal remains immutable.
         """
-        with unit_of_work_factory() as uow:
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             _require_v2_job(uow, job_id)
             record = uow.v2_repairs.get_proposal_for_job(job_id, proposal_id)
             if record is None:
@@ -4147,20 +4209,272 @@ def create_app(
                 )
             gate_id = getattr(record, "gate_id", None)
             if not gate_id:
-                uow.v2_repairs.update_proposal_prf_fields(
-                    proposal_id,
-                    status="revision_requested",
-                    status_reason=redact_public_value(user_instruction),
+                revision_callable = globals().get("_create_direct_repair_revision") or _create_direct_repair_revision
+                revision_result = revision_callable(
+                    job_id=job_id,
+                    proposal=record,
+                    user_instruction=user_instruction,
+                    model_client=getattr(app.state, "v2_assistant_model_client", None),
                 )
+                new_proposal_id = str(getattr(revision_result, "proposal_id", "") or "")
+                return {
+                    "job_id": job_id,
+                    "previous_proposal_id": proposal_id,
+                    "proposal": new_proposal_id or None,
+                    "status": getattr(revision_result, "status", "generation_failed"),
+                    "event_ids": [],
+                    "artifact_refs": {},
+                }
+
+                # Unified non-gate regeneration path: load refs, produce chain, persist.
+                from migration_factory.orchestrator.repair_review_chain import (
+                    produce_repair_review_chain,
+                )
+                from migration_factory.repair_loop.failure_evidence import (
+                    FailureEvidence,
+                    FailureSource,
+                )
+                from migration_factory.repair_loop.repair_context import (
+                    RepairContextPack,
+                    RepairSourceContext,
+                    compute_context_pack_checksum,
+                    context_pack_to_dict,
+                )
+                from migration_factory.control_tower.application.v2_repair_gate_service import (
+                    _failure_evidence_from_dict,
+                    _context_pack_from_dict,
+                )
+
+                failure_evidence_ref = getattr(record, "failure_evidence_ref", None)
+                repair_context_ref = getattr(record, "repair_context_ref", None)
+                diff_ref = getattr(record, "diff_ref", None)
+                diff_checksum = getattr(record, "diff_checksum", None)
+
+                if not failure_evidence_ref or not repair_context_ref:
+                    raise _error(
+                        status.HTTP_400_BAD_REQUEST,
+                        "PROPOSAL_MISSING_REFS",
+                        "Proposal has no failure_evidence_ref or repair_context_ref; cannot regenerate.",
+                    )
+
+                evidence_path = Path(failure_evidence_ref)
+                if not evidence_path.is_file():
+                    raise _error(
+                        status.HTTP_400_BAD_REQUEST,
+                        "EVIDENCE_FILE_NOT_FOUND",
+                        f"Failure evidence file not found: {failure_evidence_ref}",
+                    )
+                try:
+                    evidence_dict = json.loads(evidence_path.read_text(encoding="utf-8"))
+                    evidence = _failure_evidence_from_dict(evidence_dict)
+                except Exception as exc:
+                    raise _error(
+                        status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        "EVIDENCE_LOAD_FAILED",
+                        f"Failed to load failure evidence: {exc}",
+                    )
+
+                context_path = Path(repair_context_ref)
+                if not context_path.is_file():
+                    raise _error(
+                        status.HTTP_400_BAD_REQUEST,
+                        "CONTEXT_FILE_NOT_FOUND",
+                        f"Context file not found: {repair_context_ref}",
+                    )
+                try:
+                    context_dict = json.loads(context_path.read_text(encoding="utf-8"))
+                    context_pack = _context_pack_from_dict(context_dict)
+                    # Inject user revision instruction
+                    context_pack = RepairContextPack(
+                        job_id=context_pack.job_id,
+                        stage_index=context_pack.stage_index,
+                        command_id=context_pack.command_id,
+                        failure_source=context_pack.failure_source,
+                        failure_evidence_checksum=context_pack.failure_evidence_checksum,
+                        source_profile=context_pack.source_profile,
+                        target_profile=context_pack.target_profile,
+                        accepted_analysis_checksum=context_pack.accepted_analysis_checksum,
+                        accepted_planning_checksum=context_pack.accepted_planning_checksum,
+                        prior_proposal_checksums=context_pack.prior_proposal_checksums + (diff_checksum or "",),
+                        prior_reviewer_notes=context_pack.prior_reviewer_notes,
+                        user_comments=user_instruction,
+                        changed_files=context_pack.changed_files,
+                        safe_log_preview=context_pack.safe_log_preview,
+                        base_repo_state_checksum=context_pack.base_repo_state_checksum,
+                        context_pack_checksum="",
+                        prior_revision_ids=context_pack.prior_revision_ids,
+                        cycle_number=context_pack.cycle_number + 1,
+                        max_cycles=context_pack.max_cycles,
+                        created_at=context_pack.created_at,
+                        schema_version=context_pack.schema_version,
+                        source_contexts=context_pack.source_contexts,
+                    )
+                    context_pack_checksum = compute_context_pack_checksum(context_pack)
+                    context_pack = RepairContextPack(
+                        job_id=context_pack.job_id,
+                        stage_index=context_pack.stage_index,
+                        command_id=context_pack.command_id,
+                        failure_source=context_pack.failure_source,
+                        failure_evidence_checksum=context_pack.failure_evidence_checksum,
+                        source_profile=context_pack.source_profile,
+                        target_profile=context_pack.target_profile,
+                        accepted_analysis_checksum=context_pack.accepted_analysis_checksum,
+                        accepted_planning_checksum=context_pack.accepted_planning_checksum,
+                        prior_proposal_checksums=context_pack.prior_proposal_checksums,
+                        prior_reviewer_notes=context_pack.prior_reviewer_notes,
+                        user_comments=context_pack.user_comments,
+                        changed_files=context_pack.changed_files,
+                        safe_log_preview=context_pack.safe_log_preview,
+                        base_repo_state_checksum=context_pack.base_repo_state_checksum,
+                        context_pack_checksum=context_pack_checksum,
+                        prior_revision_ids=context_pack.prior_revision_ids,
+                        cycle_number=context_pack.cycle_number,
+                        max_cycles=context_pack.max_cycles,
+                        created_at=context_pack.created_at,
+                        schema_version=context_pack.schema_version,
+                        source_contexts=context_pack.source_contexts,
+                    )
+                except Exception as exc:
+                    raise _error(
+                        status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        "CONTEXT_LOAD_FAILED",
+                        f"Failed to load repair context: {exc}",
+                    )
+
                 _append_v2_event(
                     uow, job_id=job_id, stage=getattr(record, "route_step_index", None),
                     event_type="repair_revision_requested", status="requested",
                     message="Human requested regeneration of the reviewed repair proposal.",
                     payload={"proposal_id": proposal_id, "idempotency_key": payload.idempotency_key or ""},
                 )
+
+                try:
+                    commands = tuple(uow.v2_commands.list_by_job(job_id))
+                    events = tuple(uow.v2_events.list_by_job(job_id))
+                    stage_index = int(getattr(record, "route_step_index", 0) or 0)
+                    sandbox_resolution = _resolve_stage_sandbox_root(
+                        stage_index=stage_index, events=events, commands=commands,
+                    )
+                    sandbox_path = str(sandbox_resolution[0]) if sandbox_resolution is not None else ""
+                    run_id = _approval_review_run_id_for_stage(uow, job_id=job_id, stage_index=stage_index)
+                    run_dir_val: str = ""
+                    if run_id:
+                        run_dir_val = _v2_resume_run_dir_from_commands(commands, stage_index, run_id)
+                    output_dir = Path(run_dir_val).resolve() / "repair_chain" if run_dir_val else Path(failure_evidence_ref).parent.parent / "repair_chain"
+                except Exception as exc:
+                    failure_correlation_id = uuid4().hex
+                    failure_code = type(exc).__name__
+                    output_dir = Path(failure_evidence_ref).parent.parent / "repair_chain"
+                    sandbox_path = ""
+
+                chain_result = produce_repair_review_chain(
+                    failure_evidence=evidence,
+                    context_pack=context_pack,
+                    output_dir=output_dir,
+                    sandbox_path=sandbox_path or None,
+                    source_profile=str(getattr(record, "source_profile", "") or ""),
+                    target_profile=str(getattr(record, "target_profile", "") or ""),
+                    model_client=getattr(app.state, "v2_assistant_model_client", None),
+                )
+
+                review_chain = chain_result.get("review_chain") or {}
+                if str(review_chain.get("generation_status") or "") != "ready":
+                    new_proposal_id = uuid4().hex
+                    diff_ref_val = str(review_chain.get("final_diff_ref") or "")
+                    diff_checksum_val = ""
+                    if diff_ref_val and Path(diff_ref_val).is_file():
+                        diff_checksum_val = sha256_hex(Path(diff_ref_val).read_bytes())
+                    uow.v2_repairs.save_proposal(V2RepairProposalRecord(
+                        proposal_id=new_proposal_id,
+                        command_id=str(getattr(record, "command_id", "")),
+                        failure_summary=str(getattr(evidence, "failure_summary", "")),
+                        hypothesis=str(review_chain.get("root_cause", "")),
+                        patch_summary=str(review_chain.get("fix_strategy", "")),
+                        affected_paths_json=json.dumps(review_chain.get("changed_files", [])),
+                        status="repair_generation_failed",
+                        approval_checksum=None,
+                        created_at=utc_now_text(),
+                        attempt_number=int(getattr(record, "attempt_number", 0) or 0) + 1,
+                        remaining_attempts=max(0, int(getattr(record, "remaining_attempts", 0) or 0)),
+                        failure_evidence_ref=failure_evidence_ref,
+                        repair_context_ref=repair_context_ref,
+                        diff_ref=diff_ref_val or None,
+                        diff_checksum=diff_checksum_val or None,
+                        reviewer_output_checksum=str(review_chain.get("reviewer_output_checksum", "")),
+                        policy_validation_checksum=str(review_chain.get("policy_validation_checksum", "")),
+                        reviewer_decision=str(review_chain.get("reviewer_decision", "")),
+                        status_reason=str(review_chain.get("generation_failure_reason") or "Repair regeneration failed."),
+                        final_diff_source=str(review_chain.get("final_diff_source") or "") or None,
+                    ))
+                    return {"job_id": job_id, "previous_proposal_id": proposal_id,
+                            "proposal": None, "status": "repair_generation_failed",
+                            "event_ids": [], "artifact_refs": {}}
+
+                final_diff_ref = str(review_chain.get("final_diff_ref") or "")
+                if not final_diff_ref or not Path(final_diff_ref).is_file():
+                    raise _error(
+                        status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        "REGENERATION_NO_DIFF",
+                        "Repair regeneration produced no usable diff.",
+                    )
+
+                diff_checksum_val = sha256_hex(Path(final_diff_ref).read_bytes())
+                new_proposal_id = uuid4().hex
+                lineage_payload = {
+                    "schema_version": 1,
+                    "proposal_id": new_proposal_id,
+                    "job_id": job_id,
+                    "command_id": str(getattr(record, "command_id", "")),
+                    "attempt_number": int(getattr(record, "attempt_number", 0) or 0) + 1,
+                    "failure_evidence_ref": failure_evidence_ref,
+                    "repair_context_ref": repair_context_ref,
+                    "final_diff_ref": final_diff_ref,
+                    "diff_checksum": diff_checksum_val,
+                    "reviewer_output_checksum": str(review_chain.get("reviewer_output_checksum", "")),
+                    "policy_validation_checksum": str(review_chain.get("policy_validation_checksum", "")),
+                    "reviewer_decision": str(review_chain.get("reviewer_decision", "")),
+                    "final_diff_source": str(review_chain.get("final_diff_source") or ""),
+                    "generation_status": "ready",
+                }
+
+                new_record = V2RepairProposalRecord(
+                    proposal_id=new_proposal_id,
+                    command_id=str(getattr(record, "command_id", "")),
+                    failure_summary=str(getattr(evidence, "failure_summary", "")),
+                    hypothesis=str(review_chain.get("root_cause", "")),
+                    patch_summary=str(review_chain.get("fix_strategy", "")),
+                    affected_paths_json=json.dumps(review_chain.get("changed_files", [])),
+                    status="user_review_required",
+                    approval_checksum=None,
+                    created_at=utc_now_text(),
+                    attempt_number=int(getattr(record, "attempt_number", 0) or 0) + 1,
+                    remaining_attempts=max(0, int(getattr(record, "remaining_attempts", 0) or 0)),
+                    failure_evidence_ref=failure_evidence_ref,
+                    repair_context_ref=repair_context_ref,
+                    diff_ref=final_diff_ref,
+                    diff_checksum=diff_checksum_val,
+                    reviewer_output_checksum=str(review_chain.get("reviewer_output_checksum", "")),
+                    policy_validation_checksum=str(review_chain.get("policy_validation_checksum", "")),
+                    reviewer_decision=str(review_chain.get("reviewer_decision", "")),
+                    deterministic_rule_id=str(getattr(record, "deterministic_rule_id", "")),
+                    risk=str(review_chain.get("risk", "")),
+                    final_diff_source=str(review_chain.get("final_diff_source") or "") or None,
+                )
+                uow.v2_repairs.save_proposal(new_record)
+                _append_v2_event(
+                    uow, job_id=job_id, stage=getattr(record, "route_step_index", None),
+                    event_type="repair_regeneration_completed", status="completed",
+                    message="Repair regeneration completed for non-gate proposal.",
+                    payload={"proposal_id": new_proposal_id, "previous_proposal_id": proposal_id},
+                )
                 return {"job_id": job_id, "previous_proposal_id": proposal_id,
-                        "proposal": None, "status": "revision_requested", "event_ids": [],
-                        "artifact_refs": {}}
+                        "proposal": new_proposal_id,
+                        "status": "user_review_required",
+                        "event_ids": [],
+                        "artifact_refs": {
+                            "new_diff_ref": final_diff_ref,
+                            "new_diff_checksum": diff_checksum_val,
+                        }}
             gate = uow.phase_gates.get(gate_id)
             if gate is None or gate.job_id != job_id:
                 raise _error(
@@ -4337,6 +4651,901 @@ def create_app(
                 },
             }
 
+    # ── Repair Assistant: Conversation messages ─────────────────────────
+
+    def _create_direct_repair_revision(
+        *,
+        job_id: str,
+        proposal: Any,
+        user_instruction: str,
+        model_client: Any | None,
+        pre_persist_hook: Any | None = None,
+    ) -> Any:
+        """Regenerate a direct proposal through the authoritative V2 service."""
+        from migration_factory.control_tower.application.v2_repair_gate_service import (
+            V2RepairGateService,
+            _context_pack_from_dict,
+        )
+        from migration_factory.repair_loop.repair_context import (
+            RepairContextPack,
+            compute_context_pack_checksum,
+            context_pack_to_dict,
+        )
+
+        with _read_unit_of_work(unit_of_work_factory) as read_uow:
+            runtime = _resolve_repair_proposal_runtime_context(
+                uow=read_uow, job_id=job_id, record=proposal,
+            )
+            context_ref = str(getattr(proposal, "repair_context_ref", "") or "")
+            context_data = json.loads(Path(context_ref).read_text(encoding="utf-8"))
+            old_pack = _context_pack_from_dict(context_data)
+            revision_id = uuid4().hex
+            revised_pack = RepairContextPack(
+                job_id=old_pack.job_id,
+                stage_index=old_pack.stage_index,
+                command_id=old_pack.command_id,
+                failure_source=old_pack.failure_source,
+                failure_evidence_checksum=old_pack.failure_evidence_checksum,
+                source_profile=old_pack.source_profile,
+                target_profile=old_pack.target_profile,
+                accepted_analysis_checksum=old_pack.accepted_analysis_checksum,
+                accepted_planning_checksum=old_pack.accepted_planning_checksum,
+                prior_proposal_checksums=old_pack.prior_proposal_checksums + (str(getattr(proposal, "diff_checksum", "") or ""),),
+                prior_reviewer_notes=old_pack.prior_reviewer_notes,
+                user_comments=user_instruction,
+                changed_files=old_pack.changed_files,
+                safe_log_preview=old_pack.safe_log_preview,
+                base_repo_state_checksum=old_pack.base_repo_state_checksum,
+                context_pack_checksum="",
+                prior_revision_ids=old_pack.prior_revision_ids + (str(getattr(proposal, "proposal_id", "") or ""),),
+                cycle_number=(old_pack.cycle_number or 0) + 1,
+                max_cycles=old_pack.max_cycles,
+                created_at=old_pack.created_at,
+                schema_version=old_pack.schema_version,
+                source_contexts=old_pack.source_contexts,
+            )
+            revised_checksum = compute_context_pack_checksum(revised_pack)
+            revised_pack = RepairContextPack(
+                **{**context_pack_to_dict(revised_pack), "context_pack_checksum": revised_checksum}
+            )
+            revised_context_ref = Path(runtime["run_dir"]) / "repairs" / f"repair_context_pack_revision_{revised_pack.cycle_number}_{revision_id}.json"
+            revised_context_ref.parent.mkdir(parents=True, exist_ok=True)
+            revised_context_ref.write_text(
+                json.dumps(context_pack_to_dict(revised_pack), sort_keys=True, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+        service = V2RepairGateService(gate_service=None)
+        return service.create_reviewed_repair_proposal_on_failure(
+            job_id=job_id,
+            stage_index=int(runtime["validation_execution_context"]["stage_index"]),
+            command_id=str(runtime["command_id"]),
+            failure_evidence_ref=str(getattr(proposal, "failure_evidence_ref", "")),
+            repair_context_ref=str(revised_context_ref),
+            run_dir=str(runtime["run_dir"]),
+            sandbox_path=str(runtime["sandbox_path"]),
+            legacy_path=str(runtime["legacy_path"]),
+            source_profile=str(runtime["source_profile"]),
+            target_profile=str(runtime["target_profile"]),
+            validation_context_ref=str(getattr(proposal, "validation_context_ref", "") or ""),
+            validation_context_checksum=str(getattr(proposal, "validation_context_checksum", "") or ""),
+            source_proposal_id=str(getattr(proposal, "proposal_id", "")),
+            revision_of=str(getattr(proposal, "proposal_id", "")),
+            revision_number=int(getattr(proposal, "revision_number", 0) or 0) + 1,
+            output_dir=Path(runtime["run_dir"]) / "repair_chain" / f"proposal_{revision_id}",
+            model_client=model_client,
+            uow_factory=unit_of_work_factory,
+            pre_persist_hook=pre_persist_hook,
+        )
+
+    @app.get("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/assistant/messages", response_model=RepairAssistantMessagesResponse)
+    def list_repair_assistant_messages(job_id: str, proposal_id: str) -> dict[str, Any]:
+        """List all Repair Assistant messages for a given proposal."""
+        from migration_factory.control_tower.infrastructure.sqlite.repair_assistant_repository import (
+            SqliteRepairAssistantRepository,
+        )
+        with unit_of_work_factory() as uow:
+            _require_v2_job(uow, job_id)
+            record = uow.v2_repairs.get_proposal_for_job(job_id, proposal_id)
+            if record is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "PROPOSAL_NOT_FOUND",
+                    f"Proposal {proposal_id!r} not found for job {job_id!r}.",
+                )
+            repo = SqliteRepairAssistantRepository(uow.connection)
+            messages = repo.list_messages(job_id, proposal_id)
+            return {
+                "job_id": job_id,
+                "proposal_id": proposal_id,
+                "messages": [
+                    {
+                        "message_id": m.message_id,
+                        "job_id": job_id,
+                        "proposal_id": proposal_id,
+                        "role": m.role,
+                        "message": m.message_text,
+                        "action": m.action,
+                        "status": m.status,
+                        "created_at": m.created_at,
+                    }
+                    for m in messages
+                ],
+            }
+
+    @app.post("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/assistant/messages")
+    def post_repair_assistant_message(
+        job_id: str,
+        proposal_id: str,
+        payload: RepairAssistantMessageRequest,
+    ) -> RepairAssistantMessageResponse:
+        """Post a user message to the Repair Assistant — phased transaction boundaries.
+
+        Lifecycle:
+          1. SHORT READ  — verify proposal + checksum, capture snapshot
+          2. SHORT ATOMIC WRITE — claim idempotency, save user msg as 'processing'
+          3. NO DB — build context, call model, parse intent
+          4. SHORT WRITE — persist assistant msg
+          5. IF REQUEST_REVISION — NO DB — resolve runtime, invoke revision
+          6. SHORT FINAL WRITE — re-check staleness, persist revision result
+        """
+        from migration_factory.control_tower.infrastructure.sqlite.repair_assistant_repository import (
+            ClaimOutcome,
+            SqliteRepairAssistantRepository,
+        )
+        from migration_factory.control_tower.application.repair_assistant_service import (
+            RepairAssistantService,
+            RepairAssistantContext,
+            _StaleProposalError,
+            _STALE_REASON,
+        )
+
+        model_client = getattr(app.state, "v2_assistant_model_client", None)
+
+        # ── PHASE 1: SHORT READ ────────────────────────────────────────
+        with _read_unit_of_work(unit_of_work_factory) as uow:
+            _require_v2_job(uow, job_id)
+            record = uow.v2_repairs.get_proposal_for_job(job_id, proposal_id)
+            if record is None:
+                raise _error(
+                    status.HTTP_404_NOT_FOUND,
+                    "PROPOSAL_NOT_FOUND",
+                    f"Proposal {proposal_id!r} not found for job {job_id!r}.",
+                )
+            diff_checksum = getattr(record, "diff_checksum", None)
+            if not diff_checksum:
+                raise _error(
+                    status.HTTP_400_BAD_REQUEST,
+                    "PROPOSAL_NO_DIFF_CHECKSUM",
+                    "Proposal has no diff_checksum.",
+                )
+            if payload.base_diff_checksum != diff_checksum:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "STALE_DIFF_CHECKSUM",
+                    "base_diff_checksum does not match the current proposal diff checksum.",
+                )
+
+            from migration_factory.control_tower.application.repair_assistant_service import (
+                _snapshot_from_record,
+            )
+            snapshot = _snapshot_from_record(record)
+
+            repo_phase1 = SqliteRepairAssistantRepository(uow.connection)
+            service_read = RepairAssistantService(
+                repair_assistant_repo=repo_phase1,
+                repair_repo=uow.v2_repairs,
+                model_client=model_client,
+            )
+            context = service_read.build_repair_assistant_context(
+                job_id=job_id, proposal_id=proposal_id,
+            )
+
+        # ── PHASE 2: SHORT ATOMIC WRITE — idempotency lease claim ───────
+        owner = uuid4().hex
+        user_message_id = uuid4().hex
+        claim_outcome: str = "claimed"
+        user_record: Any = None
+        with unit_of_work_factory() as write_uow:
+            write_uow.transaction_mode = "write"
+            repo_phase2 = SqliteRepairAssistantRepository(write_uow.connection)
+            service_phase2 = RepairAssistantService(
+                repair_assistant_repo=repo_phase2,
+                model_client=model_client,
+            )
+            try:
+                claim_outcome, user_record = service_phase2.claim_and_save_user_message(
+                    snapshot=snapshot,
+                    message=payload.message,
+                    idempotency_key=payload.idempotency_key,
+                    base_diff_checksum=payload.base_diff_checksum,
+                    owner=owner,
+                    user_message_id=user_message_id,
+                )
+            except Exception:
+                if write_uow.connection.in_transaction:
+                    write_uow.connection.execute("ROLLBACK")
+                raise
+
+            if claim_outcome == ClaimOutcome.ALREADY_PROCESSING:
+                _status_mapping = {
+                    "ANSWER_ONLY": "answered",
+                    "CLARIFICATION_REQUIRED": "clarification_required",
+                    "REQUEST_REVISION": "revision_generating",
+                    "blocked": "blocked",
+                    "error": "error",
+                    "revision_created": "revision_created",
+                }
+                return {
+                    "message_id": "",
+                    "assistant_message": "The repair assistant is already processing your request.",
+                    "action": "already_processing",
+                    "revision_intent": None,
+                    "revision_started": False,
+                    "new_proposal_id": None,
+                    "new_attempt_number": None,
+                    "status": "processing",
+                }
+
+            if claim_outcome == ClaimOutcome.COMPLETED:
+                record = user_record
+                if record is None:
+                    raise _error(
+                        status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        "LEASE_INCONSISTENT",
+                        "Completed claim returned null record.",
+                    )
+                response_msg_id = getattr(record, "response_message_id", None)
+                if response_msg_id:
+                    assistant_replay = repo_phase2.get_message_by_response_id(response_msg_id)
+                    if assistant_replay is not None:
+                        replay_proposal = (
+                            uow.v2_repairs.get_proposal_for_job(
+                                job_id, assistant_replay.generated_proposal_id,
+                            )
+                            if assistant_replay.generated_proposal_id else None
+                        )
+                        replay_intent = None
+                        replay_intent_dict = None
+                        if (assistant_replay.action == "REQUEST_REVISION"
+                                and assistant_replay.revision_intent_json):
+                            try:
+                                data = json.loads(assistant_replay.revision_intent_json)
+                                replay_intent_dict = {
+                                    "user_instruction": str(data.get("user_instruction", data.get("revision_instruction", ""))),
+                                    "resolved_instruction": str(data.get("resolved_instruction", "")),
+                                    "constraints": list(data.get("constraints", [])),
+                                    "target_files": list(data.get("target_files", [])),
+                                }
+                            except (json.JSONDecodeError, TypeError):
+                                replay_intent_dict = None
+                        return {
+                            "message_id": assistant_replay.message_id,
+                            "assistant_message": assistant_replay.message_text,
+                            "action": assistant_replay.action or "ANSWER_ONLY",
+                            "revision_intent": replay_intent_dict,
+                            "revision_started": bool(assistant_replay.generated_proposal_id),
+                            "new_proposal_id": assistant_replay.generated_proposal_id,
+                            "new_attempt_number": assistant_replay.attempt_number,
+                            "new_diff_checksum": getattr(replay_proposal, "diff_checksum", None),
+                            "status": assistant_replay.status,
+                        }
+                _status_mapping = {
+                    "ANSWER_ONLY": "answered",
+                    "CLARIFICATION_REQUIRED": "clarification_required",
+                    "REQUEST_REVISION": "revision_generating",
+                    "blocked": "blocked",
+                    "error": "error",
+                    "revision_created": "revision_created",
+                }
+                return {
+                    "message_id": record.message_id,
+                    "assistant_message": record.message_text,
+                    "action": record.action or "ANSWER_ONLY",
+                    "revision_intent": None,
+                    "revision_started": bool(record.generated_proposal_id),
+                    "new_proposal_id": record.generated_proposal_id,
+                    "new_attempt_number": record.attempt_number,
+                    "new_diff_checksum": (
+                        getattr(
+                            uow.v2_repairs.get_proposal_for_job(
+                                job_id, record.generated_proposal_id,
+                            ) if record.generated_proposal_id else None,
+                            "diff_checksum", None,
+                        )
+                    ),
+                    "status": _status_mapping.get(record.action or "", record.status),
+                }
+
+        if claim_outcome in (ClaimOutcome.EXPIRED_TAKEOVER,):
+            user_message_id = (user_record.message_id if user_record is not None
+                               else user_message_id)
+
+        # ── HEARTBEAT: daemon thread renews lease during long work ────────
+        _REPAIR_ASSISTANT_HEARTBEAT_SECONDS = 45
+        ownership_lost = threading.Event()
+        heartbeat_stop = threading.Event()
+
+        def _heartbeat_worker() -> None:
+            from migration_factory.control_tower.infrastructure.sqlite.repair_assistant_repository import (
+                _REPAIR_ASSISTANT_LEASE_SECONDS,
+                SqliteRepairAssistantRepository,
+            )
+            _HB_RETRY_MAX = 3
+            _HB_RETRY_DELAY = 5.0
+            while not heartbeat_stop.wait(_REPAIR_ASSISTANT_HEARTBEAT_SECONDS):
+                for _retry in range(_HB_RETRY_MAX):
+                    try:
+                        with unit_of_work_factory() as hb_uow:
+                            hb_uow.transaction_mode = "write"
+                            hb_repo = SqliteRepairAssistantRepository(hb_uow.connection)
+                            from datetime import datetime, timedelta, timezone as _timezone
+                            new_expiry = (
+                                datetime.now(_timezone.utc)
+                                + timedelta(seconds=_REPAIR_ASSISTANT_LEASE_SECONDS)
+                            ).isoformat()
+                            renewed = hb_repo.renew_lease(
+                                message_id=user_message_id,
+                                job_id=job_id,
+                                proposal_id=proposal_id,
+                                idempotency_key=payload.idempotency_key,
+                                processing_owner=owner,
+                                new_lease_expires_at=new_expiry,
+                            )
+                            if not renewed:
+                                ownership_lost.set()
+                                heartbeat_stop.set()
+                            break
+                    except Exception:
+                        import logging
+                        logging.getLogger("repair_assistant").warning(
+                            "Heartbeat renewal transient failure (attempt %d/%d)",
+                            _retry + 1, _HB_RETRY_MAX, exc_info=True,
+                        )
+                        if _retry < _HB_RETRY_MAX - 1:
+                            heartbeat_stop.wait(_HB_RETRY_DELAY)
+                            if heartbeat_stop.is_set():
+                                break
+                        else:
+                            from datetime import datetime, timezone as _tz
+                            try:
+                                with unit_of_work_factory() as chk_uow:
+                                    chk_repo = SqliteRepairAssistantRepository(chk_uow.connection)
+                                    still_owner = chk_repo.verify_ownership(
+                                        message_id=user_message_id,
+                                        job_id=job_id,
+                                        proposal_id=proposal_id,
+                                        idempotency_key=payload.idempotency_key,
+                                        processing_owner=owner,
+                                    )
+                                    if still_owner:
+                                        break
+                                    ownership_lost.set()
+                                    heartbeat_stop.set()
+                            except Exception:
+                                import logging
+                                logging.getLogger("repair_assistant").exception(
+                                    "Unable to verify Repair Assistant lease ownership after renewal failures"
+                                )
+                                ownership_lost.set()
+                                heartbeat_stop.set()
+
+        heartbeat_thread = threading.Thread(
+            target=_heartbeat_worker, daemon=True,
+        )
+        heartbeat_thread.start()
+
+        def _stop_heartbeat() -> None:
+            heartbeat_stop.set()
+            if (
+                heartbeat_thread.is_alive()
+                and threading.current_thread() is not heartbeat_thread
+            ):
+                heartbeat_thread.join(timeout=10)
+            if heartbeat_thread.is_alive():
+                import logging
+                logging.getLogger("repair_assistant").error(
+                    "Repair Assistant heartbeat thread did not stop within timeout",
+                    extra={
+                        "job_id": job_id,
+                        "proposal_id": proposal_id,
+                        "message_id": user_message_id,
+                    },
+                )
+
+        def _ownership_ok() -> bool:
+            return not ownership_lost.is_set()
+
+        try:
+            # ── PHASE 3: NO OPEN DB TRANSACTION — model call ───────────────
+            context_with_message = RepairAssistantContext(
+                job_id=context.job_id,
+                proposal_id=context.proposal_id,
+                proposal_status=context.proposal_status,
+                attempt_number=context.attempt_number,
+                base_diff_checksum=context.base_diff_checksum,
+                diff_content=context.diff_content,
+                failure_summary=context.failure_summary,
+                reviewer_decision=context.reviewer_decision,
+                reviewer_notes=context.reviewer_notes,
+                prior_attempts=context.prior_attempts,
+                prior_revision_instructions=context.prior_revision_instructions,
+                previous_validation_result=context.previous_validation_result,
+                available_versions=context.available_versions,
+                pom_intelligence=context.pom_intelligence,
+                user_comments=payload.message,
+                prior_reviewer_notes=context.prior_reviewer_notes,
+            )
+
+            class _RequestInvocationLedger:
+                """Short UoW per ledger mutation; ledger failures stay non-fatal."""
+
+                def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
+                    with unit_of_work_factory() as ledger_uow:
+                        ledger = V2LLMInvocationLedger(ledger_uow.v2_llm_invocations)
+                        return getattr(ledger, method)(*args, **kwargs)
+
+                def start_invocation(self, **kwargs: Any) -> str:
+                    return self._call("start_invocation", **kwargs)
+
+                def complete_invocation(self, *args: Any, **kwargs: Any) -> None:
+                    self._call("complete_invocation", *args, **kwargs)
+
+                def fail_invocation(self, *args: Any, **kwargs: Any) -> None:
+                    self._call("fail_invocation", *args, **kwargs)
+
+            service_model = RepairAssistantService(
+                model_client=model_client,
+                invocation_ledger=_RequestInvocationLedger(),
+            )
+            prompt = service_model._build_model_prompt(context_with_message)
+            model_result = service_model.call_assistant_model_with_ledger(
+                job_id=job_id, proposal_id=proposal_id, prompt=prompt,
+            )
+
+            if not model_result.success:
+                error_response: dict[str, Any]
+                with unit_of_work_factory() as write_uow:
+                    write_uow.transaction_mode = "write"
+                    repo_err = SqliteRepairAssistantRepository(write_uow.connection)
+                    service_err = RepairAssistantService(
+                        repair_assistant_repo=repo_err,
+                        model_client=model_client,
+                    )
+                    try:
+                        error_record = service_err.save_error_message_record(
+                            snapshot=snapshot,
+                            base_diff_checksum=payload.base_diff_checksum,
+                            error_text=f"Model call failed: {redact_model_summary(model_result.failure_reason)}",
+                        )
+                        service_err.finalize_message_lease(
+                            message_id=user_message_id,
+                            owner=owner,
+                            status="error",
+                            response_message_id=error_record.message_id,
+                        )
+                        error_response = {
+                            "message_id": error_record.message_id,
+                            "assistant_message": "I'm sorry, the repair assistant model is currently unavailable.",
+                            "action": "error",
+                            "revision_intent": None,
+                            "revision_started": False,
+                            "new_proposal_id": None,
+                            "new_attempt_number": None,
+                            "status": "error",
+                        }
+                    except Exception:
+                        if write_uow.connection.in_transaction:
+                            write_uow.connection.execute("ROLLBACK")
+                        raise
+                return error_response
+
+            intent = RepairAssistantService._parse_intent(model_result.content, user_message=payload.message)
+            if intent is None:
+                fallback_response: dict[str, Any]
+                with unit_of_work_factory() as write_uow:
+                    write_uow.transaction_mode = "write"
+                    repo_parse_err = SqliteRepairAssistantRepository(write_uow.connection)
+                    service_parse_err = RepairAssistantService(
+                        repair_assistant_repo=repo_parse_err,
+                        model_client=model_client,
+                    )
+                    try:
+                        fallback_record = service_parse_err.save_error_message_record(
+                            snapshot=snapshot,
+                            base_diff_checksum=payload.base_diff_checksum,
+                            error_text="I analyzed the context but could not structure the response. Please try rephrasing.",
+                        )
+                        service_parse_err.finalize_message_lease(
+                            message_id=user_message_id,
+                            owner=owner,
+                            status="error",
+                            response_message_id=fallback_record.message_id,
+                        )
+                        fallback_response = {
+                            "message_id": fallback_record.message_id,
+                            "assistant_message": "I analyzed the context but could not structure the response. Please try rephrasing.",
+                            "action": "error",
+                            "revision_intent": None,
+                            "revision_started": False,
+                            "new_proposal_id": None,
+                            "new_attempt_number": None,
+                            "status": "error",
+                        }
+                    except Exception:
+                        if write_uow.connection.in_transaction:
+                            write_uow.connection.execute("ROLLBACK")
+                        raise
+                return fallback_response
+
+            # ── PHASE 4: SHORT WRITE — persist assistant message + finalize lease ──
+            with unit_of_work_factory() as write_uow:
+                write_uow.transaction_mode = "write"
+                repo_phase4 = SqliteRepairAssistantRepository(write_uow.connection)
+                service_phase4 = RepairAssistantService(
+                    repair_assistant_repo=repo_phase4,
+                    model_client=model_client,
+                )
+                try:
+                    assistant_record = service_phase4.save_assistant_message_record(
+                        snapshot=snapshot,
+                        base_diff_checksum=payload.base_diff_checksum,
+                        intent=intent,
+                    )
+                    if intent.action == "REQUEST_REVISION":
+                        # Keep ownership through regeneration and final proposal persistence.
+                        finalized = True
+                    else:
+                        finalized = service_phase4.finalize_message_lease(
+                            message_id=user_message_id,
+                            owner=owner,
+                            status=assistant_record.status,
+                            response_message_id=assistant_record.message_id,
+                        )
+                        if not finalized:
+                            raise _error(
+                                status.HTTP_409_CONFLICT,
+                                "LEASE_LOST",
+                                "Processing lease was lost to another worker. Retry with a new idempotency key.",
+                            )
+                except Exception:
+                    if write_uow.connection.in_transaction:
+                        write_uow.connection.execute("ROLLBACK")
+                    raise
+
+            assistant_message_id = assistant_record.message_id
+            action = intent.action
+            revision_intent_dict: dict[str, Any] | None = {
+                "user_instruction": intent.user_instruction,
+                "resolved_instruction": intent.resolved_instruction,
+                "constraints": list(intent.constraints),
+                "target_files": list(intent.target_files),
+            } if action == "REQUEST_REVISION" else None
+
+            _status_mapping = {
+                "ANSWER_ONLY": "answered",
+                "CLARIFICATION_REQUIRED": "clarification_required",
+                "REQUEST_REVISION": "revision_generating",
+                "blocked": "blocked",
+                "error": "error",
+            }
+            response: dict[str, Any] = {
+                "message_id": assistant_message_id,
+                "assistant_message": intent.assistant_message,
+                "action": action,
+                "revision_intent": revision_intent_dict,
+                "revision_started": False,
+                "new_proposal_id": None,
+                "new_attempt_number": None,
+                "new_diff_checksum": None,
+                "status": _status_mapping.get(action, action or "answered"),
+            }
+
+            if action != "REQUEST_REVISION":
+                return response
+
+            # ── PHASE 5: IF REQUEST_REVISION — NO OPEN DB TRANSACTION ──────
+            revision_instruction = intent.user_instruction
+            gate_id = snapshot.get("gate_id")
+
+            existing_revision = None
+            with _read_unit_of_work(unit_of_work_factory) as retry_uow:
+                for candidate in retry_uow.v2_repairs.list_proposals_by_job(job_id):
+                    if str(getattr(candidate, "revision_of", "") or "") != proposal_id:
+                        continue
+                    context_ref = str(getattr(candidate, "repair_context_ref", "") or "")
+                    try:
+                        context_data = json.loads(Path(context_ref).read_text(encoding="utf-8"))
+                    except (OSError, ValueError, TypeError):
+                        continue
+                    if str(context_data.get("user_comments", "")) == revision_instruction:
+                        existing_revision = candidate
+                        break
+
+            generated_attempt_number = None
+            if existing_revision is not None:
+                new_proposal_id_str = str(existing_revision.proposal_id)
+                generated_attempt_number = getattr(existing_revision, "attempt_number", None)
+                revision_result = existing_revision
+            elif gate_id:
+                # SHORT READ for runtime context resolution
+                with _read_unit_of_work(unit_of_work_factory) as rev_read_uow:
+                    gate = rev_read_uow.phase_gates.get(gate_id)
+                    if gate is None:
+                        raise _error(
+                            status.HTTP_404_NOT_FOUND,
+                            "GATE_NOT_FOUND",
+                            f"Gate {gate_id!r} not found.",
+                        )
+                    repair_flow = V2RepairFlowService(
+                        repair_repo=rev_read_uow.v2_repairs,
+                    )
+                    action_service = V2GateActionService(
+                        rev_read_uow.phase_gates,
+                        rev_read_uow.gate_decisions,
+                        V2PhaseGateService(rev_read_uow.phase_gates),
+                        revision_repo=rev_read_uow.artifact_revisions,
+                        repair_service=repair_flow,
+                    )
+                    repair_gate_svc = V2RepairGateService(
+                        gate_service=V2PhaseGateService(rev_read_uow.phase_gates),
+                        gate_action_service=action_service,
+                        repair_flow=repair_flow,
+                    )
+                    revision_context = _resolve_reviewed_repair_runtime_context(
+                        uow=rev_read_uow, job_id=job_id, gate=gate,
+                        proposal_id=proposal_id,
+                    )
+
+                # NO DB — verify ownership, then invoke revision flow (model calls, filesystem)
+                if not _ownership_ok():
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "REPAIR_ASSISTANT_LEASE_LOST",
+                        "Processing lease was lost during model execution.",
+                    )
+                try:
+                    revision_result = repair_gate_svc.request_repair_revision(
+                        gate_id=gate_id,
+                        job_id=job_id,
+                        decided_by="human",
+                        proposal_id=proposal_id,
+                        user_feedback=revision_instruction,
+                        idempotency_key=payload.idempotency_key,
+                        command_id="" if revision_context is None else revision_context["command_id"],
+                        model_client=model_client,
+                        prior_apply_rerun_info=(
+                            None if revision_context is None
+                            else revision_context.get("prior_apply_rerun_info")
+                        ),
+                        source_profile=(
+                            "" if revision_context is None
+                            else revision_context.get("source_profile", "")
+                        ),
+                        target_profile=(
+                            "" if revision_context is None
+                            else revision_context.get("target_profile", "")
+                        ),
+                        sandbox_path=(
+                            "" if revision_context is None
+                            else revision_context.get("sandbox_path", "")
+                        ),
+                        run_dir=(
+                            "" if revision_context is None
+                            else revision_context.get("run_dir", "")
+                        ),
+                        legacy_path=(
+                            "" if revision_context is None
+                            else revision_context.get("legacy_path", "")
+                        ),
+                        h2_required=bool(
+                            revision_context and revision_context.get("h2_required", False)
+                        ),
+                    )
+                except Exception as exc:
+                    failure_correlation_id = uuid4().hex
+                    failure_code = type(exc).__name__
+                    with unit_of_work_factory() as write_uow:
+                        write_uow.transaction_mode = "write"
+                        repo_fail = SqliteRepairAssistantRepository(write_uow.connection)
+                        service_fail = RepairAssistantService(
+                            repair_assistant_repo=repo_fail,
+                            model_client=model_client,
+                        )
+                        try:
+                            repo_fail.update_message_outcome(
+                                assistant_message_id,
+                                status="revision_failed",
+                                message_text="Revision failed before a new proposal was persisted.",
+                            )
+                            service_fail.finalize_message_lease(
+                                message_id=user_message_id,
+                                owner=owner,
+                                status="revision_failed",
+                            )
+                        except Exception:
+                            if write_uow.connection.in_transaction:
+                                write_uow.connection.execute("ROLLBACK")
+                            raise
+                    response.update({
+                        "revision_started": False,
+                        "new_proposal_id": None,
+                        "new_attempt_number": None,
+                        "status": "revision_failed",
+                        "failure_stage": "revision_generation",
+                        "failure_code": failure_code,
+                        "correlation_id": failure_correlation_id,
+                        "assistant_message": "Revision failed before a new proposal was persisted.",
+                    })
+                    return response
+
+                # Gate action returns gate ID; frontend needs generated proposal ID.
+                with _read_unit_of_work(unit_of_work_factory) as result_uow:
+                    generated = result_uow.v2_repairs.get_current_proposal_for_job(job_id)
+                    if (
+                        generated is None
+                        or str(getattr(generated, "revision_of", "") or "") != proposal_id
+                    ):
+                        new_proposal_id_val = ""
+                    else:
+                        new_proposal_id_val = getattr(generated, "proposal_id", "") or ""
+                        generated_attempt_number = getattr(generated, "attempt_number", None)
+                new_proposal_id_str = str(new_proposal_id_val) if new_proposal_id_val else ""
+            else:
+                if not _ownership_ok():
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "REPAIR_ASSISTANT_LEASE_LOST",
+                        "Processing lease was lost during model execution.",
+                    )
+
+                def _pre_persist_check(write_uow: Any) -> None:
+                    repo_check = SqliteRepairAssistantRepository(write_uow.connection)
+                    if not repo_check.verify_ownership(
+                        message_id=user_message_id,
+                        job_id=job_id,
+                        proposal_id=proposal_id,
+                        idempotency_key=payload.idempotency_key,
+                        processing_owner=owner,
+                    ):
+                        raise _error(
+                            status.HTTP_409_CONFLICT,
+                            "REPAIR_ASSISTANT_LEASE_LOST",
+                            "Processing lease was lost before revision persistence.",
+                        )
+                    service_check = RepairAssistantService(
+                        repair_assistant_repo=repo_check,
+                        repair_repo=write_uow.v2_repairs,
+                    )
+                    service_check.recheck_proposal_staleness(
+                        job_id=job_id,
+                        proposal_id=proposal_id,
+                        base_diff_checksum=payload.base_diff_checksum,
+                    )
+
+                try:
+                    revision_callable = globals().get("_create_direct_repair_revision") or _create_direct_repair_revision
+                    revision_result = revision_callable(
+                        job_id=job_id,
+                        proposal=record,
+                        user_instruction=revision_instruction,
+                        model_client=model_client,
+                        pre_persist_hook=_pre_persist_check,
+                    )
+                except Exception as exc:
+                    failure_correlation_id = uuid4().hex
+                    failure_code = type(exc).__name__
+                    with unit_of_work_factory() as write_uow:
+                        write_uow.transaction_mode = "write"
+                        repo_fail = SqliteRepairAssistantRepository(write_uow.connection)
+                        service_fail2 = RepairAssistantService(
+                            repair_assistant_repo=repo_fail,
+                            model_client=model_client,
+                        )
+                        try:
+                            repo_fail.update_message_outcome(
+                                assistant_message_id,
+                                status="revision_failed",
+                                message_text="Revision failed before a new proposal was persisted.",
+                            )
+                            service_fail2.finalize_message_lease(
+                                message_id=user_message_id,
+                                owner=owner,
+                                status="revision_failed",
+                            )
+                        except Exception:
+                            if write_uow.connection.in_transaction:
+                                write_uow.connection.execute("ROLLBACK")
+                            raise
+                    response.update({
+                        "revision_started": False,
+                        "new_proposal_id": None,
+                        "new_attempt_number": None,
+                        "status": "revision_failed",
+                        "failure_stage": "revision_generation",
+                        "failure_code": failure_code,
+                        "correlation_id": failure_correlation_id,
+                        "assistant_message": "Revision failed before a new proposal was persisted.",
+                    })
+                    return response
+
+                new_proposal_id_str = str(
+                    getattr(revision_result, "proposal_id", "") or ""
+                )
+                new_proposal_id_val = new_proposal_id_str
+                if getattr(revision_result, "status", "") != "created" or not new_proposal_id_str:
+                    new_proposal_id_str = ""
+
+            # ── PHASE 6: SHORT FINAL WRITE — re-check staleness, ownership, persist ──
+            final_status = "revision_created" if new_proposal_id_str else "revision_failed"
+            new_diff_checksum = str(
+                getattr(revision_result, "diff_checksum", "") or ""
+            ) or None
+            with unit_of_work_factory() as write_uow:
+                write_uow.transaction_mode = "write"
+                repo_final = SqliteRepairAssistantRepository(write_uow.connection)
+                service_final = RepairAssistantService(
+                    repair_assistant_repo=repo_final,
+                    repair_repo=write_uow.v2_repairs,
+                    model_client=model_client,
+                )
+                try:
+                    if not service_final.verify_message_ownership(
+                        message_id=user_message_id,
+                        job_id=job_id,
+                        proposal_id=proposal_id,
+                        idempotency_key=payload.idempotency_key,
+                        processing_owner=owner,
+                    ):
+                        if write_uow.connection.in_transaction:
+                            write_uow.connection.execute("ROLLBACK")
+                        raise _error(
+                            status.HTTP_409_CONFLICT,
+                            "REPAIR_ASSISTANT_LEASE_LOST",
+                            "Processing lease was lost before revision persistence.",
+                        )
+
+                    service_final.recheck_proposal_staleness(
+                        job_id=job_id,
+                        proposal_id=proposal_id,
+                        base_diff_checksum=payload.base_diff_checksum,
+                    )
+                except _StaleProposalError:
+                    if write_uow.connection.in_transaction:
+                        write_uow.connection.execute("ROLLBACK")
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        _STALE_REASON,
+                        "The source proposal has changed since this revision was requested. "
+                        "Please refresh and try again.",
+                    )
+
+                repo_final.update_message_status(
+                    assistant_message_id,
+                    final_status,
+                    generated_proposal_id=new_proposal_id_str or None,
+                )
+                service_final.finalize_message_lease(
+                    message_id=user_message_id,
+                    owner=owner,
+                    status=final_status,
+                    generated_proposal_id=new_proposal_id_str or None,
+                )
+
+            response.update({
+                "revision_started": bool(new_proposal_id_str),
+                "new_proposal_id": new_proposal_id_str or None,
+                "new_attempt_number": (
+                    generated_attempt_number if gate_id else getattr(revision_result, "attempt_number", None)
+                ),
+                "new_diff_checksum": new_diff_checksum,
+                "status": final_status,
+            })
+            return response
+
+
+        finally:
+            _stop_heartbeat()
     @app.post("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/reject")
     def reject_repair_proposal(job_id: str, proposal_id: str, payload: RepairProposalRejectRequest) -> dict[str, Any]:
         """Persist a human rejection; rejected proposals are never applyable."""
@@ -14022,25 +15231,6 @@ def _create_next_direct_reviewed_repair_proposal_from_validation_failure(
     )
     if unit_of_work_factory is None:
         raise ValueError("unit_of_work_factory is required for retry proposal events")
-    if result.status == "created":
-        with unit_of_work_factory() as event_uow:
-            event_uow.v2_events.save(
-                job_id=job_id,
-                stage=stage_index,
-                event_type="next_repair_cycle_started",
-                status="started",
-                message=result.reason or f"Next reviewed repair proposal ready for command {command_id}",
-                payload={
-                    "proposal_id": result.proposal_id,
-                    "job_id": job_id,
-                    "stage_index": stage_index,
-                    "command_id": command_id,
-                    "diff_checksum": result.diff_checksum,
-                    "reviewer_decision": result.reviewer_decision,
-                    "attempt_number": result.attempt_number,
-                    "remaining_attempts": result.remaining_attempts,
-                },
-            )
     return result
 
 

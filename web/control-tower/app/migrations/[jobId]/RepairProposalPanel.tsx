@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   getCurrentRepairProposal,
+  getRepairProposal,
   getRepairProposalDiff,
   getRepairAttempts,
   requestRepairProposalRevision,
@@ -15,9 +16,11 @@ import type {
   RepairAttemptSummary,
   RepairState,
 } from "../../../lib/contracts";
+import { formatFinalDiffSource } from "../../../lib/contracts";
 import { ReviewedDiffTabs } from "./ReviewedDiffTabs";
 import { RepairAttemptTimeline } from "./RepairAttemptTimeline";
 import { RepairActionsBar } from "./RepairActionsBar";
+import { RepairAssistantChat } from "./RepairAssistantChat";
 
 type ProposalState =
   | { status: "loading" }
@@ -101,12 +104,14 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
     return () => { cancelled = true; };
   }, [jobId, repairRefreshKey]);
 
-  async function refreshProposalData() {
+  async function refreshProposalData(proposalId?: string) {
     if (!jobId) return;
     try {
-      const response = await getCurrentRepairProposal(jobId);
+      const response = proposalId
+        ? await getRepairProposal(jobId, proposalId)
+        : await getCurrentRepairProposal(jobId);
       if (response.proposal) {
-        setProposalState({ status: "available", proposal: response.proposal });
+          setProposalState({ status: "available", proposal: response.proposal });
         setDiffState({ status: "loading" });
         setAttemptsState({ status: "loading" });
         const [diffResponse, attemptsResponse] = await Promise.all([
@@ -255,8 +260,11 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
   const attempts = attemptsState.status === "available" ? attemptsState.attempts : [];
 
   return (
-    <section className="panel repair-proposal-panel" data-testid="repair-proposal-panel">
-      <h2>Repair Proposal</h2>
+    <section className="repair-workspace" data-testid="repair-proposal-panel">
+      <header className="repair-workspace-header">
+        <div><h2>Repair Workspace</h2><span className="meta">Proposal {proposal.proposal_id}</span></div>
+        <div className="repair-workspace-meta"><strong>{proposal.status.replace(/_/g, " ").toUpperCase()}</strong><span>Attempt {proposal.attempt_number ?? "—"}</span><span>{formatFinalDiffSource(proposal.final_diff_source)}</span></div>
+      </header>
 
       <div className="table-list">
         <div className="table-row">
@@ -308,7 +316,7 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
         {proposal.final_diff_source && (
           <div className="table-row">
             <span className="meta">Final diff source</span>
-            <strong>{proposal.final_diff_source === "proposer_fallback" ? "Proposer fallback" : "Reviewer"}</strong>
+            <strong>{formatFinalDiffSource(proposal.final_diff_source)}</strong>
           </div>
         )}
         {proposal.validation_proof_status && (
@@ -329,7 +337,26 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
         </div>
       )}
 
-      <ReviewedDiffTabs proposal={proposal} diff={diff} />
+      <div
+        className="repair-assistant-collapsible"
+        data-testid="repair-assistant-collapsible"
+      >
+        <h3>Assistant conversation</h3>
+        <div className="repair-assistant-content">
+          <RepairAssistantChat
+            jobId={jobId}
+            proposal={proposal}
+            proposalId={proposal.proposal_id}
+            attemptNumber={proposal.attempt_number}
+            reviewerDecision={proposal.reviewer_verdict?.decision ?? null}
+            finalDiffSource={proposal.final_diff_source ?? null}
+            diffChecksum={proposal.diff_checksum}
+            onNewProposal={(newProposalId) => refreshProposalData(newProposalId)}
+          />
+        </div>
+      </div>
+
+      <div className="repair-workspace-side"><h3>Current proposed repair</h3><ReviewedDiffTabs proposal={proposal} diff={diff} /></div>
 
       {mutationError && <p className="error" role="alert">{mutationError}</p>}
 
@@ -367,6 +394,57 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
         checksumMismatch={diff?.checksum_mismatch ?? false}
         rejectDisabled={!proposal.allowed_actions?.includes("reject")}
       />
+
+      <style>{`
+        .cockpit-layout > .repair-workspace { grid-column: 1 / -1; }
+        .repair-workspace { min-height: calc(100vh - 4rem); padding: 1rem; background: #f8fafc; display:grid; grid-template-columns:minmax(0,1.2fr) minmax(22rem,.8fr); gap:1rem; }
+        .repair-workspace > :not(.repair-assistant-collapsible):not(.repair-workspace-side) { grid-column:1 / -1; }
+        .repair-workspace-header { display:flex; justify-content:space-between; gap:1rem; align-items:center; margin-bottom:1rem; }
+        .repair-workspace-meta { display:flex; gap:1rem; flex-wrap:wrap; align-items:center; }
+        .repair-workspace-side { grid-column:2; grid-row:3 / span 2; background:#fff; border:1px solid #e2e8f0; border-radius:.75rem; padding:1rem; }
+        .repair-assistant-collapsible { grid-column:1; }
+        .repair-workspace h3 { margin:.25rem 0 .75rem; }
+        .repair-assistant-collapsible {
+          margin: 0.5rem 0;
+          border: 1px solid #e2e8f0;
+          border-radius: 0.5rem;
+          background: #fff;
+        }
+        .repair-assistant-summary {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 0.5rem 0.75rem;
+          cursor: pointer;
+          font-size: 0.85rem;
+          font-weight: 500;
+          color: #475569;
+          user-select: none;
+          list-style: none;
+        }
+        .repair-assistant-summary::-webkit-details-marker {
+          display: none;
+        }
+        .repair-assistant-summary:hover {
+          background: #f8fafc;
+        }
+        .repair-assistant-summary:focus-visible {
+          outline: 2px solid #6366f1;
+          outline-offset: 2px;
+        }
+        .rac-summary-label {
+          display: flex;
+          align-items: center;
+          gap: 0.4rem;
+        }
+        .rac-toggle-icon {
+          font-size: 1.1rem;
+          font-weight: 600;
+          color: #94a3b8;
+          line-height: 1;
+        }
+        @media (max-width: 900px) { .repair-workspace { display:block; } .repair-workspace-header { align-items:flex-start; flex-direction:column; } .repair-workspace-side { margin-top:1rem; } }
+      `}</style>
     </section>
   );
 }

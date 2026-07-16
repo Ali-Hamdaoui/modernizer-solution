@@ -457,7 +457,9 @@ def _primary_repair_prompt(
             f"EXACT_FAILURE_EVIDENCE:\n{json.dumps(failure_evidence_to_dict(failure_evidence), sort_keys=True)}\n\n"
             f"COMPACT_POM_REPAIR_V1_INTELLIGENCE:\n{json.dumps(authoritative_facts, sort_keys=True)}\n\n"
             f"{_STRUCTURED_REPAIR_EDIT_CONTRACT}\n"
-            f"{_pom_prompt_context(context_pack, authoritative_facts)}"
+            f"{_pom_prompt_context(context_pack, authoritative_facts)}\n\n"
+            f"USER_REVISION_INSTRUCTION:\n{context_pack.user_comments}\n\n"
+            f"PRIOR_REVIEWER_NOTES:\n{context_pack.prior_reviewer_notes}"
         )
     context_dict = context_pack_to_dict(context_pack)
     source_contexts = context_dict.get("source_contexts") or []
@@ -532,7 +534,9 @@ def _reviewer_repair_prompt(
             f"{_pom_prompt_context(context_pack, authoritative_facts)}\n\n"
             f"PROPOSER_OUTPUT:\n{json.dumps(primary_output, sort_keys=True)}\n\n"
             "Return keys: proposed_diff, proposed_edits, changed_files, review_notes, confidence, decision, "
-            "reviewed_context_checksum, reviewed_primary_output_checksum, reviewed_diff_checksum."
+            "reviewed_context_checksum, reviewed_primary_output_checksum, reviewed_diff_checksum.\n\n"
+            f"USER_REVISION_INSTRUCTION:\n{context_pack.user_comments}\n\n"
+            f"PRIOR_REVIEWER_NOTES:\n{context_pack.prior_reviewer_notes}"
         )
     return (
         "You are the AMF-252 final repair author and reviewer. Inspect exact failure "
@@ -908,6 +912,8 @@ def _candidate_correction_prompt(
         f"Context pack checksum: {context_checksum}\n"
         f"Primary output checksum: {primary_checksum}\n"
         f"Proposer diff checksum: {diff_checksum}\n\n"
+        f"USER_REVISION_INSTRUCTION:\n{context_pack.user_comments}\n\n"
+        f"PRIOR_REVIEWER_NOTES:\n{context_pack.prior_reviewer_notes}\n\n"
         f"{retry_contract}"
         f"{correction_guidance}"
         f"Deterministic validation failures:\n{diagnostics}\n\n"
@@ -1623,6 +1629,9 @@ def _persist_reviewer_diagnostic(
     fallback_failure_reason: str,
     timeout_occurred: bool,
     schema_validation_error: str,
+    raw_content: str = "",
+    primary_raw_content: str = "",
+    fallback_raw_content: str = "",
 ) -> Path:
     configured_deployment = str(getattr(reviewer_result, "configured_deployment", "") or "")
     actual_deployment = str(getattr(reviewer_result, "actual_deployment", "") or "")
@@ -1631,6 +1640,9 @@ def _persist_reviewer_diagnostic(
     fallback_used = bool(getattr(reviewer_result, "fallback_used", False)) or source == "deterministic"
     primary_http = str(getattr(reviewer_result, "primary_http_status", "") or "")
     fallback_http = str(getattr(reviewer_result, "fallback_http_status", "") or "")
+    primary_raw = primary_raw_content or str(getattr(reviewer_result, "primary_raw_content", "") or "")
+    fallback_raw = fallback_raw_content or str(getattr(reviewer_result, "fallback_raw_content", "") or "")
+    safe_raw = _safe_diagnostic_text(raw_content or primary_raw or fallback_raw or str(getattr(reviewer_result, "content", "") or ""))[:4000]
 
     diagnostic: dict[str, Any] = {
         "diagnostic_kind": "reviewer_unavailable",
@@ -1646,6 +1658,10 @@ def _persist_reviewer_diagnostic(
         "parser_failure_reason": str(getattr(reviewer_result, "parser_failure_reason", "") or ""),
         "timeout_occurred": timeout_occurred,
         "schema_validation_error": schema_validation_error or "",
+        "raw_content_preview": safe_raw,
+        "raw_content_preserved": bool(safe_raw),
+        "primary_raw_content_preview": _safe_diagnostic_text(primary_raw)[:4000],
+        "fallback_raw_content_preview": _safe_diagnostic_text(fallback_raw)[:4000],
         "primary_http_status": primary_http,
         "fallback_http_status": fallback_http,
         "model_status": str(getattr(reviewer_result, "model_status", "") or ""),
@@ -1825,6 +1841,15 @@ def produce_repair_review_chain(
     )
 
     fallback_used_primary = str(getattr(primary_result, "source", "") or "") == "deterministic"
+    primary_ledger_meta = {
+        "transport": getattr(primary_result, "transport", None) if isinstance(getattr(primary_result, "transport", None), str) else None,
+        "http_status": getattr(primary_result, "primary_http_status", None) if isinstance(getattr(primary_result, "primary_http_status", None), str) else None,
+        "azure_request_id": getattr(primary_result, "azure_request_id", None) if isinstance(getattr(primary_result, "azure_request_id", None), str) else None,
+        "retry_count": getattr(primary_result, "retry_count", 0) if isinstance(getattr(primary_result, "retry_count", 0), int) else 0,
+        "retry_after": getattr(primary_result, "retry_after", None) if isinstance(getattr(primary_result, "retry_after", None), str) else None,
+        "response_format": getattr(primary_result, "response_format_used", None) if isinstance(getattr(primary_result, "response_format_used", None), str) else None,
+        "parse_result": "accepted" if primary_result.success else "rejected",
+    }
     logger.info("repair_proposer_completed job_id=%s success=%s", context_pack.job_id, bool(primary_result.success))
 
     primary_output: dict[str, Any] | None = None
@@ -1836,6 +1861,7 @@ def produce_repair_review_chain(
                 redacted_error=primary_result.failure_reason,
                 redacted_summary=primary_result.redacted_summary,
                 fallback_used=fallback_used_primary,
+                **primary_ledger_meta,
             )
         primary_output = _unusable_primary_output(
             f"proposer unavailable: {primary_result.failure_reason or primary_result.model_status}"
@@ -1870,6 +1896,7 @@ def produce_repair_review_chain(
                 redacted_error=validation_error,
                 redacted_summary=primary_result.redacted_summary,
                 fallback_used=fallback_used_primary,
+                **primary_ledger_meta,
             )
         preserved = {}
         try:
@@ -1908,6 +1935,7 @@ def produce_repair_review_chain(
                 redacted_error=validation_error,
                 redacted_summary=primary_result.redacted_summary,
                 fallback_used=fallback_used_primary,
+                **primary_ledger_meta,
             )
         primary_output["usability_reason"] = _safe_diagnostic_text(validation_error)
         if primary_output.get("no_fix_reason"):
@@ -1920,6 +1948,7 @@ def produce_repair_review_chain(
             output=primary_result.content,
             redacted_summary=primary_result.redacted_summary,
             fallback_used=fallback_used_primary,
+            **primary_ledger_meta,
         )
 
     primary_candidate_diff = ""
@@ -1985,6 +2014,15 @@ def produce_repair_review_chain(
 
     # ── PR-G: Complete/fail reviewer invocation ──────────────────────
     fallback_used_reviewer = str(getattr(reviewer_result, "source", "") or "") == "deterministic"
+    reviewer_ledger_meta = {
+        "transport": getattr(reviewer_result, "transport", None) if isinstance(getattr(reviewer_result, "transport", None), str) else None,
+        "http_status": getattr(reviewer_result, "primary_http_status", None) if isinstance(getattr(reviewer_result, "primary_http_status", None), str) else None,
+        "azure_request_id": getattr(reviewer_result, "azure_request_id", None) if isinstance(getattr(reviewer_result, "azure_request_id", None), str) else None,
+        "retry_count": getattr(reviewer_result, "retry_count", 0) if isinstance(getattr(reviewer_result, "retry_count", 0), int) else 0,
+        "retry_after": getattr(reviewer_result, "retry_after", None) if isinstance(getattr(reviewer_result, "retry_after", None), str) else None,
+        "response_format": getattr(reviewer_result, "response_format_used", None) if isinstance(getattr(reviewer_result, "response_format_used", None), str) else None,
+        "parse_result": "accepted" if reviewer_result.success else "rejected",
+    }
     if reviewer_invocation_id is not None:
         if reviewer_result.success:
             invocation_ledger.complete_invocation(
@@ -1992,6 +2030,7 @@ def produce_repair_review_chain(
                 output=reviewer_result.content,
                 redacted_summary=reviewer_result.redacted_summary,
                 fallback_used=fallback_used_reviewer,
+                **reviewer_ledger_meta,
             )
         else:
             invocation_ledger.fail_invocation(
@@ -1999,7 +2038,34 @@ def produce_repair_review_chain(
                 redacted_error=reviewer_result.failure_reason,
                 redacted_summary=reviewer_result.redacted_summary,
                 fallback_used=fallback_used_reviewer,
+                **reviewer_ledger_meta,
             )
+        if bool(getattr(reviewer_result, "fallback_attempted", False)):
+            fallback_invocation_id = invocation_ledger.start_invocation(
+                job_id=context_pack.job_id,
+                role="fallback",
+                responsibility="repair_review",
+                context_checksum=context_checksum,
+                input_checksum=primary_checksum,
+                schema_name="RepairReviewerOutput",
+                fallback_parent_invocation_id=reviewer_invocation_id,
+            )
+            if reviewer_result.success and bool(getattr(reviewer_result, "fallback_used", False)):
+                invocation_ledger.complete_invocation(
+                    fallback_invocation_id,
+                    output=reviewer_result.content,
+                    redacted_summary=reviewer_result.redacted_summary,
+                    fallback_used=True,
+                    **reviewer_ledger_meta,
+                )
+            else:
+                invocation_ledger.fail_invocation(
+                    fallback_invocation_id,
+                    redacted_error=getattr(reviewer_result, "fallback_failure_reason", "") or reviewer_result.failure_reason,
+                    redacted_summary=reviewer_result.redacted_summary,
+                    fallback_used=True,
+                    **reviewer_ledger_meta,
+                )
 
     reviewer_output: dict[str, Any] = {}
     reviewer_reason = ""
@@ -2012,6 +2078,9 @@ def produce_repair_review_chain(
             fallback_failure_reason=str(getattr(reviewer_result, "fallback_failure_reason", "") or ""),
             timeout_occurred=bool(getattr(reviewer_result, "timeout_occurred", False)),
             schema_validation_error=str(getattr(reviewer_result, "schema_validation_error", "") or ""),
+            raw_content=str(getattr(reviewer_result, "content", "") or ""),
+            primary_raw_content=str(getattr(reviewer_result, "primary_raw_content", "") or ""),
+            fallback_raw_content=str(getattr(reviewer_result, "fallback_raw_content", "") or ""),
         )
     else:
         try:
@@ -2241,12 +2310,14 @@ def produce_repair_review_chain(
             "proposer_usability_reason": proposer_reason,
             "reviewer_usability_reason": reviewer_reason,
             "proposer_diff_usable": not bool(proposer_reason),
-            "reviewer_diff_usable": not bool(reviewer_reason) and bool(reviewer_output.get("proposed_diff")),
+            "reviewer_diff_usable": not bool(reviewer_reason) and bool(reviewer_output.get("proposed_diff") or reviewer_output.get("proposed_edits")),
             "correction_attempts": correction_attempts,
             "final_validation_failures": final_failures,
             "reviewer_output_checksum": reviewer_checksum,
             "final_diff_source": "", "final_diff_ref": "",
             "model_roles": {"proposer": _safe_model_role_status(primary_result), "reviewer": _safe_model_role_status(reviewer_result)},
+            "proposer_invocation_id": proposer_invocation_id,
+            "reviewer_invocation_id": reviewer_invocation_id,
             "root_cause": str(primary_output.get("root_cause", "")),
             "fix_strategy": str(primary_output.get("fix_strategy", "")),
             "rationale": str(primary_output.get("rationale", "")),
@@ -2266,12 +2337,14 @@ def produce_repair_review_chain(
             "proposer_usability_reason": proposer_reason,
             "reviewer_usability_reason": reviewer_reason,
             "proposer_diff_usable": not bool(proposer_reason),
-            "reviewer_diff_usable": not bool(reviewer_reason) and bool(reviewer_output.get("proposed_diff")),
+            "reviewer_diff_usable": not bool(reviewer_reason) and bool(reviewer_output.get("proposed_diff") or reviewer_output.get("proposed_edits")),
             "correction_attempts": correction_attempts,
             "final_validation_failures": final_failures,
             "reviewer_output_checksum": reviewer_checksum,
             "final_diff_source": "", "final_diff_ref": "",
             "model_roles": {"proposer": _safe_model_role_status(primary_result), "reviewer": _safe_model_role_status(reviewer_result)},
+            "proposer_invocation_id": proposer_invocation_id,
+            "reviewer_invocation_id": reviewer_invocation_id,
             "root_cause": str(primary_output.get("root_cause", "")),
             "fix_strategy": str(primary_output.get("fix_strategy", "")),
             "rationale": str(primary_output.get("rationale", "")),
@@ -2321,7 +2394,7 @@ def produce_repair_review_chain(
         "proposer_usability_reason": proposer_reason,
         "reviewer_usability_reason": reviewer_reason,
         "proposer_diff_usable": not bool(proposer_reason),
-        "reviewer_diff_usable": not bool(reviewer_reason) and bool(reviewer_output.get("proposed_diff")),
+        "reviewer_diff_usable": not bool(reviewer_reason) and bool(reviewer_output.get("proposed_diff") or reviewer_output.get("proposed_edits")),
         "correction_attempts": correction_attempts,
         "final_validation_failures": final_failures,
         "job_id": context_pack.job_id,

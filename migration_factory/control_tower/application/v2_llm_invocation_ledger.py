@@ -13,6 +13,7 @@ or the repair chain — it observes and records.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +26,8 @@ from migration_factory.control_tower.domain.checksums import sha256_canonical_js
 from migration_factory.control_tower.infrastructure.sqlite.v2_llm_invocation_repository import (
     V2LLMInvocationRecord,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def compute_content_checksum(content: str) -> str:
@@ -73,7 +76,10 @@ class V2LLMInvocationLedger:
         context_checksum: str | None = None,
         input_checksum: str | None = None,
         schema_name: str | None = None,
-    ) -> str:
+        transport: str | None = None,
+        response_format: str | None = None,
+        fallback_parent_invocation_id: str | None = None,
+    ) -> str | None:
         """Record the start of a model invocation.
 
         Returns the invocation_id for later completion/failure update.
@@ -93,8 +99,15 @@ class V2LLMInvocationLedger:
             input_checksum=input_checksum,
             schema_name=schema_name,
             provider_alias=safe_provider_alias(),
+            transport=transport,
+            response_format=response_format,
+            fallback_parent_invocation_id=fallback_parent_invocation_id,
         )
-        self._repository.save(record)
+        try:
+            self._repository.save(record)
+        except Exception:
+            logger.exception("LLM invocation ledger start persistence failed; repair decision unchanged", extra={"job_id": job_id, "role": role})
+            return None
         return invocation_id
 
     def complete_invocation(
@@ -109,23 +122,36 @@ class V2LLMInvocationLedger:
         total_tokens: int | None = None,
         latency_ms: int | None = None,
         fallback_used: bool = False,
+        transport: str | None = None,
+        http_status: str | None = None,
+        azure_request_id: str | None = None,
+        retry_count: int | None = None,
+        retry_after: str | None = None,
+        response_format: str | None = None,
+        parse_result: str | None = None,
     ) -> None:
         """Record successful completion of a model invocation."""
         if output_checksum is None and output is not None:
             output_checksum = compute_content_checksum(output)
         safe_summary = str(redact_model_summary(redacted_summary or ""))[:500] if redacted_summary else None
-        self._repository.update_status(
-            invocation_id=invocation_id,
-            status="fallback" if fallback_used else "completed",
-            output_checksum=output_checksum,
-            redacted_summary=safe_summary,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
-            latency_ms=latency_ms,
-            completed_at=utc_now_text(),
-            fallback_used=1 if fallback_used else 0,
-        )
+        try:
+            self._repository.update_status(
+                invocation_id=invocation_id,
+                status="fallback" if fallback_used else "completed",
+                output_checksum=output_checksum,
+                redacted_summary=safe_summary,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                latency_ms=latency_ms,
+                completed_at=utc_now_text(),
+                fallback_used=1 if fallback_used else 0,
+                transport=transport, http_status=http_status, azure_request_id=azure_request_id,
+                retry_count=retry_count, retry_after=retry_after,
+                response_format=response_format, parse_result=parse_result,
+            )
+        except Exception:
+            logger.exception("LLM invocation ledger completion persistence failed; repair decision unchanged", extra={"invocation_id": invocation_id})
 
     def fail_invocation(
         self,
@@ -135,19 +161,30 @@ class V2LLMInvocationLedger:
         redacted_summary: str | None = None,
         latency_ms: int | None = None,
         fallback_used: bool = False,
+        transport: str | None = None,
+        http_status: str | None = None,
+        azure_request_id: str | None = None,
+        retry_count: int | None = None,
+        retry_after: str | None = None,
+        response_format: str | None = None,
+        parse_result: str | None = None,
     ) -> None:
         """Record failure of a model invocation."""
         safe_error = str(redact_model_summary(redacted_error or ""))[:500] if redacted_error else None
         safe_summary = str(redact_model_summary(redacted_summary or ""))[:500] if redacted_summary else None
-        self._repository.update_status(
-            invocation_id=invocation_id,
-            status="fallback" if fallback_used else "failed",
-            redacted_error=safe_error,
-            redacted_summary=safe_summary,
-            latency_ms=latency_ms,
-            completed_at=utc_now_text(),
-            fallback_used=1 if fallback_used else 0,
-        )
+        try:
+            self._repository.update_status(
+                invocation_id=invocation_id,
+                status="fallback" if fallback_used else "failed",
+                redacted_error=safe_error, redacted_summary=safe_summary,
+                latency_ms=latency_ms, completed_at=utc_now_text(),
+                fallback_used=1 if fallback_used else 0,
+                transport=transport, http_status=http_status, azure_request_id=azure_request_id,
+                retry_count=retry_count, retry_after=retry_after,
+                response_format=response_format, parse_result=parse_result,
+            )
+        except Exception:
+            logger.exception("LLM invocation ledger failure persistence failed; repair decision unchanged", extra={"invocation_id": invocation_id})
 
     def get_invocation(self, invocation_id: str) -> V2LLMInvocationRecord | None:
         return self._repository.get(invocation_id)
@@ -198,6 +235,12 @@ class V2LLMInvocationLedger:
             configured_max_input_tokens=budget.max_input_tokens,
             configured_max_output_tokens=budget.max_output_tokens,
             response_format_used=_response_format_used_for_record(role, record),
+            transport=record.transport,
+            http_status=record.http_status,
+            azure_request_id=record.azure_request_id,
+            retry_count=record.retry_count,
+            retry_after=record.retry_after,
+            parse_result=record.parse_result,
         )
         return {
             "invocation_id": dto.invocation_id,
@@ -224,6 +267,12 @@ class V2LLMInvocationLedger:
             "configured_max_input_tokens": dto.configured_max_input_tokens,
             "configured_max_output_tokens": dto.configured_max_output_tokens,
             "response_format_used": dto.response_format_used,
+            "transport": dto.transport,
+            "http_status": dto.http_status,
+            "azure_request_id": dto.azure_request_id,
+            "retry_count": dto.retry_count,
+            "retry_after": dto.retry_after,
+            "parse_result": dto.parse_result,
         }
 
     @staticmethod

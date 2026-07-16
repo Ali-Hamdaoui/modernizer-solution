@@ -18,6 +18,7 @@
 # =====================================================================
 
 param(
+    [switch]$PreflightOnly,
     [switch]$SkipModelSmokeTest,
     [switch]$SkipReviewerSmokeTest,
     [switch]$RequireSmokeSuccess,
@@ -45,13 +46,16 @@ $MigrationsDir = Join-Path `
     "migration_factory\control_tower\infrastructure\sqlite\migrations"
 
 $ExpectedRepairMigrationName = `
-    "0055_target_version_validation.sql"
+    "0060_v2_llm_invocation_runtime_metadata.sql"
 
 $RequiredRepairMigrationNames = @(
     "0052_v2_repair_proposals_rule_id_risk.sql",
     "0053_v2_repair_lineage_claims.sql",
     "0054_v2_repair_final_diff_source.sql",
-    "0055_target_version_validation.sql"
+    "0055_target_version_validation.sql",
+    "0058_repair_assistant_processing_leases.sql",
+    "0059_repair_assistant_scoped_idempotency.sql",
+    "0060_v2_llm_invocation_runtime_metadata.sql"
 )
 
 $OldConflictingRepairMigrationName = `
@@ -267,6 +271,103 @@ function Assert-File {
     }
 }
 
+function Assert-NoInvalidUowConnectionAccess {
+    $pattern = '(^|[^A-Za-z0-9_])(uow|write_uow|hb_uow|chk_uow)\._connection\b'
+
+    $hits = @(
+        Get-ChildItem -LiteralPath $RepoRoot -Recurse -Force -File -Filter "*.py" |
+        Where-Object {
+            $_.FullName -notmatch '\\(\.git|\.venv|venv|node_modules|dist|build)\\'
+        } |
+        Select-String -Pattern $pattern
+    )
+
+    if ($hits.Count -gt 0) {
+        $details = $hits | ForEach-Object {
+            "$($_.Path):$($_.LineNumber):$($_.Line.Trim())"
+        }
+        throw "Invalid UoW private connection access remains:`n$($details -join "`n")"
+    }
+
+    Write-Host "UoW connection preflight OK" -ForegroundColor Green
+}
+
+function Assert-RepairAssistantOpenApiAndSQLitePreflight {
+    $script = @'
+import hashlib, json, sqlite3, tempfile
+from pathlib import Path
+from fastapi.testclient import TestClient
+from migration_factory.control_tower.adapters.fastapi import create_app
+from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
+from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteControlTowerUnitOfWork
+from migration_factory.control_tower.infrastructure.sqlite.v2_job_repository import SqliteV2JobRepository, V2MigrationJobRecord
+from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import SqliteV2RepairRepository, V2RepairProposalRecord
+from migration_factory.control_tower.domain.checksums import utc_now_text
+
+db = Path(tempfile.gettempdir()) / ("amf252-assistant-preflight-" + next(tempfile._get_candidate_names()) + ".sqlite3")
+conn = sqlite3.connect(str(db), check_same_thread=False, isolation_level=None)
+conn.row_factory = sqlite3.Row
+apply_pending_migrations(conn)
+now = utc_now_text()
+job_id, proposal_id = "preflight-job", "preflight-proposal"
+diff = Path(tempfile.gettempdir()) / (proposal_id + ".diff")
+diff.write_text("diff --git a/pom.xml b/pom.xml\n", encoding="utf-8")
+checksum = hashlib.sha256(diff.read_bytes()).hexdigest()
+SqliteV2JobRepository(conn).save(V2MigrationJobRecord(job_id, "setup", "setup", "pipeline", "[]", "created", now, now, None))
+SqliteV2RepairRepository(conn).save_proposal(V2RepairProposalRecord(
+    proposal_id, "command", "failure", "hypothesis", "patch", '["pom.xml"]',
+    "user_review_required", None, now, job_id=job_id, attempt_number=1,
+    diff_ref=str(diff), diff_checksum=checksum,
+))
+def uow_factory():
+    request_conn = sqlite3.connect(str(db), check_same_thread=False, isolation_level=None)
+    request_conn.row_factory = sqlite3.Row
+    return SqliteControlTowerUnitOfWork(request_conn, close_connection=True)
+app = create_app(uow_factory)
+class FakeAssistant:
+    calls = 0
+    def answer_with_role(self, **kwargs):
+        self.calls += 1
+        return type("Result", (), {"content": json.dumps({"action":"ANSWER_ONLY","assistant_message":"preflight response","revision_instruction":"","constraints":[],"target_files":[],"target_coordinates":[],"requires_clarification":False}), "success":True, "failure_reason":"", "redacted_summary":"preflight", "primary_http_status":"", "fallback_http_status":"", "response_format_used":"json_object"})()
+fake = FakeAssistant()
+app.state.v2_assistant_model_client = fake
+paths = set(app.openapi().get("paths", {}))
+required = {
+    "/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/assistant/messages"
+}
+missing = required - paths
+if missing: raise SystemExit("missing OpenAPI routes: " + repr(sorted(missing)))
+client = TestClient(app)
+headers = {"Host":"127.0.0.1:8000", "Origin":"http://127.0.0.1:3000", "X-Control-Tower-Client":"control-tower-frontend"}
+get_response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/assistant/messages", headers={"Host":"127.0.0.1:8000"})
+if get_response.status_code != 200 or get_response.json().get("messages") != []: raise SystemExit("Assistant GET preflight failed")
+conn.commit()
+post_response = client.post(f"/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/assistant/messages", headers=headers, json={"message":"Explain", "idempotency_key":"preflight-idempotency", "base_diff_checksum":checksum})
+if post_response.status_code != 200 or fake.calls != 1: raise SystemExit("Assistant POST/call-once preflight failed: status=" + str(post_response.status_code) + " calls=" + str(fake.calls) + " body=" + post_response.text[:500])
+post_body = post_response.json()
+if post_body.get("status") != "answered" or post_body.get("action") != "ANSWER_ONLY": raise SystemExit("Assistant POST contract preflight failed: " + post_response.text[:500])
+history_response = client.get(f"/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/assistant/messages", headers={"Host":"127.0.0.1:8000"})
+if history_response.status_code != 200: raise SystemExit("Assistant GET-after-POST preflight failed: " + history_response.text[:500])
+history = history_response.json().get("messages")
+if len(history or []) != 2: raise SystemExit("Assistant history count preflight failed: " + repr(history))
+if [item.get("role") for item in history] != ["user", "assistant"]: raise SystemExit("Assistant history order preflight failed: " + repr(history))
+if history[0].get("message") != "Explain" or history[0].get("action") is not None: raise SystemExit("Assistant user history DTO preflight failed: " + repr(history[0]))
+if history[1].get("message") != "preflight response" or history[1].get("action") != "ANSWER_ONLY": raise SystemExit("Assistant assistant history DTO preflight failed: " + repr(history[1]))
+if not all(item.get("message_id") and item.get("job_id") == job_id and item.get("proposal_id") == proposal_id and item.get("status") and item.get("created_at") for item in history): raise SystemExit("Assistant history fields preflight failed: " + repr(history))
+if len(conn.execute("SELECT 1 FROM repair_assistant_messages WHERE job_id=?", (job_id,)).fetchall()) != 2: raise SystemExit("Assistant persistence preflight failed")
+print("OpenAPI Repair Assistant route preflight OK")
+print("Temporary SQLite Assistant GET/POST preflight OK")
+conn.close()
+db.unlink(missing_ok=True); diff.unlink(missing_ok=True)
+'@
+    $path = Join-Path $env:TEMP ("amf252-assistant-preflight-" + [guid]::NewGuid().ToString("N") + ".py")
+    try {
+        [IO.File]::WriteAllText($path, $script, (New-Object Text.UTF8Encoding($false)))
+        & py.exe $path
+        if ($LASTEXITCODE -ne 0) { throw "Repair Assistant OpenAPI/SQLite preflight failed." }
+    } finally { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
+}
+
 
 function Assert-Command {
     param(
@@ -457,6 +558,81 @@ function Assert-MigrationPreflight {
         "Required migration found: " +
         $ExpectedMigrationName
     )
+}
+
+
+function Assert-AllMigrationSqlParseable {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Directory
+    )
+
+    $parserScript = @'
+from pathlib import Path
+import sys
+
+from migration_factory.control_tower.infrastructure.sqlite.migrations import (
+    discover_migrations,
+    split_sql_statements,
+)
+
+migrations_dir = Path(sys.argv[1])
+failures = []
+for migration in discover_migrations(migrations_dir):
+    try:
+        split_sql_statements(migration.sql)
+    except Exception as exc:
+        failures.append(f"{migration.path.name}: {type(exc).__name__}: {exc}")
+
+if failures:
+    print("\n".join(failures))
+    raise SystemExit(1)
+
+print(f"Parsed {len(discover_migrations(migrations_dir))} numbered migrations with the real splitter.")
+'@
+
+    $parserScriptPath = Join-Path `
+        $env:TEMP `
+        ("amf252-migration-parser-" + [guid]::NewGuid().ToString("N") + ".py")
+
+    $parseOutput = @()
+    try {
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText(
+            $parserScriptPath,
+            $parserScript,
+            $utf8NoBom
+        )
+
+        $oldPreference = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $parseOutput = @(
+                & py.exe $parserScriptPath $Directory 2>&1
+            )
+            $parserExitCode = [int]$LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $oldPreference
+        }
+    }
+    finally {
+        Remove-Item `
+            -LiteralPath $parserScriptPath `
+            -Force `
+            -ErrorAction SilentlyContinue
+    }
+
+    if ($parserExitCode -ne 0) {
+        throw (
+            "Migration SQL parser preflight failed:`n" +
+            (($parseOutput | ForEach-Object { [string]$_ }) -join "`n")
+        )
+    }
+
+    Write-Host ""
+    Write-Host "Migration SQL parser preflight OK" -ForegroundColor Green
+    $parseOutput | ForEach-Object { Write-Host $_ }
 }
 
 
@@ -653,7 +829,9 @@ function Invoke-TinyModelSmoke {
 
         [Parameter(Mandatory = $false)]
         [AllowEmptyString()]
-        [string]$ResponseFormat = ""
+        [string]$ResponseFormat = "",
+
+        [switch]$ReviewerContractSmoke
     )
 
     Write-Host ""
@@ -669,7 +847,10 @@ function Invoke-TinyModelSmoke {
         messages = @(
             [ordered]@{
                 role = "user"
-                content = if ($ResponseFormat -in @("json_object", "json_schema")) {
+                content = if ($ReviewerContractSmoke) {
+                    'Return JSON RepairReviewerOutput with decision accept, proposed_diff "", proposed_edits [], changed_files [], review_notes [], notes [], risks [], confidence 1, policy_concerns [], reviewed_context_checksum "", reviewed_primary_output_checksum "", reviewed_diff_checksum "".'
+                }
+                elseif ($ResponseFormat -in @("json_object", "json_schema")) {
                     'Reply with exactly {"ok": true}.'
                 }
                 else {
@@ -679,12 +860,14 @@ function Invoke-TinyModelSmoke {
         )
     }
 
-    if ($SupportsReasoning) {
+    if ($ReviewerContractSmoke) {
+        $body["max_tokens"] = 1024
+    }
+    elseif ($SupportsReasoning) {
         $body["max_completion_tokens"] = 256
         $body["reasoning_effort"] = "low"
     }
     else {
-        # Generic chat-completions smoke for non-reasoning/text models.
         $body["max_tokens"] = 64
     }
 
@@ -843,6 +1026,107 @@ function Invoke-TinyModelSmoke {
             -not [string]::IsNullOrWhiteSpace($responseText)
         ) {
 
+            if ($ReviewerContractSmoke) {
+                try {
+                    $parsed = $responseText | ConvertFrom-Json
+                }
+                catch {
+                    Write-Host ""
+                    Write-Host "MODEL SMOKE WARNING" -ForegroundColor Yellow
+                    Write-Host "Outer Azure response cannot parse."
+                    return $false
+                }
+
+                if ($null -eq $parsed.choices -or $parsed.choices.Count -eq 0) {
+                    Write-Host ""
+                    Write-Host "MODEL SMOKE WARNING" -ForegroundColor Yellow
+                    Write-Host "No choices in response."
+                    return $false
+                }
+
+                $finishReason = [string]$parsed.choices[0].finish_reason
+                if ($finishReason -eq "length") {
+                    Write-Host ""
+                    Write-Host "MODEL SMOKE WARNING" -ForegroundColor Yellow
+                    Write-Host "Smoke FAILED: finish_reason = length (output truncated)"
+                    return $false
+                }
+
+                $content = [string]$parsed.choices[0].message.content
+                if ([string]::IsNullOrWhiteSpace($content)) {
+                    Write-Host ""
+                    Write-Host "MODEL SMOKE WARNING" -ForegroundColor Yellow
+                    Write-Host "message.content cannot parse or is empty."
+                    return $false
+                }
+
+                try {
+                    $review = $content | ConvertFrom-Json
+                }
+                catch {
+                    Write-Host ""
+                    Write-Host "MODEL SMOKE WARNING" -ForegroundColor Yellow
+                    Write-Host "message.content cannot parse as JSON."
+                    return $false
+                }
+
+                $requiredFields = @(
+                    "decision", "proposed_diff", "proposed_edits",
+                    "changed_files", "review_notes", "notes", "risks",
+                    "confidence", "policy_concerns",
+                    "reviewed_context_checksum",
+                    "reviewed_primary_output_checksum",
+                    "reviewed_diff_checksum"
+                )
+
+                $missingFields = @(
+                    $requiredFields |
+                    Where-Object {
+                        $null -eq $review.PSObject.Properties[$_]
+                    }
+                )
+
+                if ($missingFields.Count -gt 0) {
+                    Write-Host ""
+                    Write-Host "MODEL SMOKE WARNING" -ForegroundColor Yellow
+                    Write-Host "Required reviewer field missing: $($missingFields -join ', ')"
+                    return $false
+                }
+
+                $validatorScript = @'
+import json, sys
+from migration_factory.control_tower.application.v2_model_schemas import validate_model_output
+payload = json.loads(sys.stdin.read())
+validate_model_output("RepairReviewerOutput", payload)
+print("Reviewer RepairReviewerOutput schema validation OK")
+'@
+                $validatorPath = Join-Path $env:TEMP ("amf252-reviewer-validate-" + [guid]::NewGuid().ToString("N") + ".py")
+                try {
+                    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+                    [System.IO.File]::WriteAllText($validatorPath, $validatorScript, $utf8NoBom)
+                    $content | & py.exe $validatorPath
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Host ""
+                        Write-Host "MODEL SMOKE WARNING" -ForegroundColor Yellow
+                        Write-Host "Reviewer schema validation fails."
+                        return $false
+                    }
+                }
+                finally {
+                    Remove-Item -LiteralPath $validatorPath -Force -ErrorAction SilentlyContinue
+                }
+
+                Write-Host ""
+                Write-Host "MODEL OK" -ForegroundColor Green
+                Write-Host "HTTP: $statusCode"
+                Write-Host "Model: $($parsed.model)"
+                Write-Host "Content: $content"
+                Write-Host "Finish reason: $finishReason"
+                Write-Host "Reviewer RepairReviewerOutput contract: OK" -ForegroundColor Green
+
+                return $true
+            }
+
             Write-Host ""
             Write-Host "MODEL OK" -ForegroundColor Green
             Write-Host "HTTP: $statusCode"
@@ -952,6 +1236,27 @@ function Invoke-TinyModelSmoke {
 # =====================================================================
 # Clear conflicting provider variables
 # =====================================================================
+
+if ($PreflightOnly) {
+    Assert-MigrationPreflight -Directory $MigrationsDir -ExpectedMigrationName $ExpectedRepairMigrationName -OldConflictingMigrationName $OldConflictingRepairMigrationName -RequiredMigrationNames $RequiredRepairMigrationNames
+    Assert-AllMigrationSqlParseable -Directory $MigrationsDir
+    Assert-NoInvalidUowConnectionAccess
+    Assert-RepairAssistantOpenApiAndSQLitePreflight
+    $reviewerPreflight = @'
+from migration_factory.control_tower.application.v2_model_schemas import validate_model_output
+payload = {"decision":"accept","proposed_diff":"","proposed_edits":[],"changed_files":[],"review_notes":[],"notes":[],"risks":[],"confidence":1,"policy_concerns":[],"reviewed_context_checksum":"","reviewed_primary_output_checksum":"","reviewed_diff_checksum":""}
+validate_model_output("RepairReviewerOutput", payload)
+print("Reviewer RepairReviewerOutput parser preflight OK")
+'@
+    $reviewerPath = Join-Path $env:TEMP ("amf252-reviewer-preflight-" + [guid]::NewGuid().ToString("N") + ".py")
+    try {
+        [IO.File]::WriteAllText($reviewerPath, $reviewerPreflight, (New-Object Text.UTF8Encoding($false)))
+        & py.exe $reviewerPath
+        if ($LASTEXITCODE -ne 0) { throw "Reviewer contract preflight failed." }
+    } finally { Remove-Item -LiteralPath $reviewerPath -Force -ErrorAction SilentlyContinue }
+    Write-Host "AMF-252 offline preflight passed" -ForegroundColor Green
+    exit 0
+}
 
 $VarsToClear = @(
     "AZURE_AI_PROJECT_ENDPOINT",
@@ -1148,6 +1453,16 @@ Set-MigrationRole `
     -SupportsJsonSchema $true `
     -SupportsStructuredOutputs $true
 
+Set-MigrationRole `
+    -Role "ASSISTANT" `
+    -Model $MainModel `
+    -SupportsReasoning $true `
+    -MaxOutputTokens $AssistantMaxOutputTokens `
+    -ResponseFormat $RuntimeResponseFormat `
+    -SupportsJsonObject $true `
+    -SupportsJsonSchema $true `
+    -SupportsStructuredOutputs $true
+
 
 Set-MigrationRole `
     -Role "REVIEWER" `
@@ -1297,6 +1612,10 @@ Assert-MigrationPreflight `
     -ExpectedMigrationName $ExpectedRepairMigrationName `
     -OldConflictingMigrationName $OldConflictingRepairMigrationName `
     -RequiredMigrationNames $RequiredRepairMigrationNames
+
+
+Assert-AllMigrationSqlParseable `
+    -Directory $MigrationsDir
 
 
 # =====================================================================
@@ -1490,12 +1809,18 @@ Write-Host "Port preflight:     available"
 Write-Host ""
 
 
+Assert-NoInvalidUowConnectionAccess
+Assert-RepairAssistantOpenApiAndSQLitePreflight
+
 # =====================================================================
 # Model smoke
 # =====================================================================
 
 $proposerSmokePassed = $true
 $reviewerSmokePassed = $true
+$mainSmokePassed = $true
+$assistantSmokePassed = $true
+$fallbackSmokePassed = $true
 
 
 if (-not $SkipModelSmokeTest) {
@@ -1504,7 +1829,12 @@ if (-not $SkipModelSmokeTest) {
         -Endpoint $AzureOpenAIEndpoint `
         -Model $ProposerModel `
         -RoleLabel "Proposer" `
-        -SupportsReasoning $true
+        -SupportsReasoning $true `
+        -ResponseFormat $RuntimeResponseFormat
+
+    $mainSmokePassed = Invoke-TinyModelSmoke -Endpoint $AzureOpenAIEndpoint -Model $MainModel -RoleLabel "Main" -SupportsReasoning $true -ResponseFormat $RuntimeResponseFormat
+    $assistantSmokePassed = Invoke-TinyModelSmoke -Endpoint $AzureOpenAIEndpoint -Model $MainModel -RoleLabel "Assistant" -SupportsReasoning $true -ResponseFormat $RuntimeResponseFormat
+    $fallbackSmokePassed = Invoke-TinyModelSmoke -Endpoint $AzureOpenAIEndpoint -Model $FallbackModel -RoleLabel "Fallback" -SupportsReasoning $true -ResponseFormat $RuntimeResponseFormat
 
     if (-not $SkipReviewerSmokeTest) {
         $reviewerSmokePassed = Invoke-TinyModelSmoke `
@@ -1512,7 +1842,8 @@ if (-not $SkipModelSmokeTest) {
             -Model $ReviewerModel `
             -RoleLabel "Reviewer" `
             -SupportsReasoning $false `
-            -ResponseFormat $ReviewerResponseFormat
+            -ResponseFormat $ReviewerResponseFormat `
+            -ReviewerContractSmoke
     }
     else {
         Write-Host ""
@@ -1530,7 +1861,7 @@ else {
 }
 
 
-$modelSmokePassed = ($proposerSmokePassed -and $reviewerSmokePassed)
+$modelSmokePassed = ($proposerSmokePassed -and $mainSmokePassed -and $assistantSmokePassed -and $fallbackSmokePassed -and $reviewerSmokePassed)
 
 if (-not $modelSmokePassed) {
 
@@ -1570,6 +1901,10 @@ Write-Host "STARTING BACKEND"
 Write-Host "============================================================"
 
 Write-Host "URL:     $BackendUrl"
+$LogDirectory = Join-Path $RepoRoot "logs"
+New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null
+$BackendLogPath = Join-Path $LogDirectory ("amf252-backend-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".log")
+Write-Host "Log:     $BackendLogPath"
 
 Write-Host ""
 
@@ -1583,14 +1918,26 @@ Write-Host (
 Write-Host ""
 
 
-py.exe -m uvicorn `
-    migration_factory.control_tower.adapters.fastapi.dev_app:app `
-    --host $BackendHost `
-    --port $BackendPort `
-    --log-level info
+$previousErrorActionPreference = $ErrorActionPreference
+$BackendExitCode = 0
 
+try {
+    $ErrorActionPreference = "Continue"
+    $env:PYTHONUNBUFFERED = "1"
 
-$BackendExitCode = $LASTEXITCODE
+    & py.exe -u -m uvicorn `
+        migration_factory.control_tower.adapters.fastapi.dev_app:app `
+        --host $BackendHost `
+        --port $BackendPort `
+        --log-level info `
+        2>&1 |
+        Tee-Object -FilePath $BackendLogPath
+
+    $BackendExitCode = [int]$LASTEXITCODE
+}
+finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+}
 
 
 if ($BackendExitCode -ne 0) {

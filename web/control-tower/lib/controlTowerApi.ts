@@ -67,6 +67,10 @@ import type {
   // PR-E types
   RepairProposalApproveRequest,
   RepairProposalApproveResponse,
+  // RA — Repair Assistant Chat types
+  RepairAssistantMessagesListResponse,
+  RepairAssistantSendRequest,
+  RepairAssistantSendResponse,
 } from "./contracts";
 
 export const CONTROL_TOWER_FRONTEND_CLIENT_ID = "control-tower-frontend";
@@ -883,6 +887,34 @@ export async function rejectRepairProposal(
   return postJson(
     `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}/reject`,
     request,
+  );
+}
+
+// ── RA — Repair Assistant Chat ───────────────────────────────────────────
+
+export async function fetchRepairAssistantMessages(
+  jobId: string,
+  proposalId: string
+): Promise<RepairAssistantMessagesListResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) throw new Error("Proposal id is required.");
+  return getJson<RepairAssistantMessagesListResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}/assistant/messages`
+  );
+}
+
+export async function sendRepairAssistantMessage(
+  jobId: string,
+  proposalId: string,
+  payload: RepairAssistantSendRequest
+): Promise<RepairAssistantSendResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) throw new Error("Proposal id is required.");
+  return postJson<RepairAssistantSendResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}/assistant/messages`,
+    payload
   );
 }
 

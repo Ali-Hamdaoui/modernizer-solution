@@ -529,6 +529,12 @@ class LlmInvocationDto:
     configured_max_input_tokens: int | None = None
     configured_max_output_tokens: int | None = None
     response_format_used: str | None = None
+    transport: str | None = None
+    http_status: str | None = None
+    azure_request_id: str | None = None
+    retry_count: int = 0
+    retry_after: str | None = None
+    parse_result: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

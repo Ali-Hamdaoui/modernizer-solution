@@ -28,6 +28,7 @@ REQUIRED_SCHEMAS = (
     "ReviewedDiffProposal",
     "ActionRequest",
     "AssistantAnswer",
+    "RepairAssistantIntent",
     "GateActionRequest",
     "AssistantGateAnswer",
 )
@@ -273,6 +274,29 @@ ASSISTANT_ANSWER_SCHEMA = {
     },
 }
 
+REPAIR_ASSISTANT_INTENT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["action", "assistant_message", "tool", "arguments", "requires_clarification"],
+    "properties": {
+        "action": {"type": "string", "enum": ["ANSWER_ONLY", "REQUEST_REVISION", "CLARIFICATION_REQUIRED"]},
+        "assistant_message": {"type": "string"},
+        "tool": {"type": ["string", "null"]},
+        "arguments": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["user_instruction", "resolved_instruction", "constraints", "target_files"],
+            "properties": {
+                "user_instruction": {"type": "string"},
+                "resolved_instruction": {"type": "string"},
+                "constraints": {"type": "array", "items": {"type": "string"}},
+                "target_files": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+        "requires_clarification": {"type": "boolean"},
+    },
+}
+
 # F15: Gate action request schema (job061)
 # Separate from ACTION_REQUEST_SCHEMA to keep strict typing for gate actions.
 # Gate actions must always include the gate_id and expected_gate_checksum.
@@ -495,6 +519,7 @@ SCHEMA_REGISTRY = {
     "ReviewedDiffProposal": REVIEWED_DIFF_PROPOSAL_SCHEMA,
     "ActionRequest": ACTION_REQUEST_SCHEMA,
     "AssistantAnswer": ASSISTANT_ANSWER_SCHEMA,
+    "RepairAssistantIntent": REPAIR_ASSISTANT_INTENT_SCHEMA,
     "GateActionRequest": GATE_ACTION_REQUEST_SCHEMA,
     "AssistantGateAnswer": ASSISTANT_GATE_ANSWER_SCHEMA,
 }
@@ -521,6 +546,18 @@ def validate_against_schema(schema_name: str, data: Any) -> None:
     SchemaValidator.validate(schema_name, data)
 
 
+def normalize_model_output(schema_name: str, data: Any) -> Any:
+    """Normalize only aliases proven compatible with governed contracts."""
+    if schema_name == "RepairReviewerOutput" and isinstance(data, dict):
+        normalized = dict(data)
+        if "notes" not in normalized and "review_notes" in normalized:
+            normalized["notes"] = normalized["review_notes"]
+        elif "review_notes" not in normalized and "notes" in normalized:
+            normalized["review_notes"] = normalized["notes"]
+        return normalized
+    return data
+
+
 def validate_model_output(schema_name: str, data: Any) -> dict[str, Any]:
     """Validate model output at the service boundary.
 
@@ -539,8 +576,9 @@ def validate_model_output(schema_name: str, data: Any) -> dict[str, Any]:
         SchemaValidationError: If the model output violates the schema.
         ValueError: If schema_name is unknown.
     """
-    validate_against_schema(schema_name, data)
-    return data
+    normalized = normalize_model_output(schema_name, data)
+    validate_against_schema(schema_name, normalized)
+    return normalized
 
 
 class SchemaValidator:
