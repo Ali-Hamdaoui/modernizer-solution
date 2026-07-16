@@ -55,6 +55,10 @@ class RepairAssistantMessage:
     status: str
     created_at: str
     idempotency_key: str | None
+    failure_stage: str | None = None
+    failure_code: str | None = None
+    safe_failure_message: str | None = None
+    correlation_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -103,7 +107,32 @@ class RepairAssistantResult:
     new_proposal_id: str | None
     new_attempt_number: int | None
     status: str
+    failure_stage: str | None = None
+    failure_code: str | None = None
+    correlation_id: str | None = None
 
+
+# ── Failure diagnostics constants ────────────────────────────────────
+
+CONTEXT_RESOLUTION_FAILED = "CONTEXT_RESOLUTION_FAILED"
+PROPOSER_OUTPUT_INVALID = "PROPOSER_OUTPUT_INVALID"
+REVIEWER_UNAVAILABLE = "REVIEWER_UNAVAILABLE"
+PROPOSAL_PERSIST_FAILED = "PROPOSAL_PERSIST_FAILED"
+LEASE_STATE_UNAVAILABLE = "LEASE_STATE_UNAVAILABLE"
+
+FAILURE_STAGE_CONTEXT_RESOLUTION = "context_resolution"
+FAILURE_STAGE_PROPOSER = "proposer_generation"
+FAILURE_STAGE_REVIEWER = "reviewer_evaluation"
+FAILURE_STAGE_PROPOSAL_PERSIST = "proposal_persist"
+FAILURE_STAGE_LEASE = "lease_state"
+
+FAILURE_CODE_MAP = {
+    CONTEXT_RESOLUTION_FAILED: "CONTEXT_RESOLUTION_FAILED",
+    PROPOSER_OUTPUT_INVALID: "PROPOSER_OUTPUT_INVALID",
+    REVIEWER_UNAVAILABLE: "REVIEWER_UNAVAILABLE",
+    PROPOSAL_PERSIST_FAILED: "PROPOSAL_PERSIST_FAILED",
+    LEASE_STATE_UNAVAILABLE: "LEASE_STATE_UNAVAILABLE",
+}
 
 # ── Phase helpers for transaction-boundary fix ───────────────────────
 
@@ -538,6 +567,40 @@ class RepairAssistantService:
             status="error",
             created_at=utc_now_text(),
             idempotency_key=None,
+        )
+        self._repo.save_message(record)
+        return record
+
+    def save_failure_message_record(
+        self,
+        *,
+        snapshot: dict,
+        base_diff_checksum: str,
+        failure_stage: str,
+        failure_code: str,
+        safe_failure_message: str,
+        correlation_id: str,
+    ) -> RepairAssistantMessageRecord:
+        if self._repo is None:
+            raise RuntimeError("repair_assistant_repo is not configured")
+        record = RepairAssistantMessageRecord(
+            message_id=uuid4().hex,
+            job_id=str(snapshot["job_id"]),
+            proposal_id=str(snapshot["proposal_id"]),
+            attempt_number=snapshot.get("attempt_number"),
+            role="assistant",
+            message_text=safe_failure_message,
+            action=None,
+            revision_intent_json=None,
+            base_diff_checksum=base_diff_checksum,
+            generated_proposal_id=None,
+            status="revision_failed",
+            created_at=utc_now_text(),
+            idempotency_key=None,
+            failure_stage=failure_stage,
+            failure_code=failure_code,
+            safe_failure_message=safe_failure_message,
+            correlation_id=correlation_id,
         )
         self._repo.save_message(record)
         return record
@@ -995,6 +1058,10 @@ class RepairAssistantService:
             status=record.status,
             created_at=record.created_at,
             idempotency_key=record.idempotency_key,
+            failure_stage=record.failure_stage,
+            failure_code=record.failure_code,
+            safe_failure_message=record.safe_failure_message,
+            correlation_id=record.correlation_id,
         )
 
     @staticmethod
@@ -1024,4 +1091,7 @@ class RepairAssistantService:
             new_proposal_id=record.generated_proposal_id,
             new_attempt_number=record.attempt_number,
             status=record.status,
+            failure_stage=record.failure_stage,
+            failure_code=record.failure_code,
+            correlation_id=record.correlation_id,
         )

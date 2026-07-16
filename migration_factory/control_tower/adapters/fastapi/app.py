@@ -4561,8 +4561,11 @@ def create_app(
         from migration_factory.control_tower.application.repair_assistant_service import (
             RepairAssistantService,
             RepairAssistantContext,
+            RepairAssistantMessageRecord,
             _StaleProposalError,
             _STALE_REASON,
+            CONTEXT_RESOLUTION_FAILED,
+            FAILURE_STAGE_CONTEXT_RESOLUTION,
         )
 
         model_client = getattr(app.state, "v2_assistant_model_client", None)
@@ -5072,11 +5075,51 @@ def create_app(
                         gate_action_service=action_service,
                         repair_flow=repair_flow,
                     )
-                    revision_context = _resolve_reviewed_repair_runtime_context(
-                        uow=rev_read_uow, job_id=job_id, gate=gate,
-                        proposal_id=proposal_id,
-                    )
+                    try:
+                        revision_context = _resolve_reviewed_repair_runtime_context(
+                            uow=rev_read_uow, job_id=job_id, gate=gate,
+                            proposal_id=proposal_id,
+                        )
+                    except Exception:
+                        failure_correlation_id = uuid4().hex
+                        with unit_of_work_factory() as write_uow:
+                            write_uow.transaction_mode = "write"
+                            repo_fail = SqliteRepairAssistantRepository(write_uow.connection)
+                            service_fail = RepairAssistantService(
+                                repair_assistant_repo=repo_fail,
+                                model_client=model_client,
+                            )
+                            try:
+                                service_fail.save_failure_message_record(
+                                    snapshot=snapshot,
+                                    base_diff_checksum=payload.base_diff_checksum,
+                                    failure_stage=FAILURE_STAGE_CONTEXT_RESOLUTION,
+                                    failure_code=CONTEXT_RESOLUTION_FAILED,
+                                    safe_failure_message="Context resolution failed during revision.",
+                                    correlation_id=failure_correlation_id,
+                                )
+                                service_fail.finalize_message_lease(
+                                    message_id=user_message_id,
+                                    owner=owner,
+                                    status="revision_failed",
+                                )
+                            except Exception:
+                                if write_uow.connection.in_transaction:
+                                    write_uow.connection.execute("ROLLBACK")
+                                raise
+                        response.update({
+                            "revision_started": False,
+                            "new_proposal_id": None,
+                            "new_attempt_number": None,
+                            "status": "revision_failed",
+                            "failure_stage": FAILURE_STAGE_CONTEXT_RESOLUTION,
+                            "failure_code": CONTEXT_RESOLUTION_FAILED,
+                            "correlation_id": failure_correlation_id,
+                            "assistant_message": "Context resolution failed during revision.",
+                        })
+                        return response
 
+                failure_correlation_id: str | None = None
                 # NO DB — verify ownership, then invoke revision flow (model calls, filesystem)
                 if not _ownership_ok():
                     raise _error(
@@ -5133,10 +5176,13 @@ def create_app(
                             model_client=model_client,
                         )
                         try:
-                            repo_fail.update_message_outcome(
-                                assistant_message_id,
-                                status="revision_failed",
-                                message_text="Revision failed before a new proposal was persisted.",
+                            service_fail.save_failure_message_record(
+                                snapshot=snapshot,
+                                base_diff_checksum=payload.base_diff_checksum,
+                                failure_stage="revision_generation",
+                                failure_code=failure_code,
+                                safe_failure_message="Revision failed before a new proposal was persisted.",
+                                correlation_id=failure_correlation_id,
                             )
                             lease_outcome = service_fail.finalize_message_lease(
                                 message_id=user_message_id,
@@ -5233,10 +5279,13 @@ def create_app(
                             model_client=model_client,
                         )
                         try:
-                            repo_fail.update_message_outcome(
-                                assistant_message_id,
-                                status="revision_failed",
-                                message_text="Revision failed before a new proposal was persisted.",
+                            service_fail2.save_failure_message_record(
+                                snapshot=snapshot,
+                                base_diff_checksum=payload.base_diff_checksum,
+                                failure_stage="revision_generation",
+                                failure_code=failure_code,
+                                safe_failure_message="Revision failed before a new proposal was persisted.",
+                                correlation_id=failure_correlation_id,
                             )
                             lease_outcome = service_fail2.finalize_message_lease(
                                 message_id=user_message_id,
@@ -5349,6 +5398,12 @@ def create_app(
                 "new_diff_checksum": new_diff_checksum,
                 "status": final_status,
             })
+            if final_status == "revision_failed":
+                response.update({
+                    "failure_stage": "proposer_generation",
+                    "failure_code": "PROPOSER_OUTPUT_INVALID",
+                    "correlation_id": uuid4().hex,
+                })
             return response
 
 

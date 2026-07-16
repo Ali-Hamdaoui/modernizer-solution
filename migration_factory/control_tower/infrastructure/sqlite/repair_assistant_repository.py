@@ -59,6 +59,10 @@ class RepairAssistantMessageRecord:
     processing_started_at: str | None = None
     lease_expires_at: str | None = None
     response_message_id: str | None = None
+    failure_stage: str | None = None
+    failure_code: str | None = None
+    safe_failure_message: str | None = None
+    correlation_id: str | None = None
 
 
 class SqliteRepairAssistantRepository:
@@ -75,8 +79,10 @@ class SqliteRepairAssistantRepository:
                 base_diff_checksum, generated_proposal_id, status,
                 created_at, idempotency_key,
                 processing_owner, processing_started_at, lease_expires_at,
-                response_message_id
+                response_message_id,
+                failure_stage, failure_code, safe_failure_message, correlation_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                      ?, ?, ?, ?,
                       ?, ?, ?, ?)""",
             (
                 record.message_id,
@@ -96,6 +102,10 @@ class SqliteRepairAssistantRepository:
                 record.processing_started_at,
                 record.lease_expires_at,
                 record.response_message_id,
+                record.failure_stage,
+                record.failure_code,
+                record.safe_failure_message,
+                record.correlation_id,
             ),
         )
 
@@ -129,10 +139,12 @@ class SqliteRepairAssistantRepository:
                     base_diff_checksum, generated_proposal_id, status,
                     created_at, idempotency_key,
                     processing_owner, processing_started_at, lease_expires_at,
-                    response_message_id
+                    response_message_id,
+                    failure_stage, failure_code, safe_failure_message, correlation_id
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                          ?, ?, ?, ?,
                           ?, ?, ?, ?)""",
-                (*message_payload, owner, now, lease_expiry, None),
+                (*message_payload, owner, now, lease_expiry, None, None, None, None, None),
             )
             return (ClaimOutcome.CLAIMED, None)
 
@@ -383,4 +395,8 @@ class SqliteRepairAssistantRepository:
             processing_started_at=str(row["processing_started_at"]) if "processing_started_at" in keys and row["processing_started_at"] else None,
             lease_expires_at=str(row["lease_expires_at"]) if "lease_expires_at" in keys and row["lease_expires_at"] else None,
             response_message_id=str(row["response_message_id"]) if "response_message_id" in keys and row["response_message_id"] else None,
+            failure_stage=str(row["failure_stage"]) if "failure_stage" in keys and row["failure_stage"] else None,
+            failure_code=str(row["failure_code"]) if "failure_code" in keys and row["failure_code"] else None,
+            safe_failure_message=str(row["safe_failure_message"]) if "safe_failure_message" in keys and row["safe_failure_message"] else None,
+            correlation_id=str(row["correlation_id"]) if "correlation_id" in keys and row["correlation_id"] else None,
         )
