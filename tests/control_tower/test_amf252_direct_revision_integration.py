@@ -13,6 +13,7 @@ import hashlib
 import json
 import sqlite3
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch, MagicMock
@@ -126,8 +127,9 @@ def _make_context_pack(evidence: Any, tmp_path: Path, *, user_comments: str = ""
         user_comments=user_comments,
     )
     checksum = compute_context_pack_checksum(context_pack)
-    context_pack_with_cs = RepairContextPack(
-        **{**context_pack_to_dict(context_pack), "context_pack_checksum": checksum}
+    context_pack_with_cs = replace(
+        context_pack,
+        context_pack_checksum=checksum,
     )
     ctx_path = tmp_path / "repair_context_pack.json"
     ctx_path.write_text(
@@ -544,3 +546,186 @@ class TestDirectRepairRevisionIntegration:
         assert lineage["source_proposal_id"] == "original-source-1"
         assert lineage["revision_of"] == "original-revision-of-1"
         assert lineage["revision_number"] == 3
+
+    def test_context_pack_typed_round_trip(self, tmp_path: Path) -> None:
+        """Prove that RepairSourceContext types survive replace-based checksum assignment.
+
+        The original defective code used RepairContextPack(**context_pack_to_dict(...))
+        which flattened RepairSourceContext into plain dicts. dataclasses.replace
+        preserves the nested types.
+        """
+        evidence, _ = _make_evidence(tmp_path)
+        source_ctx = RepairSourceContext(
+            path="src/main/java/com/example/App.java",
+            content_checksum="abc123",
+            source_file_sha256="abc123",
+            context_excerpt_sha256="def456",
+            content="public class App { }",
+            start_line=1,
+            end_line=5,
+            reason_included="test",
+            context_is_complete=True,
+        )
+        context_pack = build_repair_context_pack(
+            failure_evidence=evidence,
+            job_id=evidence.job_id,
+            stage_index=evidence.stage_index,
+            command_id=evidence.command_id,
+            source_profile=evidence.source_profile,
+            target_profile=evidence.target_profile,
+            changed_files=evidence.changed_files,
+            source_contexts=(source_ctx,),
+        )
+
+        for sc in context_pack.source_contexts:
+            assert isinstance(sc, RepairSourceContext)
+
+        checksum = compute_context_pack_checksum(context_pack)
+        revised_pack = replace(context_pack, context_pack_checksum=checksum)
+
+        assert revised_pack.context_pack_checksum == checksum
+
+        for sc in revised_pack.source_contexts:
+            assert isinstance(sc, RepairSourceContext)
+
+        as_dict = context_pack_to_dict(revised_pack)
+        assert isinstance(as_dict, dict)
+
+        json_str = json.dumps(as_dict, sort_keys=True, indent=2)
+        parsed = json.loads(json_str)
+        assert "source_contexts" in parsed
+        assert len(parsed["source_contexts"]) > 0
+        assert "path" in parsed["source_contexts"][0]
+
+        reloaded = _context_pack_from_dict(parsed)
+        for sc in reloaded.source_contexts:
+            assert isinstance(sc, RepairSourceContext)
+
+    def test_direct_revision_full_integration(self, tmp_path: Path) -> None:
+        """Full integration: first proposal + revision with real SQLite/filesystem.
+
+        REQUEST_REVISION -> Proposer called once -> Reviewer called once
+        -> one new proposal persisted. New proposal's revision_of points to
+        old proposal. New checksum differs from old. Old proposal unchanged.
+        No automatic Apply.
+        """
+        service, conn, uow_factory = _make_svc_and_conn(tmp_path)
+        sandbox = _make_git_sandbox(tmp_path)
+        run_dir = tmp_path / "run_dir"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        output_dir1 = tmp_path / "repair_chain" / "proposal_old"
+        output_dir1.mkdir(parents=True, exist_ok=True)
+
+        evidence, evidence_ref = _make_evidence(tmp_path)
+        context_pack, context_ref = _make_context_pack(evidence, tmp_path)
+        diff_ref1 = _make_diff_file(output_dir1, name="old_diff.diff")
+
+        self.mock_produce.return_value = _mock_repair_chain(diff_ref1, reviewer_decision="accept")
+
+        request1 = RepairRevisionRequest(
+            job_id="job-full-int",
+            stage_index=2,
+            command_id="cmd-original",
+            failure_evidence_ref=evidence_ref,
+            repair_context_ref=context_ref,
+            run_dir=run_dir,
+            sandbox_path=sandbox,
+            legacy_path=None,
+            source_profile="java11",
+            target_profile="java17",
+            validation_context_ref="",
+            validation_context_checksum="",
+            source_proposal_id="",
+            revision_of="",
+            revision_number=1,
+            output_dir=output_dir1,
+        )
+
+        with self._mock_subprocess_run():
+            result1 = service.create_reviewed_repair_revision(
+                request=request1,
+                model_client=None,
+                uow_factory=uow_factory,
+            )
+
+        assert result1.status == "created"
+        old_proposal_id = result1.proposal_id
+        old_diff_checksum = result1.diff_checksum
+        assert old_proposal_id
+        assert old_diff_checksum
+
+        old_call_count = self.mock_produce.call_count
+        assert old_call_count == 1
+
+        output_dir2 = tmp_path / "repair_chain" / "proposal_rev"
+        output_dir2.mkdir(parents=True, exist_ok=True)
+        diff_ref2 = output_dir2 / "revised_diff.diff"
+        revised_diff_content = (
+            "diff --git a/src/main/java/com/example/App.java b/src/main/java/com/example/App.java\n"
+            "index e69de29..0000000 100644\n"
+            "--- a/src/main/java/com/example/App.java\n"
+            "+++ b/src/main/java/com/example/App.java\n"
+            "@@ -1,4 +1,5 @@\n"
+            " public class App {\n"
+            "     public static void main(String[] args) {\n"
+            '-        System.out.println("Hello");\n'
+            '+        System.out.println("Hello, World!");\n'
+            '+        System.out.println("Goodbye!");\n'
+            "     }\n"
+            "}\n"
+        )
+        diff_ref2.write_text(revised_diff_content, encoding="utf-8")
+
+        self.mock_produce.return_value = _mock_repair_chain(str(diff_ref2), reviewer_decision="accept")
+
+        request2 = RepairRevisionRequest(
+            job_id="job-full-int",
+            stage_index=2,
+            command_id="cmd-revision",
+            failure_evidence_ref=evidence_ref,
+            repair_context_ref=context_ref,
+            run_dir=run_dir,
+            sandbox_path=sandbox,
+            legacy_path=None,
+            source_profile="java11",
+            target_profile="java17",
+            validation_context_ref="",
+            validation_context_checksum="",
+            source_proposal_id=old_proposal_id,
+            revision_of=old_proposal_id,
+            revision_number=2,
+            output_dir=output_dir2,
+        )
+
+        with self._mock_subprocess_run():
+            result2 = service.create_reviewed_repair_revision(
+                request=request2,
+                model_client=None,
+                uow_factory=uow_factory,
+            )
+
+        assert result2.status == "created", f"Expected 'created', got '{result2.status}': {result2.reason}"
+        new_proposal_id = result2.proposal_id
+        new_diff_checksum = result2.diff_checksum
+
+        assert self.mock_produce.call_count == old_call_count + 1
+
+        new_rows = list(conn.execute(
+            "SELECT * FROM v2_repair_proposals WHERE proposal_id = ?", (new_proposal_id,)
+        ))
+        assert len(new_rows) == 1
+        new_row = new_rows[0]
+        assert new_row["revision_of"] == old_proposal_id
+
+        assert new_diff_checksum != old_diff_checksum
+
+        old_rows = list(conn.execute(
+            "SELECT * FROM v2_repair_proposals WHERE proposal_id = ?", (old_proposal_id,)
+        ))
+        assert len(old_rows) == 1
+        old_row = old_rows[0]
+        assert old_row["diff_checksum"] == old_diff_checksum
+        assert old_row["revision_of"] is None or old_row["revision_of"] == ""
+
+        assert old_row["apply_claim_status"] is None or old_row["apply_claim_status"] == ""
+        assert new_row["apply_claim_status"] is None or new_row["apply_claim_status"] == ""
