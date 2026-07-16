@@ -320,6 +320,52 @@ class TestTransientDbError:
         state = repo.check_lease_state(message_id="nonexistent", owner="whoever")
         assert state == LeaseState.LOST
 
+    def test_finalize_lease_with_failure_sets_diagnostics(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        conn = _connection(tmp_path)
+        repo = SqliteRepairAssistantRepository(conn)
+        mid = uuid4().hex
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        _insert_direct(
+            conn,
+            message_id=mid,
+            processing_owner="owner1",
+            lease_expires_at=future,
+            status="revision_generating",
+        )
+        conn.commit()
+
+        conn.execute("BEGIN")
+        outcome = repo.finalize_lease_with_failure(
+            message_id=mid,
+            owner="owner1",
+            status="revision_failed",
+            failure_stage="revision_generation",
+            failure_code="AttributeError",
+            safe_failure_message="AttributeError: 'NoneType' object has no attribute 'context_pack'",
+            correlation_id="corr-lease-1",
+        )
+        conn.commit()
+        assert outcome == LeaseState.OWNED
+
+        row = conn.execute(
+            """SELECT status, failure_stage, failure_code, safe_failure_message, correlation_id,
+                      processing_owner, processing_started_at, lease_expires_at
+               FROM repair_assistant_messages WHERE message_id = ?""",
+            (mid,),
+        ).fetchone()
+        assert row is not None
+        assert str(row["status"]) == "revision_failed"
+        assert str(row["failure_stage"]) == "revision_generation"
+        assert str(row["failure_code"]) == "AttributeError"
+        assert str(row["safe_failure_message"]) == "AttributeError: 'NoneType' object has no attribute 'context_pack'"
+        assert str(row["correlation_id"]) == "corr-lease-1"
+        assert row["processing_owner"] is None
+        assert row["processing_started_at"] is None
+        assert row["lease_expires_at"] is None
+
     def test_wrong_owner_returns_lost(
         self,
         tmp_path: Path,

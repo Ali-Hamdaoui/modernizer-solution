@@ -46,7 +46,7 @@ $MigrationsDir = Join-Path `
     "migration_factory\control_tower\infrastructure\sqlite\migrations"
 
 $ExpectedRepairMigrationName = `
-    "0060_v2_llm_invocation_runtime_metadata.sql"
+    "0061_repair_assistant_failure_diagnostics.sql"
 
 $RequiredRepairMigrationNames = @(
     "0052_v2_repair_proposals_rule_id_risk.sql",
@@ -55,7 +55,8 @@ $RequiredRepairMigrationNames = @(
     "0055_target_version_validation.sql",
     "0058_repair_assistant_processing_leases.sql",
     "0059_repair_assistant_scoped_idempotency.sql",
-    "0060_v2_llm_invocation_runtime_metadata.sql"
+    "0060_v2_llm_invocation_runtime_metadata.sql",
+    "0061_repair_assistant_failure_diagnostics.sql"
 )
 
 $OldConflictingRepairMigrationName = `

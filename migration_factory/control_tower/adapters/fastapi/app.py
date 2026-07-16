@@ -10,7 +10,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 from types import SimpleNamespace
 from typing import Any, Callable, Literal
@@ -4466,8 +4466,9 @@ def create_app(
                 source_contexts=old_pack.source_contexts,
             )
             revised_checksum = compute_context_pack_checksum(revised_pack)
-            revised_pack = RepairContextPack(
-                **{**context_pack_to_dict(revised_pack), "context_pack_checksum": revised_checksum}
+            revised_pack = replace(
+                revised_pack,
+                context_pack_checksum=revised_checksum,
             )
             revised_context_ref = Path(runtime["run_dir"]) / "repairs" / f"repair_context_pack_revision_{revised_pack.cycle_number}_{revision_id}.json"
             revised_context_ref.parent.mkdir(parents=True, exist_ok=True)
@@ -5269,8 +5270,21 @@ def create_app(
                         pre_persist_hook=_pre_persist_check,
                     )
                 except Exception as exc:
+                    import logging
+                    logger = logging.getLogger("repair_assistant")
                     failure_correlation_id = uuid4().hex
                     failure_code = type(exc).__name__
+                    safe_detail = f"{type(exc).__name__}: {exc}"
+                    if len(safe_detail) > 500:
+                        safe_detail = safe_detail[:500]
+                    logger.exception(
+                        "Repair Assistant revision generation failed",
+                        extra={
+                            "job_id": job_id,
+                            "proposal_id": proposal_id,
+                            "correlation_id": failure_correlation_id,
+                        },
+                    )
                     with unit_of_work_factory() as write_uow:
                         write_uow.transaction_mode = "write"
                         repo_fail = SqliteRepairAssistantRepository(write_uow.connection)
@@ -5279,18 +5293,22 @@ def create_app(
                             model_client=model_client,
                         )
                         try:
+                            lease_outcome = service_fail2.finalize_message_lease_with_failure(
+                                message_id=user_message_id,
+                                owner=owner,
+                                status="revision_failed",
+                                failure_stage="revision_generation",
+                                failure_code=failure_code,
+                                safe_failure_message=safe_detail,
+                                correlation_id=failure_correlation_id,
+                            )
                             service_fail2.save_failure_message_record(
                                 snapshot=snapshot,
                                 base_diff_checksum=payload.base_diff_checksum,
                                 failure_stage="revision_generation",
                                 failure_code=failure_code,
-                                safe_failure_message="Revision failed before a new proposal was persisted.",
+                                safe_failure_message=safe_detail,
                                 correlation_id=failure_correlation_id,
-                            )
-                            lease_outcome = service_fail2.finalize_message_lease(
-                                message_id=user_message_id,
-                                owner=owner,
-                                status="revision_failed",
                             )
                             if lease_outcome == LeaseState.LOST:
                                 if write_uow.connection.in_transaction:
@@ -5314,7 +5332,7 @@ def create_app(
                         "failure_stage": "revision_generation",
                         "failure_code": failure_code,
                         "correlation_id": failure_correlation_id,
-                        "assistant_message": "Revision failed before a new proposal was persisted.",
+                        "assistant_message": f"Revision failed: {safe_detail}",
                     })
                     return response
 

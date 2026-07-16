@@ -301,6 +301,54 @@ class SqliteRepairAssistantRepository:
                 return LeaseState.LOST
         return LeaseState.LOST
 
+    def finalize_lease_with_failure(
+        self,
+        *,
+        message_id: str,
+        owner: str,
+        status: str,
+        failure_stage: str,
+        failure_code: str,
+        safe_failure_message: str,
+        correlation_id: str,
+        generated_proposal_id: str | None = None,
+        response_message_id: str | None = None,
+    ) -> str:
+        cursor = self._connection.execute(
+            """UPDATE repair_assistant_messages
+               SET status = ?,
+                   failure_stage = ?,
+                   failure_code = ?,
+                   safe_failure_message = ?,
+                   correlation_id = ?,
+                   generated_proposal_id = COALESCE(?, generated_proposal_id),
+                   response_message_id = COALESCE(?,
+                       (SELECT response_message_id FROM repair_assistant_messages WHERE message_id = ?)),
+                   processing_owner = NULL,
+                   processing_started_at = NULL,
+                   lease_expires_at = NULL
+               WHERE message_id = ?
+                 AND processing_owner = ?
+                 AND status IN ('processing', 'revision_generating')""",
+            (status, failure_stage, failure_code, safe_failure_message, correlation_id,
+             generated_proposal_id, response_message_id, message_id,
+             message_id, owner),
+        )
+        if cursor.rowcount == 1:
+            return LeaseState.OWNED
+        check = self._connection.execute(
+            "SELECT processing_owner, status FROM repair_assistant_messages WHERE message_id = ?",
+            (message_id,),
+        ).fetchone()
+        if check is not None:
+            existing_owner = str(check["processing_owner"]) if check["processing_owner"] else None
+            existing_status = str(check["status"])
+            if existing_owner is None and existing_status == status:
+                return LeaseState.OWNED
+            if existing_owner != owner:
+                return LeaseState.LOST
+        return LeaseState.LOST
+
     def check_lease_state(self, *, message_id: str, owner: str) -> str:
         """Check the current lease state for a message. Returns one of LeaseState.*"""
         row = self._connection.execute(

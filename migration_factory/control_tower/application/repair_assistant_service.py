@@ -501,6 +501,33 @@ class RepairAssistantService:
             response_message_id=response_message_id,
         )
 
+    def finalize_message_lease_with_failure(
+        self,
+        *,
+        message_id: str,
+        owner: str,
+        status: str,
+        failure_stage: str,
+        failure_code: str,
+        safe_failure_message: str,
+        correlation_id: str,
+        generated_proposal_id: str | None = None,
+        response_message_id: str | None = None,
+    ) -> str:
+        if self._repo is None:
+            raise RuntimeError("repair_assistant_repo is not configured")
+        return self._repo.finalize_lease_with_failure(
+            message_id=message_id,
+            owner=owner,
+            status=status,
+            failure_stage=failure_stage,
+            failure_code=failure_code,
+            safe_failure_message=safe_failure_message,
+            correlation_id=correlation_id,
+            generated_proposal_id=generated_proposal_id,
+            response_message_id=response_message_id,
+        )
+
     def save_assistant_message_record(
         self,
         *,
