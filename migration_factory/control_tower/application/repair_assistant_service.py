@@ -488,7 +488,7 @@ class RepairAssistantService:
         response_message_id: str | None = None,
     ) -> str:
         """Finalize lease with atomic CAS.
-        
+
         Returns one of LeaseState.*
         """
         if self._repo is None:

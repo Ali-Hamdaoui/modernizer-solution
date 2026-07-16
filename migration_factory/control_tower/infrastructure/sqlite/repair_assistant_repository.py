@@ -249,9 +249,9 @@ class SqliteRepairAssistantRepository:
         response_message_id: str | None = None,
     ) -> str:
         """Owner-bound finalization with atomic CAS.
-        
+
         WHERE message_id = ? AND processing_owner = ? AND status IN ('processing', 'revision_generating')
-        
+
         Returns:
             LeaseState.OWNED — rowcount=1, clean finalization
             LeaseState.OWNED — already finalized with same data (idempotent replay)
