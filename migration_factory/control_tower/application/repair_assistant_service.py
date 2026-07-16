@@ -26,6 +26,7 @@ from migration_factory.control_tower.application.v2_llm_invocation_ledger import
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.repair_assistant_repository import (
     ClaimOutcome,
+    LeaseState,
     RepairAssistantMessageRecord,
     SqliteRepairAssistantRepository,
     _REPAIR_ASSISTANT_LEASE_SECONDS,
@@ -377,7 +378,7 @@ class RepairAssistantService:
         if self._repo is None:
             raise RuntimeError("repair_assistant_repo is not configured")
         if not idempotency_key:
-            return (ClaimOutcome.CLAIMED, None)
+            raise ValueError("idempotency_key is required; missing key must fail before persistence")
         now = utc_now_text()
         from datetime import datetime, timedelta, timezone
         expiry_dt = datetime.now(timezone.utc) + timedelta(seconds=_REPAIR_ASSISTANT_LEASE_SECONDS)
@@ -456,7 +457,11 @@ class RepairAssistantService:
         status: str,
         generated_proposal_id: str | None = None,
         response_message_id: str | None = None,
-    ) -> bool:
+    ) -> str:
+        """Finalize lease with atomic CAS.
+        
+        Returns one of LeaseState.*
+        """
         if self._repo is None:
             raise RuntimeError("repair_assistant_repo is not configured")
         return self._repo.finalize_lease(

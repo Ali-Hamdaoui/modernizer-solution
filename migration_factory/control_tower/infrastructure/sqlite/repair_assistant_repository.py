@@ -27,6 +27,12 @@ def _lease_active(lease_expires_at: str | None, now: str) -> bool:
     return _parse_utc(lease_expires_at) > _parse_utc(now)
 
 
+class LeaseState:
+    OWNED = "owned"
+    LOST = "lost"
+    TEMPORARILY_UNAVAILABLE = "temporarily_unavailable"
+
+
 class ClaimOutcome:
     CLAIMED = "claimed"
     ALREADY_PROCESSING = "already_processing"
@@ -110,6 +116,8 @@ class SqliteRepairAssistantRepository:
 
         Returns (ClaimOutcome, record_or_None).
         """
+        if not idempotency_key:
+            raise ValueError("idempotency_key is required")
         existing = self.get_message_by_scoped_idempotency_key(
             job_id=job_id, proposal_id=proposal_id, idempotency_key=idempotency_key,
         )
@@ -227,8 +235,16 @@ class SqliteRepairAssistantRepository:
         status: str,
         generated_proposal_id: str | None = None,
         response_message_id: str | None = None,
-    ) -> bool:
-        """Owner-bound finalization. Only the current processing_owner may update."""
+    ) -> str:
+        """Owner-bound finalization with atomic CAS.
+        
+        WHERE message_id = ? AND processing_owner = ? AND status IN ('processing', 'revision_generating')
+        
+        Returns:
+            LeaseState.OWNED — rowcount=1, clean finalization
+            LeaseState.OWNED — already finalized with same data (idempotent replay)
+            LeaseState.LOST — different owner or unexpected state
+        """
         if generated_proposal_id is not None:
             cursor = self._connection.execute(
                 """UPDATE repair_assistant_messages
@@ -238,7 +254,9 @@ class SqliteRepairAssistantRepository:
                        processing_owner = NULL,
                        processing_started_at = NULL,
                        lease_expires_at = NULL
-                   WHERE message_id = ? AND processing_owner = ?""",
+                   WHERE message_id = ?
+                     AND processing_owner = ?
+                     AND status IN ('processing', 'revision_generating')""",
                 (status, generated_proposal_id, response_message_id, message_id,
                  message_id, owner),
             )
@@ -251,10 +269,40 @@ class SqliteRepairAssistantRepository:
                        processing_owner = NULL,
                        processing_started_at = NULL,
                        lease_expires_at = NULL
-                   WHERE message_id = ? AND processing_owner = ?""",
+                   WHERE message_id = ?
+                     AND processing_owner = ?
+                     AND status IN ('processing', 'revision_generating')""",
                 (status, response_message_id, message_id, message_id, owner),
             )
-        return cursor.rowcount == 1
+        if cursor.rowcount == 1:
+            return LeaseState.OWNED
+        check = self._connection.execute(
+            "SELECT processing_owner, status FROM repair_assistant_messages WHERE message_id = ?",
+            (message_id,),
+        ).fetchone()
+        if check is not None:
+            existing_owner = str(check["processing_owner"]) if check["processing_owner"] else None
+            existing_status = str(check["status"])
+            if existing_owner is None and existing_status == status:
+                return LeaseState.OWNED
+            if existing_owner != owner:
+                return LeaseState.LOST
+        return LeaseState.LOST
+
+    def check_lease_state(self, *, message_id: str, owner: str) -> str:
+        """Check the current lease state for a message. Returns one of LeaseState.*"""
+        row = self._connection.execute(
+            "SELECT processing_owner, status, lease_expires_at FROM repair_assistant_messages WHERE message_id = ?",
+            (message_id,),
+        ).fetchone()
+        if row is None:
+            return LeaseState.LOST
+        if str(row["processing_owner"] or "") == owner and row["status"] in ("processing", "revision_generating"):
+            now = datetime.now(timezone.utc).isoformat()
+            if _lease_active(str(row["lease_expires_at"]), now):
+                return LeaseState.OWNED
+            return LeaseState.TEMPORARILY_UNAVAILABLE
+        return LeaseState.LOST
 
     def get_message_by_response_id(self, response_message_id: str) -> RepairAssistantMessageRecord | None:
         row = self._connection.execute(

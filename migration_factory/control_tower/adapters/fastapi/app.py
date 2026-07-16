@@ -4555,6 +4555,7 @@ def create_app(
         """
         from migration_factory.control_tower.infrastructure.sqlite.repair_assistant_repository import (
             ClaimOutcome,
+            LeaseState,
             SqliteRepairAssistantRepository,
         )
         from migration_factory.control_tower.application.repair_assistant_service import (
@@ -4664,7 +4665,7 @@ def create_app(
                     assistant_replay = repo_phase2.get_message_by_response_id(response_msg_id)
                     if assistant_replay is not None:
                         replay_proposal = (
-                            uow.v2_repairs.get_proposal_for_job(
+                            write_uow.v2_repairs.get_proposal_for_job(
                                 job_id, assistant_replay.generated_proposal_id,
                             )
                             if assistant_replay.generated_proposal_id else None
@@ -4712,7 +4713,7 @@ def create_app(
                     "new_attempt_number": record.attempt_number,
                     "new_diff_checksum": (
                         getattr(
-                            uow.v2_repairs.get_proposal_for_job(
+                            write_uow.v2_repairs.get_proposal_for_job(
                                 job_id, record.generated_proposal_id,
                             ) if record.generated_proposal_id else None,
                             "diff_checksum", None,
@@ -4882,12 +4883,20 @@ def create_app(
                             base_diff_checksum=payload.base_diff_checksum,
                             error_text=f"Model call failed: {redact_model_summary(model_result.failure_reason)}",
                         )
-                        service_err.finalize_message_lease(
+                        err_lease_outcome = service_err.finalize_message_lease(
                             message_id=user_message_id,
                             owner=owner,
                             status="error",
                             response_message_id=error_record.message_id,
                         )
+                        if err_lease_outcome == LeaseState.LOST:
+                            if write_uow.connection.in_transaction:
+                                write_uow.connection.execute("ROLLBACK")
+                            raise _error(
+                                status.HTTP_409_CONFLICT,
+                                "REPAIR_ASSISTANT_LEASE_LOST",
+                                "Processing lease was lost during model execution.",
+                            )
                         error_response = {
                             "message_id": error_record.message_id,
                             "assistant_message": "I'm sorry, the repair assistant model is currently unavailable.",
@@ -4920,12 +4929,20 @@ def create_app(
                             base_diff_checksum=payload.base_diff_checksum,
                             error_text="I analyzed the context but could not structure the response. Please try rephrasing.",
                         )
-                        service_parse_err.finalize_message_lease(
+                        parse_lease_outcome = service_parse_err.finalize_message_lease(
                             message_id=user_message_id,
                             owner=owner,
                             status="error",
                             response_message_id=fallback_record.message_id,
                         )
+                        if parse_lease_outcome == LeaseState.LOST:
+                            if write_uow.connection.in_transaction:
+                                write_uow.connection.execute("ROLLBACK")
+                            raise _error(
+                                status.HTTP_409_CONFLICT,
+                                "REPAIR_ASSISTANT_LEASE_LOST",
+                                "Processing lease was lost during model execution.",
+                            )
                         fallback_response = {
                             "message_id": fallback_record.message_id,
                             "assistant_message": "I analyzed the context but could not structure the response. Please try rephrasing.",
@@ -4957,8 +4974,7 @@ def create_app(
                         intent=intent,
                     )
                     if intent.action == "REQUEST_REVISION":
-                        # Keep ownership through regeneration and final proposal persistence.
-                        finalized = True
+                        finalized = LeaseState.OWNED
                     else:
                         finalized = service_phase4.finalize_message_lease(
                             message_id=user_message_id,
@@ -4966,7 +4982,7 @@ def create_app(
                             status=assistant_record.status,
                             response_message_id=assistant_record.message_id,
                         )
-                        if not finalized:
+                        if finalized == LeaseState.LOST:
                             raise _error(
                                 status.HTTP_409_CONFLICT,
                                 "LEASE_LOST",
@@ -5122,11 +5138,21 @@ def create_app(
                                 status="revision_failed",
                                 message_text="Revision failed before a new proposal was persisted.",
                             )
-                            service_fail.finalize_message_lease(
+                            lease_outcome = service_fail.finalize_message_lease(
                                 message_id=user_message_id,
                                 owner=owner,
                                 status="revision_failed",
                             )
+                            if lease_outcome == LeaseState.LOST:
+                                if write_uow.connection.in_transaction:
+                                    write_uow.connection.execute("ROLLBACK")
+                                raise _error(
+                                    status.HTTP_409_CONFLICT,
+                                    "REPAIR_ASSISTANT_LEASE_LOST",
+                                    "Processing lease was lost during model execution.",
+                                )
+                        except _error:
+                            raise
                         except Exception:
                             if write_uow.connection.in_transaction:
                                 write_uow.connection.execute("ROLLBACK")
@@ -5212,11 +5238,21 @@ def create_app(
                                 status="revision_failed",
                                 message_text="Revision failed before a new proposal was persisted.",
                             )
-                            service_fail2.finalize_message_lease(
+                            lease_outcome = service_fail2.finalize_message_lease(
                                 message_id=user_message_id,
                                 owner=owner,
                                 status="revision_failed",
                             )
+                            if lease_outcome == LeaseState.LOST:
+                                if write_uow.connection.in_transaction:
+                                    write_uow.connection.execute("ROLLBACK")
+                                raise _error(
+                                    status.HTTP_409_CONFLICT,
+                                    "REPAIR_ASSISTANT_LEASE_LOST",
+                                    "Processing lease was lost during model execution.",
+                                )
+                        except _error:
+                            raise
                         except Exception:
                             if write_uow.connection.in_transaction:
                                 write_uow.connection.execute("ROLLBACK")
@@ -5289,12 +5325,20 @@ def create_app(
                     final_status,
                     generated_proposal_id=new_proposal_id_str or None,
                 )
-                service_final.finalize_message_lease(
+                phase6_outcome = service_final.finalize_message_lease(
                     message_id=user_message_id,
                     owner=owner,
                     status=final_status,
                     generated_proposal_id=new_proposal_id_str or None,
                 )
+                if phase6_outcome == LeaseState.LOST:
+                    if write_uow.connection.in_transaction:
+                        write_uow.connection.execute("ROLLBACK")
+                    raise _error(
+                        status.HTTP_409_CONFLICT,
+                        "REPAIR_ASSISTANT_LEASE_LOST",
+                        "Processing lease was lost before revision persistence.",
+                    )
 
             response.update({
                 "revision_started": bool(new_proposal_id_str),
