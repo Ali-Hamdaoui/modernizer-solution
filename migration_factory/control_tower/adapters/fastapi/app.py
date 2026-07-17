@@ -4257,6 +4257,13 @@ def create_app(
                     "STALE_REVIEWER_VERDICT",
                     "previous_reviewer_verdict_id does not match the current proposal reviewer verdict.",
                 )
+            superseding = uow.v2_repairs.get_superseding_leaf_for_proposal(job_id, proposal_id)
+            if superseding is not None:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "PROPOSAL_SUPERSEDED",
+                    f"Proposal {proposal_id} has been superseded by proposal {superseding.proposal_id}.",
+                )
             gate_id = getattr(record, "gate_id", None)
             if not gate_id:
                 revision_callable = globals().get("_create_direct_repair_revision") or _create_direct_repair_revision
@@ -5496,6 +5503,13 @@ def create_app(
                 return {"job_id": job_id, "proposal_id": proposal_id, "status": "idempotent"}
             if getattr(record, "status", "") not in {"user_review_required", "reviewer_accepted", "approvable"}:
                 raise _error(status.HTTP_409_CONFLICT, "PROPOSAL_NOT_REJECTABLE", f"Proposal status is {getattr(record, 'status', '')!r}.")
+            superseding = uow.v2_repairs.get_superseding_leaf_for_proposal(job_id, proposal_id)
+            if superseding is not None:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "PROPOSAL_SUPERSEDED",
+                    f"Proposal {proposal_id} has been superseded by proposal {superseding.proposal_id}.",
+                )
             uow.v2_repairs.update_proposal_prf_fields(
                 proposal_id, status="rejected", reviewer_decision="reject",
                 status_reason=redact_public_value(payload.reason or "Rejected by human reviewer."),
@@ -5576,6 +5590,13 @@ def create_app(
                     status.HTTP_409_CONFLICT,
                     "PROPOSAL_NOT_APPROVABLE",
                     f"Proposal status is {claim_record_status!r}; not approvable.",
+                )
+            superseding = claim_uow.v2_repairs.get_superseding_leaf_for_proposal(job_id, proposal_id)
+            if superseding is not None:
+                raise _error(
+                    status.HTTP_409_CONFLICT,
+                    "PROPOSAL_SUPERSEDED",
+                    f"Proposal {proposal_id} has been superseded by proposal {superseding.proposal_id}.",
                 )
             claim_status = claim_uow.v2_repairs.claim_apply(
                 job_id, proposal_id,

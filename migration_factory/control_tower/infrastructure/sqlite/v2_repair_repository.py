@@ -290,15 +290,55 @@ class SqliteV2RepairRepository:
         return self._row_to_proposal(row)
 
     def get_current_proposal_for_job(self, job_id: str) -> V2RepairProposalRecord | None:
+        """Return the authoritative newest leaf proposal for the job.
+
+        A leaf is a proposal that has no same-job child where
+        child.revision_of = p.proposal_id OR child.source_proposal_id = p.proposal_id.
+        """
         row = self._connection.execute(
-            """SELECT * FROM v2_repair_proposals
-               WHERE job_id = ?
-                 AND (status IN ('user_review_required', 'reviewer_revision_required', 'reviewer_rejected')
-                      OR (gate_id IS NULL AND status = 'approve_failed')
-                      OR (gate_id IS NOT NULL AND status IN ('user_review_required', 'reviewer_accepted', 'diff_materialized')))
-               ORDER BY created_at DESC
+            """SELECT p.* FROM v2_repair_proposals p
+               WHERE p.job_id = ?
+                  AND NOT EXISTS (
+                   SELECT 1 FROM v2_repair_proposals child
+                   WHERE child.job_id = ?
+                     AND (child.revision_of = p.proposal_id OR child.source_proposal_id = p.proposal_id)
+                 )
+               ORDER BY p.created_at DESC, COALESCE(p.revision_number, 0) DESC, p.proposal_id DESC
                LIMIT 1""",
-            (job_id,),
+            (job_id, job_id),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_proposal(row)
+
+    def get_superseding_leaf_for_proposal(self, job_id: str, proposal_id: str) -> V2RepairProposalRecord | None:
+        """If the given proposal has a same-job descendant leaf, return the
+        authoritative newest leaf. Returns None if the proposal is itself a leaf
+        (no descendants).
+
+        Handles arbitrary-depth chains, multiple independent chains
+        deterministically, and is cycle-safe (depth limit 100).
+        """
+        row = self._connection.execute(
+            """WITH RECURSIVE descendants(proposal_id, depth) AS (
+                   SELECT ?, 0
+                   UNION ALL
+                   SELECT child.proposal_id, d.depth + 1
+                   FROM v2_repair_proposals child
+                   JOIN descendants d ON (child.revision_of = d.proposal_id OR child.source_proposal_id = d.proposal_id)
+                   WHERE child.job_id = ? AND d.depth < 100
+               )
+               SELECT p.* FROM v2_repair_proposals p
+               WHERE p.proposal_id IN (SELECT proposal_id FROM descendants WHERE proposal_id != ?)
+                 AND p.job_id = ?
+                 AND NOT EXISTS (
+                     SELECT 1 FROM v2_repair_proposals child
+                     WHERE child.job_id = ?
+                       AND (child.revision_of = p.proposal_id OR child.source_proposal_id = p.proposal_id)
+                 )
+               ORDER BY p.created_at DESC, COALESCE(p.revision_number, 0) DESC, p.proposal_id DESC
+               LIMIT 1""",
+            (proposal_id, job_id, proposal_id, job_id, job_id),
         ).fetchone()
         if row is None:
             return None
