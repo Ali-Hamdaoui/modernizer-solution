@@ -519,12 +519,22 @@ class LlmInvocationDto:
     output_checksum: str | None = None
     schema_name: str | None = None
     fallback_used: bool = False
+    redacted_error: str | None = None
     redacted_summary: str | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
     latency_ms: int | None = None
     completed_at: str | None = None
+    configured_max_input_tokens: int | None = None
+    configured_max_output_tokens: int | None = None
+    response_format_used: str | None = None
+    transport: str | None = None
+    http_status: str | None = None
+    azure_request_id: str | None = None
+    retry_count: int = 0
+    retry_after: str | None = None
+    parse_result: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

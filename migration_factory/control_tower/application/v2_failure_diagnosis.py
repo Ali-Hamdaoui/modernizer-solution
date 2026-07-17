@@ -1,4 +1,4 @@
-"""V2 Automatic Failure Diagnosis (F02).
+﻿"""V2 Automatic Failure Diagnosis (F02).
 
 Creates governed LLM diagnosis and repair proposal objects when backend-owned
 migration execution emits build_failed, test_failed, or transform_failed.
@@ -42,7 +42,7 @@ from migration_factory.control_tower.application.v2_repair_flow import (
 )
 
 
-# ── Diagnosis record ──────────────────────────────────────────────
+# â”€â”€ Diagnosis record â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 @dataclass(frozen=True)
@@ -64,7 +64,7 @@ class FailureDiagnosisRecord:
     created_at: str
 
 
-# ── Diagnosis service ─────────────────────────────────────────────
+# â”€â”€ Diagnosis service â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class V2FailureDiagnosisService:
@@ -153,6 +153,9 @@ class V2FailureDiagnosisService:
         build_status = str(payload_data.get("build_status", ""))
         test_status = str(payload_data.get("test_status", ""))
         transform_status = str(payload_data.get("transform_status", ""))
+
+        source_profile = str(payload_data.get("source_profile") or "")
+        target_profile = str(payload_data.get("target_profile") or "")
 
         # 4. Optional: resolve run_dir and sandbox_path from payload
         #    (prod callers pass artifact_refs; test callers may omit)
@@ -284,6 +287,8 @@ class V2FailureDiagnosisService:
             command_id=command_id,
             event_type=event_type,
             diagnosis=diagnosis,
+            source_profile=source_profile,
+            target_profile=target_profile,
         )
 
         return diagnosis
@@ -304,7 +309,7 @@ class V2FailureDiagnosisService:
         """Clear in-memory diagnoses (for testing)."""
         self._diagnoses.clear()
 
-    # ── Internal helpers ───────────────────────────────────────────
+    # â”€â”€ Internal helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _build_failure_summary(
         self,
@@ -449,6 +454,8 @@ class V2FailureDiagnosisService:
         command_id: str,
         event_type: str,
         diagnosis: FailureDiagnosisRecord,
+        source_profile: str = "",
+        target_profile: str = "",
     ) -> None:
         """Emit ai_diagnosis_created event via the configured event sink."""
         if self._event_sink is None:
@@ -465,6 +472,10 @@ class V2FailureDiagnosisService:
             "model_invocation_id": diagnosis.model_invocation_id,
             "redaction_status": diagnosis.redaction_status,
         }
+        if source_profile:
+            event_payload["source_profile"] = source_profile
+        if target_profile:
+            event_payload["target_profile"] = target_profile
         self._event_sink(
             job_id=job_id,
             stage=stage_index,
@@ -481,31 +492,124 @@ class V2FailureDiagnosisService:
         build_status: str,
         test_status: str,
     ) -> dict[str, Any]:
-        """Create a minimal classification when evidence collector is unavailable."""
-        failure_type = event_type.upper()
-        severity = "BLOCKER"
+        """Create a fail-closed classification when evidence collector is unavailable.
+
+        Without concrete evidence, this must NOT convert the raw event type into
+        a justified concrete failure classification (e.g. BUILD_FAILED, TEST_FAILED).
+        Fabricating certainty when evidence was unavailable contaminates retry cycles.
+
+        When build_status contains a recognized BuildResultKind value, map it to
+        the corresponding failure type so infrastructure/environment failures
+        (e.g. TLS certificate trust) do not waste proposer/reviewer tokens.
+        """
+        build_status_lower = build_status.strip().lower()
+
+        if build_status_lower == "repository_tls_failure":
+            return {
+                "failure_type": "ENVIRONMENT_FAILURE",
+                "severity": "BLOCKER",
+                "migration_blocker": True,
+                "security_env_warning": False,
+                "likely_root_cause": (
+                    "Repository TLS certificate trust failure — "
+                    "environment/infrastructure issue"
+                ),
+                "evidence": [],
+                "recommended_next_step": (
+                    "Verify TLS truststore and certificate configuration "
+                    "on the build environment."
+                ),
+                "requires_human_review": True,
+            }
+
+        if build_status_lower == "dependency_error":
+            return {
+                "failure_type": "DEPENDENCY_CONFIGURATION_FAILURE",
+                "severity": "BLOCKER",
+                "migration_blocker": True,
+                "security_env_warning": False,
+                "likely_root_cause": (
+                    "Maven dependency resolution failed — "
+                    "check repository coordinates or dependency declarations."
+                ),
+                "evidence": [],
+                "recommended_next_step": (
+                    "Review dependency declarations in pom.xml for "
+                    "correct coordinates, versions, and repository access."
+                ),
+                "requires_human_review": True,
+            }
+
+        if build_status_lower == "compilation_error":
+            return {
+                "failure_type": "APPLICATION_CODE_FAILURE",
+                "severity": "BLOCKER",
+                "migration_blocker": True,
+                "security_env_warning": False,
+                "likely_root_cause": (
+                    "Java compilation error — "
+                    "application source code failed to compile."
+                ),
+                "evidence": [],
+                "recommended_next_step": (
+                    "Review compiler error output and fix "
+                    "source code compilation issues."
+                ),
+                "requires_human_review": True,
+            }
+
+        if test_status in {"TEST_FAILED", "TEST_ERROR"}:
+            return {
+                "failure_type": "TEST_FAILURE",
+                "severity": "BLOCKER",
+                "migration_blocker": True,
+                "security_env_warning": False,
+                "likely_root_cause": (
+                    f"Test validation reported as failed ({test_status})."
+                ),
+                "evidence": [],
+                "recommended_next_step": (
+                    "Review test report and fix failing tests."
+                ),
+                "requires_human_review": True,
+            }
+
+        failure_type = "UNKNOWN_MIGRATION_FAILURE"
+        severity = "UNKNOWN"
 
         if event_type == "build_failed":
-            likely_root_cause = f"Maven build failed: {build_status or 'unknown error'}"
+            likely_root_cause = (
+                f"Maven build reported as failed ({build_status or 'unknown status'}); "
+                "evidence collector was unavailable — classification is UNKNOWN"
+            )
         elif event_type == "test_failed":
-            likely_root_cause = f"Test validation failed: {test_status or 'unknown error'}"
+            likely_root_cause = (
+                f"Test validation reported as failed ({test_status or 'unknown status'}); "
+                "evidence collector was unavailable — classification is UNKNOWN"
+            )
         elif event_type == "transform_failed":
-            likely_root_cause = "Sandbox transform failed"
+            likely_root_cause = (
+                "Sandbox transform reported as failed; "
+                "evidence collector was unavailable — classification is UNKNOWN"
+            )
         else:
-            likely_root_cause = "Unknown failure"
+            likely_root_cause = (
+                f"Event type {event_type!r} reported; "
+                "evidence collector was unavailable — classification is UNKNOWN"
+            )
 
         return {
             "failure_type": failure_type,
             "severity": severity,
-            "migration_blocker": True,
+            "migration_blocker": False,
             "security_env_warning": False,
             "likely_root_cause": likely_root_cause,
             "evidence": [],
-            "recommended_next_step": "Review build/test logs and rerun.",
-            "requires_human_review": False,
+            "recommended_next_step": "Rerun with evidence collector enabled to get concrete classification.",
+            "requires_human_review": True,
         }
 
-    # ── Serialization ──────────────────────────────────────────────
+    # â”€â”€ Serialization â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     @staticmethod
     def diagnosis_to_dict(diagnosis: FailureDiagnosisRecord) -> dict[str, Any]:
@@ -529,7 +633,7 @@ class V2FailureDiagnosisService:
         return event_type in V2FailureDiagnosisService.TRIGGER_EVENT_TYPES
 
 
-# ── Orchestrator integration helper ───────────────────────────────
+# â”€â”€ Orchestrator integration helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def create_orchestrator_diagnosis_callback(
@@ -583,3 +687,4 @@ def create_orchestrator_diagnosis_callback(
         )
 
     return callback
+

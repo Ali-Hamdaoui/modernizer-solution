@@ -12,7 +12,6 @@ import type {
   V2MigrationJobResponse,
   V2JobEventSnapshotResponse,
   V2PipelineResponse,
-  V2FailureSummaryResponse,
   V2StageEntry,
   V2StageCommandResponse,
   V2ApprovalResponse,
@@ -55,6 +54,7 @@ import type {
   PomProposeRequest,
   PomApplyRequest,
   Stage4TargetVersionApplyResponse,
+  TargetVersionUpdateStatusResponse,
   Stage4TargetVersionChangeRequest,
   // PR-C types
   RepairProposalCurrentResponse,
@@ -67,6 +67,11 @@ import type {
   // PR-E types
   RepairProposalApproveRequest,
   RepairProposalApproveResponse,
+  RepairProposalContinueResponse,
+  // RA — Repair Assistant Chat types
+  RepairAssistantMessagesListResponse,
+  RepairAssistantSendRequest,
+  RepairAssistantSendResponse,
 } from "./contracts";
 
 export const CONTROL_TOWER_FRONTEND_CLIENT_ID = "control-tower-frontend";
@@ -396,13 +401,6 @@ export async function getV2JobPipeline(jobId: string): Promise<V2PipelineRespons
   const safeJobId = requireJobId(jobId);
   return getJson<V2PipelineResponse>(
     `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/pipeline`
-  );
-}
-
-export async function getV2FailureSummary(jobId: string): Promise<V2FailureSummaryResponse> {
-  const safeJobId = requireJobId(jobId);
-  return getJson<V2FailureSummaryResponse>(
-    `/v1/v2/migration-jobs/${encodeURIComponent(safeJobId)}/failure-summary`
   );
 }
 
@@ -771,13 +769,18 @@ export async function applyPomRepairPlan(
 export async function applyStage4TargetVersionChanges(
   jobId: string,
   stage: number,
-  request: { changes: Stage4TargetVersionChangeRequest[]; idempotency_key?: string }
+  request: { changes: Stage4TargetVersionChangeRequest[]; idempotency_key?: string; expected_pom_checksum: string }
 ): Promise<Stage4TargetVersionApplyResponse> {
   const safeJobId = requireJobId(jobId);
   return postJson<Stage4TargetVersionApplyResponse>(
     `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/stage/${stage}/pom/apply-target-version-changes`,
     request
   );
+}
+
+export async function getLatestTargetVersionUpdate(jobId: string): Promise<TargetVersionUpdateStatusResponse> {
+  const safeJobId = requireJobId(jobId);
+  return getJson<TargetVersionUpdateStatusResponse>(`/v1/v2/jobs/${encodeURIComponent(safeJobId)}/target-version-update`);
 }
 
 export async function rollbackPomChange(
@@ -874,6 +877,61 @@ export async function approveRepairProposal(
   );
 }
 
+export async function continueRepairProposal(
+  jobId: string,
+  proposalId: string,
+): Promise<RepairProposalContinueResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) throw new Error("Proposal id is required.");
+  return postJson<RepairProposalContinueResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}/continue`,
+    { idempotency_key: crypto.randomUUID() },
+  );
+}
+
+export async function rejectRepairProposal(
+  jobId: string,
+  proposalId: string,
+  request: { proposal_id: string; reason?: string; idempotency_key: string },
+): Promise<{ job_id: string; proposal_id: string; status: string }> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) throw new Error("Proposal id is required.");
+  return postJson(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}/reject`,
+    request,
+  );
+}
+
+// ── RA — Repair Assistant Chat ───────────────────────────────────────────
+
+export async function fetchRepairAssistantMessages(
+  jobId: string,
+  proposalId: string
+): Promise<RepairAssistantMessagesListResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) throw new Error("Proposal id is required.");
+  return getJson<RepairAssistantMessagesListResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}/assistant/messages`
+  );
+}
+
+export async function sendRepairAssistantMessage(
+  jobId: string,
+  proposalId: string,
+  payload: RepairAssistantSendRequest
+): Promise<RepairAssistantSendResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) throw new Error("Proposal id is required.");
+  return postJson<RepairAssistantSendResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}/assistant/messages`,
+    payload
+  );
+}
+
 export async function postJson<TResponse>(
   path: string,
   body: unknown,
@@ -889,8 +947,18 @@ export async function postJson<TResponse>(
     }
   });
   if (!response.ok) {
+    let detail = "";
+    try {
+      const body = await response.json();
+      const code = body?.detail?.code || body?.error?.code || body?.code || "";
+      const message = body?.detail?.message || body?.error?.message || body?.message || "";
+      if (code || message) {
+        detail = `\n${code}${message ? `: ${message}` : ""}`;
+      }
+    } catch {
+    }
     throw new Error(
-      `Control Tower mutation failed for ${path}: ${response.status} ${response.statusText || "HTTP error"}.`
+      `Control Tower mutation failed for ${path}: ${response.status} ${response.statusText || "HTTP error"}.${detail}`
     );
   }
   return (await response.json()) as TResponse;
@@ -899,8 +967,18 @@ export async function postJson<TResponse>(
 async function getJson<T>(path: string): Promise<T> {
   const response = await fetch(`${CONTROL_TOWER_API_BASE_URL}${path}`, { cache: "no-store" });
   if (!response.ok) {
+    let detail = "";
+    try {
+      const body = await response.json();
+      const code = body?.detail?.code || body?.code || "";
+      const message = body?.detail?.message || body?.message || "";
+      if (code || message) {
+        detail = `\n${code}${message ? `: ${message}` : ""}`;
+      }
+    } catch {
+    }
     throw new Error(
-      `Control Tower request failed for ${path}: ${response.status} ${response.statusText || "HTTP error"}.`
+      `Control Tower request failed for ${path}: ${response.status} ${response.statusText || "HTTP error"}.${detail}`
     );
   }
   return (await response.json()) as T;

@@ -61,6 +61,9 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_approval_repositor
 from migration_factory.control_tower.infrastructure.sqlite.v2_assistant_repository import (
     SqliteV2AssistantRepository,
 )
+from migration_factory.control_tower.infrastructure.sqlite.repair_assistant_repository import (
+    SqliteRepairAssistantRepository,
+)
 from migration_factory.control_tower.infrastructure.sqlite.v2_repair_repository import (
     SqliteV2RepairRepository,
 )
@@ -158,6 +161,7 @@ class SqliteControlTowerUnitOfWork:
         self.gate_decisions = SqliteGateDecisionRepository(connection)
         self.artifact_revisions = SqliteArtifactRevisionRepository(connection)
         self.v2_llm_invocations = SqliteV2LLMInvocationRepository(connection)
+        self.repair_assistant = SqliteRepairAssistantRepository(connection)
 
     def __enter__(self) -> "SqliteControlTowerUnitOfWork":
         if self.transaction_mode == "write":

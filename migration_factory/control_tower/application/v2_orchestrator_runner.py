@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -16,6 +17,12 @@ from typing import Any, Callable
 from migration_factory.control_tower.application.redaction import (
     redact_model_summary,
     redact_public_value,
+)
+from migration_factory.control_tower.application.execution_environment import (
+    MANIFEST_ENV_KEYS,
+    SAFE_ENV_KEYS,
+    decode_environment_manifest,
+    materialize_execution_environment,
 )
 from migration_factory.control_tower.application.v2_approval_mapping import V2ApprovalMappingService
 from migration_factory.control_tower.application.v2_gate_action_service import V2GateActionService
@@ -37,6 +44,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_command_repository
 )
 from migration_factory.repair_loop.failure_evidence import (
     FailureSource,
+    NormalizedCompilerError,
     build_failure_evidence,
     failure_evidence_to_dict,
 )
@@ -48,34 +56,16 @@ from migration_factory.repair_loop.repair_context import (
 
 UnitOfWorkFactory = Callable[[], Any]
 
+
+def validation_context_sidecar_path(repo_root: Path, command_id: str) -> Path:
+    return Path(repo_root) / ".control_tower" / "contexts" / f"{command_id}.json"
+
 _EVENT_PREFIX = "CONTROL_TOWER_EVENT "
 _FINAL_JSON_PREFIX = "CONTROL_TOWER_FINAL_JSON "
 _MAX_TEXT = 4096
 
-_SAFE_ENV_KEYS = (
-    "COMSPEC",
-    "HOME",
-    "LOCALAPPDATA",
-    "PATH",
-    "PATHEXT",
-    "PROGRAMDATA",
-    "PROGRAMFILES",
-    "PROGRAMFILES(X86)",
-    "SYSTEMDRIVE",
-    "SYSTEMROOT",
-    "TEMP",
-    "TMP",
-    "USERPROFILE",
-    "WINDIR",
-)
-
-_MANIFEST_ENV_KEYS = (
-    "JAVA_HOME",
-    "JAVA11_HOME",
-    "JAVA17_HOME",
-    "JAVA21_HOME",
-    "MAVEN_CMD",
-)
+_SAFE_ENV_KEYS = SAFE_ENV_KEYS
+_MANIFEST_ENV_KEYS = MANIFEST_ENV_KEYS
 
 _SECRET_ENV_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "CREDENTIAL", "AUTHORIZATION")
 
@@ -95,7 +85,7 @@ _SUCCESS_ORCHESTRATION_STATUS = "PASS"
 _SUCCESS_FINAL_STATUS = "TRANSFORM_APPLIED_IN_SANDBOX"
 _SUCCESS_TRANSFORM_STATUS = "TRANSFORM_APPLIED_IN_SANDBOX"
 _SUCCESS_BUILD_STATUS = "BUILD_PASSED_IN_SANDBOX"
-_SUCCESS_TEST_STATUSES = {"PASS", "TEST_PASSED", "TESTS_NOT_FOUND", "PASS_WITH_WARNINGS"}
+_SUCCESS_TEST_STATUSES = {"PASS", "TEST_PASSED", "PASS_WITH_WARNINGS"}
 
 _NON_ACTIVE_REPAIR_STATUSES = {
     "",
@@ -257,6 +247,19 @@ class V2OrchestratorRunner:
                     argv = _load_json_list(resume.command_json)
                     stage_index = resume.stage_index
                     env_manifest = _load_env_manifest_for_stage(uow, job_id, stage_index)
+                    authoritative_command = _resolve_original_stage_command_for_resume(
+                        uow,
+                        job_id=job_id,
+                        stage_index=stage_index,
+                    )
+                    if authoritative_command is None:
+                        rejected = _ResumeValidationResult(
+                            False,
+                            "missing_original_stage_command_metadata",
+                            stage_index,
+                        )
+                    else:
+                        authoritative_command_id = authoritative_command.command_id
         except sqlite3.OperationalError as exc:
             if _is_sqlite_locked_error(exc):
                 return V2OrchestratorStart(
@@ -291,11 +294,12 @@ class V2OrchestratorRunner:
             target=self._run_process,
             kwargs={
                 "job_id": job_id,
-                "command_id": resume_id,
+                "command_id": authoritative_command_id,
                 "stage_index": stage_index,
                 "argv": argv,
                 "env_manifest": env_manifest,
                 "resume": True,
+                "resume_id": resume_id,
             },
             name=f"v2-orchestrator-resume-{resume_id[:8]}",
             daemon=True,
@@ -320,26 +324,36 @@ class V2OrchestratorRunner:
         argv: list[str],
         env_manifest: dict[str, Any],
         resume: bool = False,
+        resume_id: str | None = None,
         command_phase: str | None = None,
     ) -> None:
         if resume:
+            resume_payload = {"command_id": command_id}
+            if resume_id:
+                resume_payload["resume_id"] = resume_id
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="approval_started",
                 status="running",
                 message="Approval accepted; orchestrator resume process starting.",
-                payload={"command_id": command_id},
+                payload=resume_payload,
             )
 
+        start_payload = {"command_id": command_id}
+        if resume_id:
+            start_payload["resume_id"] = resume_id
         self._event(
             job_id=job_id,
             stage=stage_index,
             event_type="resume_started" if resume else "stage_started",
             status="running",
             message=f"Stage {stage_index} real orchestrator {'resume ' if resume else ''}started.",
-            payload={"command_id": command_id},
+            payload=start_payload,
         )
+        command_payload = {"command_id": command_id, "shell": False, "cwd": str(self._cwd)}
+        if resume_id:
+            command_payload["resume_id"] = resume_id
         self._event(
             job_id=job_id,
             stage=stage_index,
@@ -350,7 +364,7 @@ class V2OrchestratorRunner:
                 if resume
                 else "Backend-owned orchestrator manifest launched."
             ),
-            payload={"command_id": command_id, "shell": False, "cwd": str(self._cwd)},
+            payload=command_payload,
         )
 
         stdout_lines: list[str] = []
@@ -554,9 +568,17 @@ class V2OrchestratorRunner:
         if self._is_job_cancelled(job_id):
             return
 
-        stdout_tail = _bounded("\n".join(self._last_stdout_lines) if hasattr(self, "_last_stdout_lines") else "")
+        raw_stdout = "\n".join(self._last_stdout_lines) if hasattr(self, "_last_stdout_lines") and self._last_stdout_lines else ""
+        raw_stderr = stderr
+
+        stdout_tail = _bounded(raw_stdout)
         stderr_tail = _bounded(stderr)
         parse_strategy = "sentinel" if result is not None and "CONTROL_TOWER_FINAL_JSON" in ("".join(getattr(self, "_last_stdout_lines", []))) else "generic_scan"
+
+        compiler_errors = _normalize_compiler_errors(
+            stdout_tail=raw_stdout,
+            stderr_tail=raw_stderr,
+        )
 
         if exit_code != 0:
             if result is not None:
@@ -627,6 +649,32 @@ class V2OrchestratorRunner:
         if sandbox_path:
             result["sandbox_path"] = sandbox_path
 
+        # Persist the authoritative validation execution context for CSV
+        # target-version validation.  The context is written to a sidecar file
+        # so that app.py can read it later without mutating append-only
+        # v2_stage_commands.
+        validation_context = dict(result.get("validation_execution_context") or {})
+        if validation_context:
+            sandbox = result.get("sandbox_path") or result.get("sandbox_root") or ""
+            run_dir = result.get("run_dir") or ""
+            validation_context.update({
+                "job_id": job_id,
+                "command_id": command_id,
+                "run_dir": str(run_dir),
+                "sandbox_path": str(sandbox or sandbox_path),
+                "stage_index": stage_index,
+                "route_step_index": result.get("route_step_index", stage_index),
+            })
+            context_path = validation_context_sidecar_path(self._cwd, command_id)
+            contexts_dir = context_path.parent
+            contexts_dir.mkdir(parents=True, exist_ok=True)
+            context_path.write_text(
+                json.dumps(validation_context, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            result["_validation_context_ref"] = str(context_path)
+            result["_validation_context_checksum"] = sha256_canonical_json(validation_context)
+
         self._maybe_write_repair_failure_context(
             job_id=job_id,
             stage_index=stage_index,
@@ -634,6 +682,7 @@ class V2OrchestratorRunner:
             result=result,
             stdout_tail=stdout_tail,
             stderr_tail=stderr_tail,
+            compiler_errors=compiler_errors,
         )
 
         # ── Phase-specific handling: planning bypasses full-stage proof ──
@@ -1117,13 +1166,15 @@ class V2OrchestratorRunner:
                 payload={"command_id": command_id, "transform_status": transform_status},
             )
         elif _is_failure_status(transform_status):
+            transform_payload = {"command_id": command_id, "transform_status": transform_status}
+            _add_repair_refs_to_payload(result, transform_payload)
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="sandbox_transform_failed",
                 status="failed",
                 message=f"Sandbox transform failed: {transform_status}",
-                payload={"command_id": command_id, "transform_status": transform_status},
+                payload=transform_payload,
             )
 
         if build_status == "BUILD_PASSED_IN_SANDBOX":
@@ -1136,13 +1187,15 @@ class V2OrchestratorRunner:
                 payload={"command_id": command_id, "build_status": build_status},
             )
         elif _is_failure_status(build_status):
+            build_payload = {"command_id": command_id, "build_status": build_status}
+            _add_repair_refs_to_payload(result, build_payload)
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="build_failed",
                 status="failed",
                 message=f"Sandbox build failed: {build_status}",
-                payload={"command_id": command_id, "build_status": build_status},
+                payload=build_payload,
             )
 
         if test_status in _SUCCESS_TEST_STATUSES:
@@ -1159,13 +1212,15 @@ class V2OrchestratorRunner:
                 payload={"command_id": command_id, "test_status": test_status},
             )
         elif _is_failure_status(test_status):
+            test_payload = {"command_id": command_id, "test_status": test_status}
+            _add_repair_refs_to_payload(result, test_payload)
             self._event(
                 job_id=job_id,
                 stage=stage_index,
                 event_type="test_failed",
                 status="failed",
                 message=f"Sandbox test validation failed: {test_status}",
-                payload={"command_id": command_id, "test_status": test_status},
+                payload=test_payload,
             )
 
     def _emit_failure_repair_events(
@@ -1208,6 +1263,7 @@ class V2OrchestratorRunner:
         result: dict[str, Any],
         stdout_tail: str,
         stderr_tail: str,
+        compiler_errors: tuple[NormalizedCompilerError, ...] = (),
     ) -> None:
         build_status = str(result.get("build_status", ""))
         test_status = str(result.get("test_status", ""))
@@ -1246,15 +1302,50 @@ class V2OrchestratorRunner:
             job_id=job_id,
             command_id=command_id,
             failure_summary=failure_summary,
+            compiler_errors=compiler_errors,
             changed_files=changed_files,
             source_profile=str(result.get("source_profile") or ""),
             target_profile=str(result.get("target_profile") or ""),
             accepted_artifact_checksums=accepted_checksums,
             artifact_refs={str(k): str(v) for k, v in artifact_refs.items() if v},
+            diagnostic_metadata={
+                str(key): str(value)
+                for key, value in (result.get("diagnostic_metadata") or {}).items()
+                if value
+            } if isinstance(result.get("diagnostic_metadata"), dict) else {},
             stdout_tail=stdout_tail,
             stderr_tail=stderr_tail,
             safe_log_preview=_first_text(result.get("safe_log_preview"), stderr_tail, stdout_tail),
         )
+        compiler_error_locations: list[tuple[str, int]] = []
+        for err in evidence.compiler_errors:
+            if err.file_path and err.line > 0:
+                compiler_error_locations.append((err.file_path, err.line))
+
+        sandbox_root = str(run_dir / "workspaces" / "sandbox")
+        from migration_factory.repair_loop.repair_context import (
+            build_bounded_source_context,
+            find_relevant_build_context_files,
+        )
+        validation_context = result.get("validation_execution_context")
+        validation_context = validation_context if isinstance(validation_context, dict) else {}
+        build_tool = str(validation_context.get("tool") or result.get("build_tool") or "").lower()
+        maven_evidence_text = "\n".join((failure_summary, stdout_tail, stderr_tail)).lower()
+        maven_evidence = any(marker in maven_evidence_text for marker in ("could not find artifact", "could not resolve artifact"))
+        build_context_files = find_relevant_build_context_files(
+            sandbox_root=sandbox_root,
+            working_directory=str(validation_context.get("working_directory") or result.get("working_directory") or ""),
+            module=str(validation_context.get("module") or result.get("module") or ""),
+            tool=build_tool or "maven",
+        ) if sandbox_root and ("maven" in build_tool or build_tool in {"mvn", "mvnw"} or maven_evidence) else ()
+        source_contexts = build_bounded_source_context(
+            sandbox_root=sandbox_root,
+            compiler_errors=compiler_error_locations or None,
+            changed_files=changed_files,
+            build_context_files=build_context_files,
+            include_full_build_descriptors=bool(build_context_files),
+        ) if sandbox_root else ()
+
         context_pack = build_repair_context_pack(
             failure_evidence=evidence,
             job_id=job_id,
@@ -1264,12 +1355,66 @@ class V2OrchestratorRunner:
             target_profile=str(result.get("target_profile") or ""),
             changed_files=changed_files,
             accepted_artifact_checksums=accepted_checksums,
+            source_contexts=source_contexts,
         )
 
         repair_dir = run_dir / "repairs"
         repair_dir.mkdir(parents=True, exist_ok=True)
         evidence_path = repair_dir / "repair_failure_evidence.json"
         context_path = repair_dir / "repair_context_pack.json"
+        validation_context = dict(result.get("validation_execution_context") or {})
+        build_validation = result.get("build_validation")
+        build_validation = build_validation if isinstance(build_validation, dict) else {}
+        build_command = build_validation.get("command") or build_validation.get("resolved_command")
+        validation_context.update({
+            "job_id": job_id,
+            "command_id": command_id,
+            "run_dir": str(run_dir),
+            "stage_index": stage_index,
+            "route_step_index": result.get("route_step_index", stage_index),
+            "sandbox_path": str(result.get("sandbox_path") or result.get("sandbox_root") or sandbox_root),
+            "validation_command": (
+                validation_context.get("validation_command")
+                or result.get("validation_command")
+                or result.get("command")
+                or build_command
+                or ()
+            ),
+            "validation_unit_id": (
+                validation_context.get("validation_unit_id")
+                or result.get("validation_unit_id")
+                or build_validation.get("unit_id")
+                or result.get("unit_id")
+                or ""
+            ),
+            "module": validation_context.get("module") or build_validation.get("module") or result.get("module"),
+            "main_class": validation_context.get("main_class") or build_validation.get("main_class") or result.get("main_class"),
+            "tool": validation_context.get("tool") or build_validation.get("build_tool") or result.get("build_tool") or "",
+            "wrapper": validation_context.get("wrapper") or build_validation.get("wrapper") or result.get("wrapper") or "",
+            "source_profile": str(result.get("source_profile") or validation_context.get("source_profile") or ""),
+            "target_profile": str(result.get("target_profile") or validation_context.get("target_profile") or ""),
+            "runtime_profile": str(result.get("runtime_profile") or validation_context.get("runtime_profile") or ""),
+            "working_directory": str(result.get("working_directory") or validation_context.get("working_directory") or result.get("sandbox_path") or sandbox_root),
+            "source_jdk_home_env": (
+                validation_context.get("source_jdk_home_env")
+                or result.get("source_jdk_home_env")
+                or build_validation.get("source_jdk_home_env")
+            ),
+            "target_jdk_home_env": (
+                validation_context.get("target_jdk_home_env")
+                or result.get("target_jdk_home_env")
+                or build_validation.get("target_jdk_home_env")
+            ),
+            "build_timeout_seconds": (
+                validation_context.get("build_timeout_seconds")
+                if validation_context.get("build_timeout_seconds") is not None
+                else result.get("build_timeout_seconds")
+            ),
+        })
+        validation_context_path = repair_dir / "validation_execution_context.json"
+        validation_context_path.write_text(
+            json.dumps(validation_context, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
         evidence_path.write_text(
             json.dumps(failure_evidence_to_dict(evidence), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
@@ -1278,6 +1423,20 @@ class V2OrchestratorRunner:
             json.dumps(context_pack_to_dict(context_pack), indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
+
+        # Inject internal refs into result for downstream callback
+        result["_repair_failure_evidence_ref"] = str(evidence_path)
+        result["_repair_context_pack_ref"] = str(context_path)
+        result["_repair_run_dir"] = str(run_dir)
+        result["_repair_failure_evidence_checksum"] = evidence.content_checksum
+        result["_repair_context_pack_checksum"] = context_pack.context_pack_checksum
+        result["_repair_validation_context_ref"] = str(validation_context_path)
+        result["_repair_validation_context_checksum"] = sha256_canonical_json(validation_context)
+        result["_repair_base_repo_state_checksum"] = context_pack.base_repo_state_checksum
+        sandbox = result.get("sandbox_path") or result.get("sandbox_root") or ""
+        if sandbox:
+            result["_repair_sandbox_path"] = str(sandbox)
+        result["_repair_h2_required"] = bool(result.get("h2_required") or result.get("h2_startup_required"))
 
         self._event(
             job_id=job_id,
@@ -1348,6 +1507,7 @@ class V2OrchestratorRunner:
                 "test_status": test_status,
                 **public_contract,
             }
+            _add_repair_refs_to_payload(result, build_payload)
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -1370,6 +1530,7 @@ class V2OrchestratorRunner:
                 "test_status": test_status,
                 **public_contract,
             }
+            _add_repair_refs_to_payload(result, test_payload)
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -1396,6 +1557,7 @@ class V2OrchestratorRunner:
                 "repair_fallback_generated": bool(fallback),
                 **public_contract,
             }
+            _add_repair_refs_to_payload(result, transform_payload)
             self._event(
                 job_id=job_id,
                 stage=stage_index,
@@ -2116,25 +2278,7 @@ def _normalized_argv(argv: list[str]) -> list[str]:
 
 
 def _build_env(manifest: dict[str, Any]) -> dict[str, str]:
-    env = {
-        key: value
-        for key in _SAFE_ENV_KEYS
-        if (value := os.environ.get(key)) is not None
-    }
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[3])
-
-    for key in _MANIFEST_ENV_KEYS:
-        value = manifest.get(key)
-        if isinstance(value, str) and value:
-            env[key] = value
-
-    path_prepend = manifest.get("PATH_PREPEND")
-    if isinstance(path_prepend, str) and path_prepend:
-        current_path = env.get("PATH", "")
-        env["PATH"] = path_prepend + (os.pathsep + current_path if current_path else "")
-
-    env["AI_MIGRATION_CONTROL_TOWER_EVENTS"] = "jsonl"
-    return env
+    return materialize_execution_environment(manifest)
 
 
 def _is_secret_env_key(key: str) -> bool:
@@ -2150,10 +2294,7 @@ def _load_json_list(text: str) -> list[str]:
 
 
 def _load_json_dict(text: str) -> dict[str, Any]:
-    value = json.loads(text or "{}")
-    if not isinstance(value, dict):
-        raise ValueError("Persisted env_json must be an object")
-    return value
+    return decode_environment_manifest(text)
 
 
 def _load_env_manifest_for_stage(uow: Any, job_id: str, stage_index: int) -> dict[str, Any]:
@@ -2515,8 +2656,6 @@ def _result_sandbox_path(result: dict[str, Any]) -> str:
 
     direct = _first_text(
         result.get("sandbox_path"),
-        result.get("modernized_app_path"),
-        result.get("output_app_path"),
         artifact_refs.get("sandbox"),
         artifact_refs.get("sandbox_path"),
         artifact_refs.get("modernized_app"),
@@ -2545,6 +2684,82 @@ def _result_sandbox_path(result: dict[str, Any]) -> str:
             return ""
 
     return ""
+
+
+_RE_JAVAC_ERROR = re.compile(
+    r'\[ERROR\]\s+(.+?\.[Jj][Aa][Vv][Aa])\s*:\s*\[?(\d+)(?:,\s*(\d+))?\]?\s+(.+)',
+)
+"""Match Maven/javac compiler diagnostic lines.
+
+Supports the standard Maven-compiler-plugin format:
+
+  [ERROR] /path/to/Foo.java:[42,17] cannot find symbol
+
+and the plain-colon format:
+
+  [ERROR] /path/to/Foo.java:42: error: cannot find symbol
+
+Group 1: file path (case-insensitive .java)
+Group 2: line number
+Group 3: column number (optional)
+Group 4: error message
+"""
+
+
+def _normalize_compiler_source_path(value: str) -> str:
+    text = str(value or "").strip()
+    if re.match(r"^/[A-Za-z]:[\\/]", text):
+        return text[1:]
+    return text
+
+
+def _normalize_compiler_errors(
+    *,
+    stdout_tail: str = "",
+    stderr_tail: str = "",
+) -> tuple[NormalizedCompilerError, ...]:
+    """Extract NormalizedCompilerError tuples from Maven/javac build output.
+
+    Parses stdout and stderr for javac compiler diagnostic lines matching
+    the standard Maven-compiler-plugin format. Deduplicates exact duplicates
+    and preserves stable ordering. Malformed lines are silently skipped.
+    """
+    combined = f"{stdout_tail}\n{stderr_tail}"
+    seen: set[tuple[str, int, int]] = set()
+    results: list[NormalizedCompilerError] = []
+
+    for line in combined.splitlines():
+        m = _RE_JAVAC_ERROR.match(line.strip())
+        if not m:
+            continue
+        file_path = _normalize_compiler_source_path(m.group(1))
+        try:
+            line_num = int(m.group(2))
+        except (ValueError, TypeError):
+            continue
+        column_str = m.group(3)
+        try:
+            column = int(column_str) if column_str else 0
+        except (ValueError, TypeError):
+            column = 0
+        message = m.group(4).strip()
+        if line_num <= 0:
+            continue
+        key = (file_path, line_num, column)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(NormalizedCompilerError(
+            message=message,
+            file_path=file_path,
+            line=line_num,
+            column=column,
+            severity="error",
+        ))
+
+    # Sort by (file_path, line, column) for stable deterministic ordering
+    results.sort(key=lambda e: (e.file_path, e.line, e.column))
+    return tuple(results)
 
 
 def _result_run_dir(result: dict[str, Any], *, cwd: Path) -> Path | None:
@@ -2949,3 +3164,13 @@ def _list_or_none(value: Any) -> list[str] | None:
         items = [str(item) for item in value]
         return items if items else None
     return None
+
+
+def _add_repair_refs_to_payload(result: dict[str, Any], payload: dict[str, Any]) -> None:
+    for key in ("_repair_failure_evidence_ref", "_repair_context_pack_ref", "_repair_run_dir",
+                "_repair_sandbox_path", "_repair_failure_evidence_checksum",
+                "_repair_context_pack_checksum", "_repair_base_repo_state_checksum",
+                "_repair_validation_context_ref", "_repair_validation_context_checksum",
+                "_repair_h2_required", "source_profile", "target_profile", "changed_files"):
+        if key in result:
+            payload[key] = result[key]

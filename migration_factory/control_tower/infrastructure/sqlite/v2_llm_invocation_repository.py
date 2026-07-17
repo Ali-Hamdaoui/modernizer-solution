@@ -19,10 +19,18 @@ class V2LLMInvocationRecord:
     gate_id: str | None = None
     provider_alias: str | None = None
     deployment_alias_hash: str | None = None
+    transport: str | None = None
     context_checksum: str | None = None
     input_checksum: str | None = None
     output_checksum: str | None = None
     schema_name: str | None = None
+    response_format: str | None = None
+    parse_result: str | None = None
+    http_status: str | None = None
+    azure_request_id: str | None = None
+    retry_count: int = 0
+    retry_after: str | None = None
+    fallback_parent_invocation_id: str | None = None
     fallback_used: int = 0
     redacted_error: str | None = None
     redacted_summary: str | None = None
@@ -42,12 +50,14 @@ class SqliteV2LLMInvocationRepository:
             """INSERT INTO v2_llm_invocations (
                 invocation_id, job_id, proposal_id, gate_id,
                 role, responsibility, provider_alias, deployment_alias_hash,
-                context_checksum, input_checksum, output_checksum,
-                schema_name, status, fallback_used,
+                transport, context_checksum, input_checksum, output_checksum,
+                schema_name, response_format, parse_result, status,
+                http_status, azure_request_id, retry_count, retry_after,
+                fallback_parent_invocation_id, fallback_used,
                 redacted_error, redacted_summary,
                 prompt_tokens, completion_tokens, total_tokens,
                 latency_ms, created_at, completed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.invocation_id,
                 record.job_id,
@@ -57,11 +67,19 @@ class SqliteV2LLMInvocationRepository:
                 record.responsibility,
                 record.provider_alias,
                 record.deployment_alias_hash,
+                record.transport,
                 record.context_checksum,
                 record.input_checksum,
                 record.output_checksum,
                 record.schema_name,
+                record.response_format,
+                record.parse_result,
                 record.status,
+                record.http_status,
+                record.azure_request_id,
+                record.retry_count,
+                record.retry_after,
+                record.fallback_parent_invocation_id,
                 record.fallback_used,
                 record.redacted_error,
                 record.redacted_summary,
@@ -88,6 +106,13 @@ class SqliteV2LLMInvocationRepository:
         latency_ms: int | None = None,
         completed_at: str | None = None,
         fallback_used: int | None = None,
+        transport: str | None = None,
+        http_status: str | None = None,
+        azure_request_id: str | None = None,
+        retry_count: int | None = None,
+        retry_after: str | None = None,
+        response_format: str | None = None,
+        parse_result: str | None = None,
     ) -> None:
         parts: list[str] = ["status = ?"]
         params: list[Any] = [status]
@@ -118,6 +143,13 @@ class SqliteV2LLMInvocationRepository:
         if fallback_used is not None:
             parts.append("fallback_used = ?")
             params.append(fallback_used)
+        for name, value in (("transport", transport), ("http_status", http_status),
+                            ("azure_request_id", azure_request_id), ("retry_count", retry_count),
+                            ("retry_after", retry_after), ("response_format", response_format),
+                            ("parse_result", parse_result)):
+            if value is not None:
+                parts.append(f"{name} = ?")
+                params.append(value)
         params.append(invocation_id)
         self._connection.execute(
             f"UPDATE v2_llm_invocations SET {', '.join(parts)} WHERE invocation_id = ?",
@@ -161,10 +193,18 @@ class SqliteV2LLMInvocationRepository:
             responsibility=str(row["responsibility"]),
             provider_alias=str(row["provider_alias"]) if row["provider_alias"] is not None else None,
             deployment_alias_hash=str(row["deployment_alias_hash"]) if row["deployment_alias_hash"] is not None else None,
+            transport=str(row["transport"]) if row["transport"] is not None else None,
             context_checksum=str(row["context_checksum"]) if row["context_checksum"] is not None else None,
             input_checksum=str(row["input_checksum"]) if row["input_checksum"] is not None else None,
             output_checksum=str(row["output_checksum"]) if row["output_checksum"] is not None else None,
             schema_name=str(row["schema_name"]) if row["schema_name"] is not None else None,
+            response_format=str(row["response_format"]) if row["response_format"] is not None else None,
+            parse_result=str(row["parse_result"]) if row["parse_result"] is not None else None,
+            http_status=str(row["http_status"]) if row["http_status"] is not None else None,
+            azure_request_id=str(row["azure_request_id"]) if row["azure_request_id"] is not None else None,
+            retry_count=int(row["retry_count"] or 0),
+            retry_after=str(row["retry_after"]) if row["retry_after"] is not None else None,
+            fallback_parent_invocation_id=str(row["fallback_parent_invocation_id"]) if row["fallback_parent_invocation_id"] is not None else None,
             status=str(row["status"]),
             fallback_used=int(row["fallback_used"]) if row["fallback_used"] is not None else 0,
             redacted_error=str(row["redacted_error"]) if row["redacted_error"] is not None else None,

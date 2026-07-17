@@ -1,7 +1,7 @@
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 READ_ONLY_ASSESSMENT_MODE = "read_only_assessment"
 FULL_SANDBOX_MIGRATION_MODE = "full_sandbox_migration"
@@ -80,6 +80,8 @@ class MigrationState(TypedDict, total=False):
     test_phase: str
     sandbox_path: str
     transform_log_path: str
+    validation_execution_context: dict[str, Any]
+    build_validation: dict[str, Any]
     stop_reason: str | None
     blockers: list[str]
     warnings: list[str]
