@@ -359,6 +359,34 @@ def _read_unit_of_work(unit_of_work_factory: UnitOfWorkFactory):
         yield entered
 
 
+def _resolve_repair_proposal_lineage(*, uow: Any, job_id: str, record: Any) -> tuple[str, frozenset[str]]:
+    """Resolve a proposal and its revisions to the job-local root."""
+    lineage_ids: set[str] = set()
+    current = record
+    while True:
+        current_id = str(getattr(current, "proposal_id", "") or "")
+        if not current_id or current_id in lineage_ids:
+            raise ValueError("repair proposal lineage cycle detected")
+        lineage_ids.add(current_id)
+        if str(getattr(current, "job_id", "") or "") != job_id:
+            raise ValueError("repair proposal lineage crosses jobs")
+        parents = {str(value) for value in (
+            getattr(current, "revision_of", None),
+            getattr(current, "source_proposal_id", None),
+        ) if value}
+        if len(parents) > 1:
+            raise ValueError("repair proposal lineage has conflicting parents")
+        parent_id = next(iter(parents), "")
+        if not parent_id:
+            return current_id, frozenset(lineage_ids)
+        if parent_id in lineage_ids:
+            raise ValueError("repair proposal lineage cycle detected")
+        parent = uow.v2_repairs.get_proposal(parent_id)
+        if parent is None:
+            raise ValueError("repair proposal lineage ancestor is missing")
+        current = parent
+
+
 @dataclass(frozen=True, slots=True)
 class EventReplayConfig:
     batch_size: int = DEFAULT_PUBLIC_EVENT_REPLAY_BATCH_SIZE
@@ -5166,6 +5194,8 @@ def create_app(
                             revision_context and revision_context.get("h2_required", False)
                         ),
                     )
+                except HTTPException:
+                    raise
                 except Exception as exc:
                     failure_correlation_id = uuid4().hex
                     failure_code = type(exc).__name__
@@ -5502,6 +5532,18 @@ def create_app(
                 )
             claim_record_status = str(getattr(claim_record, "status", "") or "")
             if claim_record_status in _finalized_statuses:
+                if claim_record_status == "approved_applied" and getattr(claim_record, "apply_claim_status", "") == "completed":
+                    return RepairProposalApproveResponse(
+                        job_id=job_id,
+                        proposal_id=proposal_id,
+                        status=claim_record_status,
+                        apply_status=str(getattr(claim_record, "apply_status", "") or ""),
+                        rerun_status=str(getattr(claim_record, "rerun_status", "") or ""),
+                        next_gate_id=str(getattr(claim_record, "next_gate_id", "") or ""),
+                        next_gate_status=str(getattr(claim_record, "next_gate_status", "") or ""),
+                        rollback_status=str(getattr(claim_record, "rollback_status", "") or ""),
+                        remaining_attempts=int(getattr(claim_record, "remaining_attempts", 0) or 0),
+                    ).model_dump()
                 raise _error(
                     status.HTTP_409_CONFLICT,
                     "PROPOSAL_ALREADY_FINAL",
@@ -5871,37 +5913,78 @@ def create_app(
                         job = transition_uow.v2_jobs.get(job_id)
                         if job is None:
                             raise _error(status.HTTP_404_NOT_FOUND, "JOB_NOT_FOUND", "Migration job not found.")
-                        target_update = transition_uow.connection.execute(
-                            "SELECT change_id, validation_id FROM v2_pom_changes "
-                            "WHERE job_id = ? AND repair_proposal_id = ? "
-                            "AND operation = 'target_version_batch' AND status = 'repair_review_required' LIMIT 1",
-                            (job_id, proposal_id),
-                        ).fetchone()
-                        if target_update is not None:
-                            transition_uow.v2_pom_changes.update_status(str(target_update["change_id"]), "validated", validation_id=str(target_update["validation_id"] or ""))
-                            if target_update["validation_id"]:
-                                transition_uow.v2_pom_validations.update_result(
-                                    str(target_update["validation_id"]),
-                                    status="passed",
-                                    build_status=validation.build_status,
-                                    test_status=validation.test_status,
-                                    diagnosis_json=json.dumps({"source": "amf252_repair", "build_status": validation.build_status, "test_status": validation.test_status}, sort_keys=True),
-                                )
-                            queued = SimpleNamespace(command_id=None, status="target_version_update_completed")
-                            transition_uow.v2_events.save(
-                                job_id=job_id,
-                                stage=int(stage_index_val),
-                                event_type="target_version_update_validated",
-                                status="validated",
-                                message="Target-version update validated after AMF-252 repair.",
-                                payload={"change_id": str(target_update["change_id"]), "validation_id": str(target_update["validation_id"] or ""), "lifecycle_action": "complete_target_version_update"},
+                        try:
+                            root_proposal_id, lineage_ids = _resolve_repair_proposal_lineage(
+                                uow=transition_uow, job_id=job_id, record=record,
                             )
-                        else:
+                        except ValueError as exc:
+                            raise _error(
+                                status.HTTP_409_CONFLICT,
+                                "TARGET_VERSION_LINEAGE_INVALID",
+                                str(exc),
+                            ) from exc
+                        target_update = None
+                        for change in transition_uow.v2_pom_changes.list_by_job(job_id):
+                            if change.operation != "target_version_batch":
+                                continue
+                            lineage = transition_uow.v2_pom_changes.get_lineage(change.change_id) or {}
+                            if str(lineage.get("repair_proposal_id") or "") in lineage_ids:
+                                target_update = lineage
+                                break
+                        if target_update is None:
                             raise _error(
                                 status.HTTP_409_CONFLICT,
                                 "TARGET_VERSION_LINEAGE_MISSING",
                                 "The reviewed repair is not linked to an originating target-version update.",
                             )
+                        try:
+                            repair_linkage = json.loads(str(target_update.get("repair_linkage_json") or "{}"))
+                        except json.JSONDecodeError as exc:
+                            raise _error(
+                                status.HTTP_409_CONFLICT,
+                                "TARGET_VERSION_LINEAGE_INVALID",
+                                "Target-version repair linkage metadata is malformed.",
+                            ) from exc
+                        if not isinstance(repair_linkage, dict):
+                            raise _error(
+                                status.HTTP_409_CONFLICT,
+                                "TARGET_VERSION_LINEAGE_INVALID",
+                                "Target-version repair linkage metadata is not an object.",
+                            )
+                        accepted_ids = set(repair_linkage.get("accepted_proposal_ids") or ())
+                        accepted_ids.add(proposal_id)
+                        repair_linkage.update({
+                            "accepted_proposal_id": proposal_id,
+                            "accepted_proposal_ids": sorted(accepted_ids),
+                            "root_proposal_id": root_proposal_id,
+                        })
+                        change_id = str(target_update["change_id"])
+                        validation_id = str(target_update.get("validation_id") or "")
+                        transition_uow.v2_pom_changes.update_status(change_id, "validated", validation_id=validation_id)
+                        transition_uow.v2_pom_changes.update_lineage(
+                            change_id,
+                            repair_proposal_id=root_proposal_id,
+                            repair_linkage_json=json.dumps(repair_linkage, sort_keys=True),
+                        )
+                        if validation_id:
+                            transition_uow.v2_pom_validations.update_result(
+                                validation_id,
+                                status="passed",
+                                build_status=validation.build_status,
+                                test_status=validation.test_status,
+                                diagnosis_json=json.dumps({"source": "amf252_repair", "build_status": validation.build_status, "test_status": validation.test_status}, sort_keys=True),
+                            )
+                        queued = SimpleNamespace(command_id=None, status="target_version_update_completed")
+                        transition_uow.v2_events.save(
+                            job_id=job_id,
+                            stage=int(stage_index_val),
+                            event_type="target_version_update_validated",
+                            status="validated",
+                            message="Target-version update validated after AMF-252 repair.",
+                            payload={"change_id": change_id, "validation_id": validation_id, "lifecycle_action": "complete_target_version_update"},
+                        )
+                except HTTPException:
+                    raise
                 except Exception as exc:
                     continuation_error = f"migration continuation failed: {type(exc).__name__}"
                     _persist_apply_fields(
