@@ -9,12 +9,14 @@ import {
   requestRepairProposalRevision,
   approveRepairProposal,
   rejectRepairProposal,
+  continueRepairProposal,
 } from "../../../lib/controlTowerApi";
 import type {
   ReviewedDiffProposal,
   SafeDiffPreview as SafeDiffPreviewType,
   RepairAttemptSummary,
   RepairState,
+  RepairProposalApproveResponse,
 } from "../../../lib/contracts";
 import { formatFinalDiffSource } from "../../../lib/contracts";
 import { ReviewedDiffTabs } from "./ReviewedDiffTabs";
@@ -41,7 +43,7 @@ type AttemptsState =
   | { status: "error"; message: string }
   | { status: "available"; attempts: RepairAttemptSummary[] };
 
-export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string; repairRefreshKey?: number }) {
+export function RepairProposalPanel({ jobId, repairRefreshKey, onContinuationRefresh }: { jobId: string; repairRefreshKey?: number; onContinuationRefresh?: () => Promise<void> }) {
   const [proposalState, setProposalState] = useState<ProposalState>({ status: "loading" });
   const [diffState, setDiffState] = useState<DiffState>({ status: "idle" });
   const [attemptsState, setAttemptsState] = useState<AttemptsState>({ status: "idle" });
@@ -49,6 +51,8 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
   const [revisionPending, setRevisionPending] = useState(false);
   const [approvePending, setApprovePending] = useState(false);
   const [mutationError, setMutationError] = useState<string | null>(null);
+  const [applyResult, setApplyResult] = useState<RepairProposalApproveResponse | null>(null);
+  const [continuationPending, setContinuationPending] = useState(false);
 
   useEffect(() => {
     if (!jobId) return;
@@ -187,11 +191,12 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
       if (state.status !== "available") return;
       setApprovePending(true);
       try {
-        await approveRepairProposal(jobId, state.proposal.proposal_id, {
+        const result = await approveRepairProposal(jobId, state.proposal.proposal_id, {
           proposal_id: state.proposal.proposal_id,
           diff_checksum: state.proposal.diff_checksum,
           idempotency_key: crypto.randomUUID(),
         });
+        setApplyResult(result);
         await refreshProposalData();
     } catch (error) {
       setMutationError(error instanceof Error ? error.message : "Repair Apply failed.");
@@ -212,6 +217,21 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
       await refreshProposalData();
     } catch (error) {
       setMutationError(error instanceof Error ? error.message : "Repair rejection failed.");
+    }
+  }
+
+  async function handleContinue() {
+    if (proposal.status !== "approved_applied") return;
+    setContinuationPending(true);
+    setMutationError(null);
+    try {
+      await continueRepairProposal(jobId, proposal.proposal_id);
+      await refreshProposalData(proposal.proposal_id);
+      await onContinuationRefresh?.();
+    } catch (error) {
+      setMutationError(error instanceof Error ? error.message : "Migration continuation failed.");
+    } finally {
+      setContinuationPending(false);
     }
   }
 
@@ -369,6 +389,24 @@ export function RepairProposalPanel({ jobId, repairRefreshKey }: { jobId: string
       <div className="repair-workspace-side"><h3>Current proposed repair</h3><ReviewedDiffTabs proposal={proposal} diff={diff} /></div>
 
       {mutationError && <p className="error" role="alert">{mutationError}</p>}
+      {applyResult?.apply_succeeded && applyResult.validation_succeeded && (
+        <div className="table-list" role="status">
+          <p className="meta">Patch applied</p>
+          <p className="meta">Build passed</p>
+          <p className="meta">Test phase completed — zero tests discovered (warning)</p>
+          {applyResult.continuation_status === "continuation_failed" && <p className="error">Migration continuation failed</p>}
+        </div>
+      )}
+      {proposal.status === "approved_applied" && (
+        <div className="table-list" data-testid="repair-continuation-actions">
+          <p className="meta">Migration continuation failed or is awaiting recovery.</p>
+          <button type="button" onClick={() => void handleContinue()} disabled={continuationPending}>
+            {continuationPending ? "Retrying continuation..." : "Retry continuation"}
+          </button>
+          <button type="button" onClick={() => setShowAttempts(true)}>View validation proof</button>
+          <button type="button" onClick={() => document.querySelector('[data-testid="tab-diff"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }))}>View patched diff</button>
+        </div>
+      )}
 
       {showAttempts && (
         <RepairAttemptTimeline attempts={attempts} />

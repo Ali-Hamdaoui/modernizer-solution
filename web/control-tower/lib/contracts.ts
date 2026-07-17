@@ -1387,6 +1387,22 @@ export type RepairProposalApproveResponse = {
   rollback_status: string;
   remaining_attempts: number;
   allowed_next_actions: string[];
+  apply_succeeded?: boolean;
+  validation_succeeded?: boolean;
+  continuation_status?: string;
+  continuation_failure_code?: string | null;
+  continuation_retryable?: boolean;
+};
+
+export type RepairProposalContinueResponse = {
+  job_id: string;
+  proposal_id: string;
+  status: string;
+  reason: string;
+  continuation_id: string;
+  command_id: string | null;
+  from_stage: number;
+  to_stage: number;
 };
 
 export const PROFILE_BY_ID: Record<MigrationProfileId, MigrationProfileOption> =

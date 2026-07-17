@@ -830,6 +830,11 @@ class RepairProposalApproveResponse(BaseModel):
     rollback_status: str = ""
     remaining_attempts: int = 0
     allowed_next_actions: tuple[str, ...] = ()
+    apply_succeeded: bool = False
+    validation_succeeded: bool = False
+    continuation_status: str = ""
+    continuation_failure_code: str | None = None
+    continuation_retryable: bool = False
 
 
 class RepairProposalContinueRequest(BaseModel):
@@ -6000,32 +6005,9 @@ def create_app(
                     raise
                 except Exception as exc:
                     continuation_error = f"migration continuation failed: {type(exc).__name__}"
-                    _persist_apply_fields(
-                        status="approved_applied",
-                        status_reason=f"Patch applied to sandbox and validation passed. Continuation failed: {continuation_error}",
-                        apply_status=apply_status,
-                        rerun_status=rerun_status,
-                        apply_claim_status="completed",
-                        validation_proof_status=_validation_proof_status(validation),
-                        remaining_attempts=0,
-                        completed_at=utc_now_text(),
-                        next_gate_id=None,
-                        next_gate_status="continuation_failed",
-                        continuation_command_id=None,
-                    )
-                    _persist_apply_event(
-                        job_id=job_id,
-                        stage=int(stage_index_val),
-                        event_type="migration_continuation_failed",
-                        status="failed",
-                        message=f"Migration continuation failed for proposal {proposal_id}: {type(exc).__name__}",
-                        payload={"proposal_id": proposal_id, "error": str(exc)},
-                    )
-                    raise _error(
-                        status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        "MIGRATION_CONTINUATION_FAILED",
-                        "Migration continuation could not be queued.",
-                    ) from exc
+                    queued = SimpleNamespace(command_id=None, status="continuation_failed", reason=continuation_error)
+                    next_gate_status = "continuation_failed"
+                    _persist_apply_event(job_id=job_id, stage=int(stage_index_val), event_type="migration_continuation_failed", status="failed", message=f"Migration continuation failed for proposal {proposal_id}: {type(exc).__name__}", payload={"proposal_id": proposal_id, "error": str(exc), "retryable": True})
                 continuation_command_id = getattr(queued, "command_id", None)
                 next_gate_status = getattr(queued, "status", None)
                 remaining_attempts = 0
@@ -6071,7 +6053,7 @@ def create_app(
                     )
                 if continuation_command_id and queued.status == "queued":
                     app.state.v2_orchestrator_runner.start(job_id=job_id, command_id=continuation_command_id)
-                allowed_next_actions = ("view_result",)
+                allowed_next_actions = ("view_result", "retry_continuation") if queued.status == "continuation_failed" else ("view_result",)
 
             else:
                 # Validation failed
@@ -6245,6 +6227,11 @@ def create_app(
             rollback_status=rollback_status,
             remaining_attempts=remaining_attempts,
             allowed_next_actions=tuple(sorted(allowed_next_actions)),
+            apply_succeeded=apply_status == "APPLIED",
+            validation_succeeded=rerun_status == "passed",
+            continuation_status=str(next_gate_status or "completed"),
+            continuation_failure_code="MIGRATION_CONTINUATION_FAILED" if next_gate_status == "continuation_failed" else None,
+            continuation_retryable=next_gate_status == "continuation_failed",
         ).model_dump()
 
     @app.post("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/continue")
@@ -6273,6 +6260,8 @@ def create_app(
                     if event_payload.get("proposal_id") != proposal_id:
                         raise _error(status.HTTP_409_CONFLICT, "IDEMPOTENCY_CONFLICT", "Idempotency key was reused for another proposal.")
                     return RepairProposalContinueResponse(**event_payload["response"]).model_dump()
+                if event_payload.get("proposal_id") == proposal_id and event_payload.get("response"):
+                    return RepairProposalContinueResponse(**event_payload["response"]).model_dump()
 
             if any(event.type == "migration_cancelled" or event.status == "cancelled" for event in events):
                 raise _error(status.HTTP_409_CONFLICT, "JOB_CANCELLED", "Migration job is cancelled.")
@@ -6291,6 +6280,29 @@ def create_app(
             if not context:
                 raise _error(status.HTTP_409_CONFLICT, "RUNTIME_CONTEXT_RESOLUTION_FAILED", "Authoritative repair runtime context is unavailable.")
 
+            try:
+                _, lineage_ids = _resolve_repair_proposal_lineage(uow=uow, job_id=job_id, record=record)
+            except ValueError as exc:
+                raise _error(status.HTTP_409_CONFLICT, "TARGET_VERSION_LINEAGE_INVALID", str(exc)) from exc
+            target_update = next(
+                (
+                    uow.v2_pom_changes.get_lineage(change.change_id)
+                    for change in uow.v2_pom_changes.list_by_job(job_id)
+                    if change.operation == "target_version_batch"
+                    and str((uow.v2_pom_changes.get_lineage(change.change_id) or {}).get("repair_proposal_id") or "") in lineage_ids
+                ),
+                None,
+            )
+            if target_update is not None:
+                current_stage = int(getattr(record, "route_step_index", 0) or 0)
+                response = RepairProposalContinueResponse(
+                    job_id=job_id, proposal_id=proposal_id, status="completed",
+                    reason="target_version_update_completed", continuation_id="target-version",
+                    command_id=None, from_stage=current_stage, to_stage=current_stage,
+                ).model_dump()
+                uow.v2_events.save(job_id=job_id, stage=current_stage, event_type="repair_continuation_requested", status="completed", message="Target-version repair continuation replayed.", payload={"idempotency_key": idempotency_key, "proposal_id": proposal_id, "response": response})
+                return response
+
             job = uow.v2_jobs.get(job_id)
             if job is None:
                 raise _error(status.HTTP_404_NOT_FOUND, "JOB_NOT_FOUND", "Migration job not found.")
@@ -6306,6 +6318,14 @@ def create_app(
                 "test_status": "PASS_WITH_WARNINGS" if proof_status.endswith("WITH_WARNINGS") else "TEST_PASSED",
                 "sandbox_path": context["sandbox_path"],
             }
+            existing_command_id = getattr(record, "continuation_command_id", None)
+            if existing_command_id:
+                existing_command = uow.v2_commands.get(str(existing_command_id))
+                existing_status = str(getattr(existing_command, "status", "queued") or "queued").lower()
+                replay_status = "completed" if existing_status in {"completed", "succeeded"} else "queued" if existing_status in {"queued", "pending"} else "blocked" if existing_status in {"blocked", "cancelled"} else "running"
+                response = RepairProposalContinueResponse(job_id=job_id, proposal_id=proposal_id, status=replay_status, reason="existing continuation replayed", continuation_id="replayed", command_id=str(existing_command_id), from_stage=int(validation_context["stage_index"]), to_stage=int(validation_context["stage_index"]) + 1).model_dump()
+                uow.v2_events.save(job_id=job_id, stage=int(validation_context["stage_index"]), event_type="repair_continuation_requested", status=replay_status, message="Existing repair continuation replayed.", payload={"idempotency_key": idempotency_key, "proposal_id": proposal_id, "response": response})
+                return response
             service = V2StageProgressionService(
                 setup_repo=uow.v2_setups,
                 command_repo=uow.v2_commands,

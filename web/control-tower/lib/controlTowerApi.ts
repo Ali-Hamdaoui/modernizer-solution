@@ -67,6 +67,7 @@ import type {
   // PR-E types
   RepairProposalApproveRequest,
   RepairProposalApproveResponse,
+  RepairProposalContinueResponse,
   // RA — Repair Assistant Chat types
   RepairAssistantMessagesListResponse,
   RepairAssistantSendRequest,
@@ -873,6 +874,19 @@ export async function approveRepairProposal(
   return postJson<RepairProposalApproveResponse>(
     `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}/approve`,
     request,
+  );
+}
+
+export async function continueRepairProposal(
+  jobId: string,
+  proposalId: string,
+): Promise<RepairProposalContinueResponse> {
+  const safeJobId = requireJobId(jobId);
+  const safeProposalId = proposalId.trim();
+  if (!safeProposalId) throw new Error("Proposal id is required.");
+  return postJson<RepairProposalContinueResponse>(
+    `/v1/v2/jobs/${encodeURIComponent(safeJobId)}/repair/proposals/${encodeURIComponent(safeProposalId)}/continue`,
+    { idempotency_key: crypto.randomUUID() },
   );
 }
 

@@ -1636,7 +1636,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
 
       {/* PR-C — Repair Proposal Panel */}
       {normalizedJobId && (
-        <RepairProposalPanel jobId={normalizedJobId} repairRefreshKey={repairRefreshKey} />
+        <RepairProposalPanel jobId={normalizedJobId} repairRefreshKey={repairRefreshKey} onContinuationRefresh={refreshLiveState} />
       )}
 
       {/* Assistant Panel */}
