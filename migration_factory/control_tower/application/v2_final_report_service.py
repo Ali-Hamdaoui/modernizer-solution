@@ -67,7 +67,10 @@ class V2FinalReportService:
         self._uow_factory = unit_of_work_factory
 
     def get_report_status(self, job_id: str) -> V2FinalReportResult:
-        with self._uow_factory() as uow:
+        uow = self._uow_factory()
+        if hasattr(uow, "transaction_mode"):
+            uow.transaction_mode = "read"
+        with uow:
             job = uow.v2_jobs.get(job_id) if hasattr(uow, "v2_jobs") else None
             if job is None:
                 raise ValueError(f"V2 job {job_id!r} not found")

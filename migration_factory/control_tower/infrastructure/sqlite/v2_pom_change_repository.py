@@ -155,6 +155,17 @@ class SqlitePomChangeRepository:
         idempotency_key: str | None = None,
         executor: str = "pom_span_patch",
         status: str = PomChangeStatus.APPLIED_PENDING_VALIDATION.value,
+        logical_stage_index: int | None = None,
+        execution_stage_index: int | None = None,
+        route_step_index: int | None = None,
+        expected_checksum: str | None = None,
+        request_checksum: str | None = None,
+        command_id: str | None = None,
+        validation_context_ref: str | None = None,
+        validation_context_checksum: str | None = None,
+        repair_linkage_json: str | None = None,
+        repair_proposal_id: str | None = None,
+        pom_path_ref: str | None = None,
     ) -> PomChangeRecord:
         now = utc_now_text()
         change_id = uuid4().hex
@@ -185,8 +196,14 @@ class SqlitePomChangeRepository:
                 target_json, requested_version, before_checksum, after_checksum,
                 before_content_ref, after_content_ref, diff_unified, status,
                 validation_id, rollback_id, idempotency_key, executor,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                created_at, updated_at, logical_stage_index, execution_stage_index,
+                route_step_index, expected_checksum, request_checksum, command_id,
+                validation_context_ref, validation_context_checksum, repair_linkage_json,
+                repair_proposal_id, pom_path_ref
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )""",
             (
                 record.change_id, record.proposal_id, record.job_id,
                 record.stage_index, record.operation, record.target_json,
@@ -196,6 +213,10 @@ class SqlitePomChangeRepository:
                 record.validation_id, record.rollback_id,
                 record.idempotency_key, record.executor,
                 record.created_at, record.updated_at,
+                logical_stage_index, execution_stage_index, route_step_index,
+                expected_checksum, request_checksum, command_id,
+                validation_context_ref, validation_context_checksum, repair_linkage_json,
+                repair_proposal_id, pom_path_ref,
             ),
         )
         return record
@@ -219,6 +240,36 @@ class SqlitePomChangeRepository:
         if row is None:
             return None
         return self._row_to_record(row)
+
+    def get_lineage(self, change_id: str) -> dict[str, Any] | None:
+        row = self._conn.execute(
+            "SELECT * FROM v2_pom_changes WHERE change_id = ?",
+            (change_id,),
+        ).fetchone()
+        return dict(row) if row is not None else None
+
+    def find_by_request_checksum(self, job_id: str, request_checksum: str) -> PomChangeRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM v2_pom_changes WHERE job_id = ? AND request_checksum = ?",
+            (job_id, request_checksum),
+        ).fetchone()
+        return self._row_to_record(row) if row is not None else None
+
+    def update_lineage(self, change_id: str, **fields: Any) -> None:
+        allowed = {
+            "validation_id", "status", "command_id", "validation_context_ref",
+            "validation_context_checksum", "repair_linkage_json",
+            "repair_proposal_id", "pom_path_ref",
+        }
+        values = {key: value for key, value in fields.items() if key in allowed}
+        if not values:
+            return
+        values["updated_at"] = utc_now_text()
+        assignments = ", ".join(f"{key} = ?" for key in values)
+        self._conn.execute(
+            f"UPDATE v2_pom_changes SET {assignments} WHERE change_id = ?",
+            (*values.values(), change_id),
+        )
 
     def update_status(
         self, change_id: str, status: str, *, validation_id: str | None = None,
@@ -279,15 +330,25 @@ class SqlitePomValidationRepository:
         stage_index: int,
         command: str,
         status: str = PomValidationStatus.RUNNING.value,
+        logical_stage_index: int | None = None,
+        execution_stage_index: int | None = None,
+        route_step_index: int | None = None,
+        command_id: str | None = None,
+        validation_context_ref: str | None = None,
+        validation_context_checksum: str | None = None,
     ) -> str:
         validation_id = uuid4().hex
         now = utc_now_text()
         self._conn.execute(
             """INSERT INTO v2_pom_validations (
                 validation_id, change_id, job_id, stage_index, command,
-                status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (validation_id, change_id, job_id, stage_index, command, status, now),
+                status, created_at, logical_stage_index, execution_stage_index,
+                route_step_index, command_id, validation_context_ref,
+                validation_context_checksum
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (validation_id, change_id, job_id, stage_index, command, status, now,
+             logical_stage_index, execution_stage_index, route_step_index, command_id,
+             validation_context_ref, validation_context_checksum),
         )
         return validation_id
 
@@ -302,6 +363,9 @@ class SqlitePomValidationRepository:
         test_log_ref: str | None = None,
         failure_classification: str | None = None,
         diagnosis_json: str | None = None,
+        build_status: str | None = None,
+        test_status: str | None = None,
+        repair_linkage_json: str | None = None,
     ) -> None:
         now = utc_now_text()
         self._conn.execute(
@@ -311,10 +375,14 @@ class SqlitePomValidationRepository:
                    test_log_ref = COALESCE(?, test_log_ref),
                    failure_classification = COALESCE(?, failure_classification),
                    diagnosis_json = COALESCE(?, diagnosis_json),
-                   completed_at = ?
+                   build_status = COALESCE(?, build_status),
+                   test_status = COALESCE(?, test_status),
+                   repair_linkage_json = COALESCE(?, repair_linkage_json),
+                   completed_at = CASE WHEN ? IN ('running', 'validation_queued', 'apply_intent_persisted') THEN NULL ELSE ? END
                WHERE validation_id = ?""",
             (status, exit_code, duration_ms, log_ref, test_log_ref,
-             failure_classification, diagnosis_json, now, validation_id),
+            failure_classification, diagnosis_json, build_status, test_status,
+            repair_linkage_json, status, now, validation_id),
         )
 
     def get(self, validation_id: str) -> dict[str, Any] | None:

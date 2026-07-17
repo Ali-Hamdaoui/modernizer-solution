@@ -9,6 +9,7 @@ class BuildResultKind(str, Enum):
     SUCCESS = "success"
     COMPILATION_ERROR = "compilation_error"
     DEPENDENCY_ERROR = "dependency_error"
+    REPOSITORY_TLS_FAILURE = "repository_tls_failure"
     JAVA_VERSION_MISMATCH = "java_version_mismatch"
     JAVA_RUNTIME_MISMATCH = "java_runtime_mismatch"
     PORT_IN_USE = "port_already_in_use"
@@ -50,6 +51,18 @@ FAILURE_PATTERNS: tuple[tuple[BuildResultKind, tuple[str, ...], str], ...] = (
         "Java application failed to compile",
     ),
     (
+        BuildResultKind.REPOSITORY_TLS_FAILURE,
+        (
+            "PKIX path building failed",
+            "certificate_unknown",
+            "SunCertPathBuilderException",
+            "unable to find valid certification path",
+            "SSLHandshakeException",
+            "CertificateException",
+        ),
+        "Repository TLS certificate trust failure — environment/infrastructure issue",
+    ),
+    (
         BuildResultKind.DEPENDENCY_ERROR,
         (
             "Could not resolve dependencies",
@@ -57,7 +70,6 @@ FAILURE_PATTERNS: tuple[tuple[BuildResultKind, tuple[str, ...], str], ...] = (
             "Could not transfer artifact",
             "Could not resolve all files",
             "Could not resolve all dependencies",
-            "PKIX path building failed",
             "PluginResolutionException",
         ),
         "Java application dependency resolution failed",

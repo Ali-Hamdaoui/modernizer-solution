@@ -17,6 +17,8 @@ import {
   getV2JobApprovals,
   getV2MigrationJobStages,
   getJob,
+  getRepairProposal,
+  getRepairProposalDiff,
   getV2FinalReport,
   generateV2FinalReport,
   previewPlanAmendment,
@@ -540,6 +542,26 @@ describe("M2-01 frontend diagnostic contracts", () => {
     expect(duplicate).toBe(applied);
     expect(latestAppliedSequence(applied.events)).toBe(2);
     expect(shouldRefetchJobProjection(event)).toBe(true);
+  });
+});
+
+describe("AMF-252 revision refresh", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("loads returned proposal ID and its diff directly", async () => {
+    const fetchMock = vi.fn(async (url: string) => ({
+      ok: true,
+      json: async () => url.endsWith("/diff")
+        ? { job_id: "job-1", safe_diff_preview: { files: [] } }
+        : { job_id: "job-1", proposal: { proposal_id: "proposal-2" } },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getRepairProposal("job-1", "proposal-2");
+    await getRepairProposalDiff("job-1", "proposal-2");
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain("/repair/proposals/proposal-2");
+    expect(String(fetchMock.mock.calls[1][0])).toContain("/repair/proposals/proposal-2/diff");
   });
 });
 

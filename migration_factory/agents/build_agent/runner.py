@@ -354,9 +354,9 @@ def command_diagnostics(
     return {
         "requested_command": " ".join(requested_command),
         "resolved_command": " ".join(resolved_command),
-        "MAVEN_CMD": effective_env.get("MAVEN_CMD"),
-        "MAVEN_HOME": effective_env.get("MAVEN_HOME"),
-        "JAVA_HOME": effective_env.get("JAVA_HOME"),
+        "maven_cmd": effective_env.get("MAVEN_CMD"),
+        "maven_home": effective_env.get("MAVEN_HOME"),
+        "effective_java_home": effective_env.get("JAVA_HOME"),
         "PATH_excerpt": _path_excerpt(path_value),
         "platform": platform.platform(),
     }
