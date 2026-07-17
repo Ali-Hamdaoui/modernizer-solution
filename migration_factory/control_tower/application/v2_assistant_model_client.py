@@ -31,6 +31,22 @@ class V2AssistantModelResult:
     success: bool
     redacted_summary: str
     failure_reason: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class V2AssistantModelCompletion:
+    """A model response plus the three supported Azure usage values."""
+
+    content: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+
+    def __str__(self) -> str:
+        return self.content
 
 
 @dataclass(frozen=True)
@@ -262,7 +278,7 @@ class V2AssistantModelClient:
             )
 
         try:
-            content = self._chat_completion(
+            completion = self._chat_completion(
                 endpoint=endpoint,
                 api_key=api_key,
                 deployment=deployment,
@@ -308,7 +324,9 @@ class V2AssistantModelClient:
                 "invalid_response",
             )
 
-        safe_content = str(redact_public_value(redact_model_summary(content))).strip()
+        if not isinstance(completion, V2AssistantModelCompletion):
+            completion = V2AssistantModelCompletion(content=str(completion))
+        safe_content = str(redact_public_value(redact_model_summary(completion.content))).strip()
         if not safe_content:
             _log_empty_azure_result_summary(endpoint=endpoint, deployment=deployment)
             return _fallback_result(
@@ -326,6 +344,9 @@ class V2AssistantModelClient:
             success=True,
             redacted_summary="Azure OpenAI assistant invocation succeeded.",
             failure_reason="",
+            input_tokens=completion.input_tokens,
+            output_tokens=completion.output_tokens,
+            total_tokens=completion.total_tokens,
         )
 
     def _to_assistant_result(self, routed: V2RoleModelResult) -> V2AssistantModelResult:
@@ -339,6 +360,9 @@ class V2AssistantModelClient:
             success=routed.success,
             redacted_summary=redacted_summary,
             failure_reason=routed.failure_reason,
+            input_tokens=routed.input_tokens,
+            output_tokens=routed.output_tokens,
+            total_tokens=routed.total_tokens,
         )
 
     @staticmethod
@@ -606,7 +630,7 @@ class V2AssistantModelClient:
         if not str(content).strip():
             # Empty response — log redacted diagnostics
             _log_empty_azure_response(data, deployment)
-        return content
+        return _completion_from_response(data, content)
 
     def _post_responses_v1(
         self,
@@ -640,7 +664,7 @@ class V2AssistantModelClient:
         content = _extract_responses_output_text(data)
         if not str(content).strip():
             _log_empty_azure_response(data, deployment)
-        return content
+        return _completion_from_response(data, content)
 
     def _chat_completion_legacy(
         self,
@@ -690,7 +714,7 @@ class V2AssistantModelClient:
         )
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
-        return _extract_assistant_content(data)
+        return _completion_from_response(data, _extract_assistant_content(data))
 
 
 def _assistant_system_prompt() -> str:
@@ -815,6 +839,21 @@ def _extract_responses_output_text(data: Any) -> str:
         return combined
     raise RuntimeError("missing responses output text")
 
+
+def _completion_from_response(data: Any, content: str) -> V2AssistantModelCompletion:
+    """Extract only input, output, and total tokens from Azure response usage."""
+    usage = data.get("usage") if isinstance(data, dict) else None
+    usage = usage if isinstance(usage, dict) else {}
+    return V2AssistantModelCompletion(
+        content=content,
+        input_tokens=_usage_token_count(usage.get("input_tokens", usage.get("prompt_tokens"))),
+        output_tokens=_usage_token_count(usage.get("output_tokens", usage.get("completion_tokens"))),
+        total_tokens=_usage_token_count(usage.get("total_tokens")),
+    )
+
+
+def _usage_token_count(value: Any) -> int | None:
+    return value if isinstance(value, int) and value >= 0 else None
 
 def _log_empty_azure_response(data: dict[str, Any], deployment: str) -> None:
     """Log redacted diagnostic for empty Azure OpenAI responses.

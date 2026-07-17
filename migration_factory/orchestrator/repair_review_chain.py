@@ -418,6 +418,9 @@ def produce_repair_review_chain(
                 proposer_invocation_id,
                 output=primary_result.content,
                 redacted_summary=primary_result.redacted_summary,
+                prompt_tokens=primary_result.input_tokens,
+                completion_tokens=primary_result.output_tokens,
+                total_tokens=primary_result.total_tokens,
                 fallback_used=fallback_used_primary,
             )
         else:
@@ -425,6 +428,9 @@ def produce_repair_review_chain(
                 proposer_invocation_id,
                 redacted_error=primary_result.failure_reason,
                 redacted_summary=primary_result.redacted_summary,
+                prompt_tokens=primary_result.input_tokens,
+                completion_tokens=primary_result.output_tokens,
+                total_tokens=primary_result.total_tokens,
                 fallback_used=fallback_used_primary,
             )
 
@@ -483,6 +489,9 @@ def produce_repair_review_chain(
                 reviewer_invocation_id,
                 output=reviewer_result.content,
                 redacted_summary=reviewer_result.redacted_summary,
+                prompt_tokens=reviewer_result.input_tokens,
+                completion_tokens=reviewer_result.output_tokens,
+                total_tokens=reviewer_result.total_tokens,
                 fallback_used=fallback_used_reviewer,
             )
         else:
@@ -490,6 +499,9 @@ def produce_repair_review_chain(
                 reviewer_invocation_id,
                 redacted_error=reviewer_result.failure_reason,
                 redacted_summary=reviewer_result.redacted_summary,
+                prompt_tokens=reviewer_result.input_tokens,
+                completion_tokens=reviewer_result.output_tokens,
+                total_tokens=reviewer_result.total_tokens,
                 fallback_used=fallback_used_reviewer,
             )
 

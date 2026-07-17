@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import logging
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,10 +24,17 @@ from migration_factory.control_tower.application.redaction import (
 from migration_factory.control_tower.application.v2_assistant_model_client import (
     V2AssistantModelClient,
 )
+from migration_factory.control_tower.application.v2_llm_invocation_ledger import (
+    V2LLMInvocationLedger,
+    compute_content_checksum,
+)
+from migration_factory.control_tower.application.v2_llm_usage import build_llm_usage_summary
 from migration_factory.control_tower.schemas.profile_model import (
     get_migration_profile,
     list_migration_profiles,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 _IGNORED_DIRECTORY_NAMES = frozenset({
     ".git",
@@ -70,6 +78,8 @@ def build_detailed_migration_report(
     event_counts = dict(sorted(Counter(str(getattr(e, "type", "")) for e in events).items()))
     total_duration = _overall_duration_seconds(job, stages, events)
     totals = _aggregate_stage_totals(stages)
+    llm_ledger = _llm_ledger(uow)
+    report_invocation_id: str | None = None
 
     facts: dict[str, Any] = {
         "schema_version": "2.0.0",
@@ -98,9 +108,21 @@ def build_detailed_migration_report(
 
     fallback = _deterministic_story(facts)
     client = model_client or V2AssistantModelClient()
+    narrative_prompt = _narrative_prompt(facts)
+    if llm_ledger is not None:
+        try:
+            report_invocation_id = llm_ledger.start_invocation(
+                job_id=str(job.job_id),
+                role="main",
+                responsibility="explanation",
+                input_checksum=compute_content_checksum(narrative_prompt),
+                schema_name="DetailedMigrationReportNarrative",
+            )
+        except Exception as exc:
+            _LOGGER.warning("Report usage capture failed: %s", type(exc).__name__)
     try:
         model_result = client.answer(
-            prompt=_narrative_prompt(facts),
+            prompt=narrative_prompt,
             fallback=fallback,
         )
         narrative = str(getattr(model_result, "content", "") or fallback).strip()
@@ -110,12 +132,40 @@ def build_detailed_migration_report(
             else "deterministic_fallback"
         )
         narrative_status = str(getattr(model_result, "model_status", "") or "fallback")
+        if report_invocation_id is not None:
+            try:
+                if bool(getattr(model_result, "success", False)):
+                    llm_ledger.complete_invocation(
+                        report_invocation_id,
+                        output=narrative,
+                        redacted_summary=getattr(model_result, "redacted_summary", None),
+                        prompt_tokens=getattr(model_result, "input_tokens", None),
+                        completion_tokens=getattr(model_result, "output_tokens", None),
+                        total_tokens=getattr(model_result, "total_tokens", None),
+                    )
+                else:
+                    llm_ledger.fail_invocation(
+                        report_invocation_id,
+                        redacted_error=getattr(model_result, "failure_reason", None),
+                        redacted_summary=getattr(model_result, "redacted_summary", None),
+                        prompt_tokens=getattr(model_result, "input_tokens", None),
+                        completion_tokens=getattr(model_result, "output_tokens", None),
+                        total_tokens=getattr(model_result, "total_tokens", None),
+                    )
+            except Exception as exc:
+                _LOGGER.warning("Report usage capture failed: %s", type(exc).__name__)
     except Exception:
+        if report_invocation_id is not None:
+            try:
+                llm_ledger.fail_invocation(report_invocation_id, redacted_error="Report narrative generation failed.")
+            except Exception as exc:
+                _LOGGER.warning("Report usage capture failed: %s", type(exc).__name__)
         narrative = fallback
         narrative_source = "deterministic_fallback"
         narrative_status = "fallback"
 
     facts["migration_story"] = _safe_narrative(narrative, fallback=fallback)
+    facts["llm_token_usage"] = _llm_usage_for_job(uow, job.job_id)
     facts["narrative_generation"] = {
         "source": narrative_source,
         "status": narrative_status,
@@ -129,6 +179,7 @@ def render_detailed_report_markdown(report: dict[str, Any]) -> str:
     scope = dict(report.get("migration_scope", {}) or {})
     summary = dict(report.get("summary", {}) or {})
     stages = list(report.get("stages", []) or [])
+    llm_usage = dict(report.get("llm_token_usage", {}) or {})
     timeline = list(report.get("timeline", []) or [])
     event_counts = dict(report.get("event_counts", {}) or {})
 
@@ -168,6 +219,24 @@ def render_detailed_report_markdown(report: dict[str, Any]) -> str:
         f"- Included stages: {_join_values(scope.get('included_stages'))}",
         f"- Skipped earlier stages: {_join_values(scope.get('skipped_stages'))}",
         f"- Excluded later stages: {_join_values(scope.get('excluded_stages'))}",
+        "",
+        "## LLM Token Usage and Estimated Cost",
+        "",
+        f"- Model/deployment: {llm_usage.get('model_or_deployment', 'GPT-5 mini')}",
+        f"- Currency: {llm_usage.get('currency', 'USD')}",
+        "",
+        f"- Total input tokens: {llm_usage.get('input_tokens', 0)}",
+        f"- Total output tokens: {llm_usage.get('output_tokens', 0)}",
+        f"- Total tokens: {llm_usage.get('total_tokens', 0)}",
+        "",
+        f"- Input price per 1M tokens: ${llm_usage.get('input_price_per_1m_tokens', '0.25')}",
+        f"- Output price per 1M tokens: ${llm_usage.get('output_price_per_1m_tokens', '2.00')}",
+        "",
+        f"- Input cost: ${llm_usage.get('input_cost', '0')}",
+        f"- Output cost: ${llm_usage.get('output_cost', '0')}",
+        f"- Total estimated cost: ${llm_usage.get('total_estimated_cost', '0')}",
+        "",
+        str(llm_usage.get('note', '')),
         "",
         "## Stage-by-Stage Technical Details",
         "",
@@ -702,6 +771,16 @@ def _aggregate_stage_totals(stages: list[dict[str, Any]]) -> dict[str, int]:
         totals["repair_attempts"] += _int_value(stage.get("repair_attempts"))
     return totals
 
+
+def _llm_ledger(uow: Any) -> V2LLMInvocationLedger | None:
+    repository = getattr(uow, "v2_llm_invocations", None)
+    return V2LLMInvocationLedger(repository) if repository is not None else None
+
+
+def _llm_usage_for_job(uow: Any, job_id: str) -> dict[str, Any]:
+    repository = getattr(uow, "v2_llm_invocations", None)
+    records = repository.list_by_job(job_id) if repository is not None else ()
+    return build_llm_usage_summary(records)
 
 def _narrative_prompt(facts: dict[str, Any]) -> str:
     narrative_facts = {

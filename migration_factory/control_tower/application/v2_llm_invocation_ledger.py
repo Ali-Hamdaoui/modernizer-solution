@@ -26,6 +26,9 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_llm_invocation_rep
 )
 
 
+def _token_count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
 def compute_content_checksum(content: str) -> str:
     """Content-derived SHA-256 checksum."""
     return sha256_canonical_json({"content": content})
@@ -118,9 +121,9 @@ class V2LLMInvocationLedger:
             status="fallback" if fallback_used else "completed",
             output_checksum=output_checksum,
             redacted_summary=safe_summary,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            total_tokens=total_tokens,
+            prompt_tokens=_token_count(prompt_tokens),
+            completion_tokens=_token_count(completion_tokens),
+            total_tokens=_token_count(total_tokens),
             latency_ms=latency_ms,
             completed_at=utc_now_text(),
             fallback_used=1 if fallback_used else 0,
@@ -133,6 +136,9 @@ class V2LLMInvocationLedger:
         redacted_error: str | None = None,
         redacted_summary: str | None = None,
         latency_ms: int | None = None,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        total_tokens: int | None = None,
         fallback_used: bool = False,
     ) -> None:
         """Record failure of a model invocation."""
@@ -143,6 +149,9 @@ class V2LLMInvocationLedger:
             status="fallback" if fallback_used else "failed",
             redacted_error=safe_error,
             redacted_summary=safe_summary,
+            prompt_tokens=_token_count(prompt_tokens),
+            completion_tokens=_token_count(completion_tokens),
+            total_tokens=_token_count(total_tokens),
             latency_ms=latency_ms,
             completed_at=utc_now_text(),
             fallback_used=1 if fallback_used else 0,

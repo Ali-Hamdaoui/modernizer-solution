@@ -46,6 +46,9 @@ class V2RoleModelResult:
     primary_failure_reason: str = ""
     fallback_used: bool = False
     schema_validated: bool = False
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +108,9 @@ class V2ModelRoleRouter:
                     primary_failure_reason="",
                     fallback_used=False,
                     schema_validated=True,
+                    input_tokens=result.input_tokens,
+                    output_tokens=result.output_tokens,
+                    total_tokens=result.total_tokens,
                 )
             primary_failure = result.failure_reason or primary_failure or "primary_model_failed"
 
@@ -133,6 +139,9 @@ class V2ModelRoleRouter:
                         primary_failure_reason=primary_failure,
                         fallback_used=True,
                         schema_validated=True,
+                        input_tokens=result.input_tokens,
+                        output_tokens=result.output_tokens,
+                        total_tokens=result.total_tokens,
                     )
                 fallback_failure = result.failure_reason or fallback_failure or "fallback_model_failed"
             else:
@@ -169,7 +178,10 @@ class V2ModelRoleRouter:
             source=str(getattr(result, "source", "") or "azure_openai"),
             model_status=str(getattr(result, "model_status", "") or "live_ok"),
             success=bool(getattr(result, "success", False)),
-            failure_reason=str(getattr(result, "failure_reason", "") or ""),
+            failure_reason=str(getattr(result, "failure_reason", "" ) or ""),
+            input_tokens=getattr(result, "input_tokens", None),
+            output_tokens=getattr(result, "output_tokens", None),
+            total_tokens=getattr(result, "total_tokens", None),
         )
 
     def _coerce_fallback_result(
@@ -191,6 +203,9 @@ class V2ModelRoleRouter:
             primary_failure_reason=primary_failure_reason,
             fallback_used=True,
             schema_validated=coerced.schema_validated,
+            input_tokens=coerced.input_tokens,
+            output_tokens=coerced.output_tokens,
+            total_tokens=coerced.total_tokens,
         )
 
     def _schema_ok(self, request: V2RoleModelRequest, content: str) -> bool:

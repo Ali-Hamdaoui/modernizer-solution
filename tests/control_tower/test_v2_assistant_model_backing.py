@@ -407,6 +407,9 @@ def test_assistant_uses_model_client_and_does_not_return_key(tmp_path: Path) -> 
             success=True,
             redacted_summary="ok",
             failure_reason="",
+            input_tokens=125,
+            output_tokens=75,
+            total_tokens=200,
         )
     )
     client, conn = _client(tmp_path, fake)
@@ -426,6 +429,13 @@ def test_assistant_uses_model_client_and_does_not_return_key(tmp_path: Path) -> 
     assert "api_key" not in serialized
     assert "azure_openai_api_key" not in serialized
     assert body["guardrails"]["cannot_approve"] is True
+    records = conn.execute(
+        "SELECT role, responsibility, status, prompt_tokens, completion_tokens, total_tokens "
+        "FROM v2_llm_invocations WHERE job_id = ?",
+        ("job-model",),
+    ).fetchall()
+    assert len(records) == 1
+    assert tuple(records[0]) == ("main", "explanation", "completed", 125, 75, 200)
     # model_invocation events are only emitted for write-path operations,
     # not read-only asks. The status question is a read-only operation.
 

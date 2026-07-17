@@ -152,6 +152,10 @@ from migration_factory.control_tower.application.v2_assistant_model_client impor
     V2AssistantModelClient,
     V2AssistantModelResult,
 )
+from migration_factory.control_tower.application.v2_llm_invocation_ledger import (
+    V2LLMInvocationLedger,
+    compute_content_checksum,
+)
 from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
 from migration_factory.control_tower.application.v2_model_schemas import (
     validate_against_schema,
@@ -2837,6 +2841,12 @@ def create_app(
                         fallback=fallback_answer,
                         conversation_history=conversation_history,
                     )
+                _record_assistant_llm_invocation(
+                    uow=uow,
+                    job_id=job_id,
+                    prompt=assistant_prompt,
+                    model_result=model_result,
+                )
             assistant_msg = service.add_message(
                 job_id=job_id,
                 role="assistant",
@@ -7000,6 +7010,8 @@ def _handle_gate_aware_ask(
             if _question_looks_like_approval_review_explanation(question):
                 explanation_text, explanation_model = _format_approval_review_explanation(
                     app=app,
+                    uow=uow,
+                    job_id=job_id,
                     context=context,
                     evidence=evidence_pack,
                     question=question,
@@ -7633,6 +7645,8 @@ def _format_approval_review_preview(context: GateContext, *, action_type: str = 
 def _format_approval_review_explanation(
     *,
     app: FastAPI,
+    uow: Any,
+    job_id: str,
     context: GateContext,
     evidence: Any | None,
     question: str,
@@ -7726,6 +7740,12 @@ def _format_approval_review_explanation(
                 redacted_summary=safe_reason,
                 failure_reason=safe_reason,
             )
+        _record_assistant_llm_invocation(
+            uow=uow,
+            job_id=job_id,
+            prompt=prompt,
+            model_result=model_result,
+        )
         model_payload = _approval_review_model_payload(model_result)
         return model_result.content, model_payload
 
@@ -8521,6 +8541,12 @@ def _handle_v2_assistant_read_only_ask(
                         fallback=fallback_answer,
                         conversation_history=(),
                     )
+                _record_assistant_llm_invocation(
+                    uow=uow,
+                    job_id=job_id,
+                    prompt=assistant_prompt,
+                    model_result=model_result,
+                )
 
             now = utc_now_text()
             user_msg = AssistantMessage(
@@ -8756,6 +8782,8 @@ def _handle_gate_aware_read_only_ask(
                 if _question_looks_like_approval_review_explanation(question):
                     explanation_text, explanation_model = _format_approval_review_explanation(
                         app=app,
+                        uow=uow,
+                        job_id=job_id,
                         context=context,
                         evidence=evidence_pack,
                         question=question,
@@ -8940,6 +8968,12 @@ def _fallback_to_existing_assistant(
                     fallback=fallback_answer,
                     conversation_history=conversation_history,
                 )
+            _record_assistant_llm_invocation(
+                uow=uow,
+                job_id=job_id,
+                prompt=assistant_prompt,
+                model_result=model_result,
+            )
         assistant_msg = service.add_message(
             job_id=job_id,
             role="assistant",
@@ -13940,3 +13974,72 @@ def _registered_root_status(unit_of_work_factory: UnitOfWorkFactory) -> dict[str
         }
     except Exception:
         return {"ready": False, "status": "error", "checked_root_count": 0}
+
+def _persist_assistant_llm_invocation(
+    *,
+    uow: Any,
+    job_id: str,
+    prompt: str,
+    model_result: V2AssistantModelResult,
+) -> None:
+    """Persist safe usage metadata for one assistant chat completion."""
+    repository = getattr(uow, "v2_llm_invocations", None)
+    if repository is None:
+        return
+
+    ledger = V2LLMInvocationLedger(repository)
+    invocation_id = ledger.start_invocation(
+        job_id=job_id,
+        role="main",
+        responsibility="explanation",
+        input_checksum=compute_content_checksum(prompt),
+        schema_name="AssistantAnswer",
+    )
+    success = bool(getattr(model_result, "success", False))
+    source = str(getattr(model_result, "source", "") or "")
+    fallback_used = not success and source == "deterministic"
+    token_counts = {
+        "prompt_tokens": getattr(model_result, "input_tokens", None),
+        "completion_tokens": getattr(model_result, "output_tokens", None),
+        "total_tokens": getattr(model_result, "total_tokens", None),
+    }
+    if success:
+        ledger.complete_invocation(
+            invocation_id,
+            output=str(getattr(model_result, "content", "") or ""),
+            redacted_summary=getattr(model_result, "redacted_summary", None),
+            fallback_used=fallback_used,
+            **token_counts,
+        )
+        return
+
+    ledger.fail_invocation(
+        invocation_id,
+        redacted_error=getattr(model_result, "failure_reason", None),
+        redacted_summary=getattr(model_result, "redacted_summary", None),
+        fallback_used=fallback_used,
+        **token_counts,
+    )
+
+
+def _record_assistant_llm_invocation(
+    *,
+    uow: Any,
+    job_id: str,
+    prompt: str,
+    model_result: V2AssistantModelResult,
+) -> None:
+    """Capture assistant usage without interrupting the assistant response."""
+    try:
+        _persist_assistant_llm_invocation(
+            uow=uow,
+            job_id=job_id,
+            prompt=prompt,
+            model_result=model_result,
+        )
+    except Exception as exc:
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "LLM usage capture failed: %s", type(exc).__name__
+        )
