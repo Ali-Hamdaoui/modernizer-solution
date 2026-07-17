@@ -307,7 +307,7 @@ from migration_factory.control_tower.infrastructure.sqlite.v2_artifact_revision_
 from migration_factory.control_tower.application.v2_gate_errors import (
     http_status_for_gate_status,
 )
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 # F14 â€” Stage 3 POM dependency editor imports
 from migration_factory.control_tower.application.pom_dependency_editor import (
@@ -830,6 +830,23 @@ class RepairProposalApproveResponse(BaseModel):
     rollback_status: str = ""
     remaining_attempts: int = 0
     allowed_next_actions: tuple[str, ...] = ()
+
+
+class RepairProposalContinueRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    idempotency_key: UUID
+
+
+class RepairProposalContinueResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    job_id: str
+    proposal_id: str
+    status: str
+    reason: str = ""
+    continuation_id: str = ""
+    command_id: str | None = None
+    from_stage: int
+    to_stage: int
 
 
 # â”€â”€ F5 Reviewed repair approval (checksum-only, no raw diff/patch) â”€â”€â”€â”€
@@ -5932,57 +5949,53 @@ def create_app(
                                 target_update = lineage
                                 break
                         if target_update is None:
-                            raise _error(
-                                status.HTTP_409_CONFLICT,
-                                "TARGET_VERSION_LINEAGE_MISSING",
-                                "The reviewed repair is not linked to an originating target-version update.",
+                            run_config = transition_uow.run_configurations.get_for_job(job_id)
+                            policy = StageContinuationPolicy.AUTO_ON_GREEN
+                            if run_config is not None and getattr(run_config, "policy_json", None):
+                                policy = RunPolicy(**json.loads(run_config.policy_json)).stage_continuation_policy
+                            current_result = {
+                                "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+                                "build_status": validation.build_status,
+                                "test_status": validation.test_status,
+                                "sandbox_path": sandbox_path,
+                            }
+                            service = V2StageProgressionService(
+                                setup_repo=transition_uow.v2_setups,
+                                command_repo=transition_uow.v2_commands,
+                                artifact_revision_repo=transition_uow.artifact_revisions,
+                                run_config_repo=transition_uow.run_configurations,
                             )
-                        try:
-                            repair_linkage = json.loads(str(target_update.get("repair_linkage_json") or "{}"))
-                        except json.JSONDecodeError as exc:
-                            raise _error(
-                                status.HTTP_409_CONFLICT,
-                                "TARGET_VERSION_LINEAGE_INVALID",
-                                "Target-version repair linkage metadata is malformed.",
-                            ) from exc
-                        if not isinstance(repair_linkage, dict):
-                            raise _error(
-                                status.HTTP_409_CONFLICT,
-                                "TARGET_VERSION_LINEAGE_INVALID",
-                                "Target-version repair linkage metadata is not an object.",
+                            queued = service.queue_next_stage(
+                                job_id=job_id,
+                                setup_id=job.setup_id,
+                                current_stage=int(stage_index_val),
+                                sandbox_path=sandbox_path,
+                                stage_continuation_policy=policy,
+                                current_stage_result=current_result,
+                                current_route_step_index=(apply_context.get("validation_execution_context") or {}).get("route_step_index") or getattr(record, "route_step_index", None),
                             )
-                        accepted_ids = set(repair_linkage.get("accepted_proposal_ids") or ())
-                        accepted_ids.add(proposal_id)
-                        repair_linkage.update({
-                            "accepted_proposal_id": proposal_id,
-                            "accepted_proposal_ids": sorted(accepted_ids),
-                            "root_proposal_id": root_proposal_id,
-                        })
-                        change_id = str(target_update["change_id"])
-                        validation_id = str(target_update.get("validation_id") or "")
-                        transition_uow.v2_pom_changes.update_status(change_id, "validated", validation_id=validation_id)
-                        transition_uow.v2_pom_changes.update_lineage(
-                            change_id,
-                            repair_proposal_id=root_proposal_id,
-                            repair_linkage_json=json.dumps(repair_linkage, sort_keys=True),
-                        )
-                        if validation_id:
-                            transition_uow.v2_pom_validations.update_result(
-                                validation_id,
-                                status="passed",
-                                build_status=validation.build_status,
-                                test_status=validation.test_status,
-                                diagnosis_json=json.dumps({"source": "amf252_repair", "build_status": validation.build_status, "test_status": validation.test_status}, sort_keys=True),
-                            )
-                        queued = SimpleNamespace(command_id=None, status="target_version_update_completed")
-                        transition_uow.v2_events.save(
-                            job_id=job_id,
-                            stage=int(stage_index_val),
-                            event_type="target_version_update_validated",
-                            status="validated",
-                            message="Target-version update validated after AMF-252 repair.",
-                            payload={"change_id": change_id, "validation_id": validation_id, "lifecycle_action": "complete_target_version_update"},
-                        )
+                            if queued.status == "completed":
+                                transition_uow.v2_events.save(job_id=job_id, stage=int(stage_index_val), event_type="migration_completed", status="completed", message="Migration completed after AMF-252 repair validation.", payload={"proposal_id": proposal_id, "reason": queued.reason})
+                            elif queued.status == "blocked":
+                                transition_uow.v2_events.save(job_id=job_id, stage=int(stage_index_val), event_type="migration_continuation_blocked", status="blocked", message=f"Migration continuation blocked: {queued.reason}", payload={"proposal_id": proposal_id, "reason": queued.reason})
+                        else:
+                            try:
+                                repair_linkage = json.loads(str(target_update.get("repair_linkage_json") or "{}"))
+                            except json.JSONDecodeError as exc:
+                                raise _error(status.HTTP_409_CONFLICT, "TARGET_VERSION_LINEAGE_INVALID", "Target-version repair linkage metadata is malformed.") from exc
+                            if not isinstance(repair_linkage, dict):
+                                raise _error(status.HTTP_409_CONFLICT, "TARGET_VERSION_LINEAGE_INVALID", "Target-version repair linkage metadata is not an object.")
+                            accepted_ids = set(repair_linkage.get("accepted_proposal_ids") or ())
+                            accepted_ids.add(proposal_id)
+                            repair_linkage.update({"accepted_proposal_id": proposal_id, "accepted_proposal_ids": sorted(accepted_ids), "root_proposal_id": root_proposal_id})
+                            change_id = str(target_update["change_id"])
+                            validation_id = str(target_update.get("validation_id") or "")
+                            transition_uow.v2_pom_changes.update_status(change_id, "validated", validation_id=validation_id)
+                            transition_uow.v2_pom_changes.update_lineage(change_id, repair_proposal_id=root_proposal_id, repair_linkage_json=json.dumps(repair_linkage, sort_keys=True))
+                            if validation_id:
+                                transition_uow.v2_pom_validations.update_result(validation_id, status="passed", build_status=validation.build_status, test_status=validation.test_status, diagnosis_json=json.dumps({"source": "amf252_repair", "build_status": validation.build_status, "test_status": validation.test_status}, sort_keys=True))
+                            queued = SimpleNamespace(command_id=None, status="target_version_update_completed")
+                            transition_uow.v2_events.save(job_id=job_id, stage=int(stage_index_val), event_type="target_version_update_validated", status="validated", message="Target-version update validated after AMF-252 repair.", payload={"change_id": change_id, "validation_id": validation_id, "lifecycle_action": "complete_target_version_update"})
                 except HTTPException:
                     raise
                 except Exception as exc:
@@ -6017,9 +6030,17 @@ def create_app(
                 next_gate_status = getattr(queued, "status", None)
                 remaining_attempts = 0
                 completed_at = utc_now_text()
+                continuation_reason = str(getattr(queued, "reason", "") or "")
+                continuation_status_reason = (
+                    continuation_reason
+                    if queued.status == "blocked"
+                    else "migration_completed"
+                    if queued.status == "completed"
+                    else "Patch applied to sandbox and validation passed."
+                )
                 _persist_apply_fields(
                     status="approved_applied",
-                    status_reason="Patch applied to sandbox and validation passed.",
+                    status_reason=continuation_status_reason,
                     apply_status=apply_status,
                     rerun_status=rerun_status,
                     rollback_status="",
@@ -6039,7 +6060,7 @@ def create_app(
                     message=f"Repair validation passed for proposal {proposal_id}",
                     payload={"proposal_id": proposal_id, "rerun_status": rerun_status},
                 )
-                if not target_update:
+                if queued.status == "queued":
                     _persist_apply_event(
                         job_id=job_id,
                         stage=int(stage_index_val),
@@ -6048,7 +6069,7 @@ def create_app(
                         message=f"Migration continuation queued for proposal {proposal_id}",
                         payload={"proposal_id": proposal_id, "command_id": continuation_command_id},
                     )
-                if continuation_command_id:
+                if continuation_command_id and queued.status == "queued":
                     app.state.v2_orchestrator_runner.start(job_id=job_id, command_id=continuation_command_id)
                 allowed_next_actions = ("view_result",)
 
@@ -6225,6 +6246,123 @@ def create_app(
             remaining_attempts=remaining_attempts,
             allowed_next_actions=tuple(sorted(allowed_next_actions)),
         ).model_dump()
+
+    @app.post("/v1/v2/jobs/{job_id}/repair/proposals/{proposal_id}/continue")
+    def continue_repair_proposal(
+        job_id: str,
+        proposal_id: str,
+        payload: RepairProposalContinueRequest,
+    ) -> dict[str, Any]:
+        """Recover migration continuation from persisted successful Apply proof."""
+        idempotency_key = str(payload.idempotency_key)
+        runner_command_id: str | None = None
+        response: dict[str, Any] | None = None
+        with unit_of_work_factory() as uow:
+            record = uow.v2_repairs.get_proposal_for_job(job_id, proposal_id)
+            if record is None:
+                raise _error(status.HTTP_404_NOT_FOUND, "PROPOSAL_NOT_FOUND", f"Proposal {proposal_id!r} not found for job {job_id!r}.")
+            events = tuple(uow.v2_events.list_by_job(job_id))
+            for event in events:
+                if event.type != "repair_continuation_requested":
+                    continue
+                try:
+                    event_payload = json.loads(event.payload_json or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    event_payload = {}
+                if event_payload.get("idempotency_key") == idempotency_key:
+                    if event_payload.get("proposal_id") != proposal_id:
+                        raise _error(status.HTTP_409_CONFLICT, "IDEMPOTENCY_CONFLICT", "Idempotency key was reused for another proposal.")
+                    return RepairProposalContinueResponse(**event_payload["response"]).model_dump()
+
+            if any(event.type == "migration_cancelled" or event.status == "cancelled" for event in events):
+                raise _error(status.HTTP_409_CONFLICT, "JOB_CANCELLED", "Migration job is cancelled.")
+            if str(getattr(record, "status", "")) != "approved_applied":
+                raise _error(status.HTTP_409_CONFLICT, "PROPOSAL_NOT_APPLIED", "Proposal must be approved_applied before continuation.")
+            if str(getattr(record, "apply_status", "")) != "APPLIED" or str(getattr(record, "rerun_status", "")) != "passed":
+                raise _error(status.HTTP_409_CONFLICT, "VALIDATION_NOT_PASSED", "Persisted Apply and validation proof are not successful.")
+            proof_status = str(getattr(record, "validation_proof_status", "") or "")
+            if proof_status not in {"BUILD_AND_TEST_VERIFIED", "BUILD_AND_TEST_VERIFIED_WITH_WARNINGS"}:
+                raise _error(status.HTTP_409_CONFLICT, "VALIDATION_PROOF_MISSING", "Persisted build/test validation proof is unavailable.")
+
+            try:
+                context = _resolve_repair_proposal_runtime_context(uow=uow, job_id=job_id, record=record)
+            except _RepairRuntimeContextResolutionFailure as exc:
+                raise _error(status.HTTP_409_CONFLICT, exc.reason_code, exc.detail) from exc
+            if not context:
+                raise _error(status.HTTP_409_CONFLICT, "RUNTIME_CONTEXT_RESOLUTION_FAILED", "Authoritative repair runtime context is unavailable.")
+
+            job = uow.v2_jobs.get(job_id)
+            if job is None:
+                raise _error(status.HTTP_404_NOT_FOUND, "JOB_NOT_FOUND", "Migration job not found.")
+            run_config = uow.run_configurations.get_for_job(job_id)
+            policy = StageContinuationPolicy.AUTO_ON_GREEN
+            if run_config is not None and getattr(run_config, "policy_json", None):
+                policy = RunPolicy(**json.loads(run_config.policy_json)).stage_continuation_policy
+            validation_context = context["validation_execution_context"]
+            current_stage = int(validation_context["stage_index"])
+            current_result = {
+                "final_status": "TRANSFORM_APPLIED_IN_SANDBOX",
+                "build_status": "BUILD_PASSED_IN_SANDBOX",
+                "test_status": "PASS_WITH_WARNINGS" if proof_status.endswith("WITH_WARNINGS") else "TEST_PASSED",
+                "sandbox_path": context["sandbox_path"],
+            }
+            service = V2StageProgressionService(
+                setup_repo=uow.v2_setups,
+                command_repo=uow.v2_commands,
+                artifact_revision_repo=uow.artifact_revisions,
+                run_config_repo=uow.run_configurations,
+            )
+            queued = service.queue_next_stage(
+                job_id=job_id,
+                setup_id=job.setup_id,
+                current_stage=current_stage,
+                sandbox_path=context["sandbox_path"],
+                stage_continuation_policy=policy,
+                current_stage_result=current_result,
+                current_route_step_index=validation_context.get("route_step_index") or getattr(record, "route_step_index", None),
+            )
+            command_id = getattr(queued, "command_id", None)
+            command = uow.v2_commands.get(command_id) if command_id else None
+            command_events = [event for event in events if command_id and command_id in event.payload_json]
+            already_completed = bool(command and str(getattr(command, "status", "")).lower() in {"completed", "succeeded"}) or any(event.type in {"stage_completed", "migration_completed"} for event in command_events)
+            already_started = bool(command and str(getattr(command, "status", "")).lower() in {"started", "running", "in_progress"}) or any(event.type in {"stage_started", "process_started", "command_started"} for event in command_events)
+            if queued.status == "queued" and already_completed:
+                queued = replace(queued, status="completed", reason="migration_completed")
+            elif queued.status == "queued" and already_started:
+                runner_command_id = None
+            elif queued.status == "queued":
+                runner_command_id = command_id
+            response = RepairProposalContinueResponse(
+                job_id=job_id,
+                proposal_id=proposal_id,
+                status=str(queued.status),
+                reason=str(queued.reason or ""),
+                continuation_id=str(queued.continuation_id),
+                command_id=command_id,
+                from_stage=int(queued.from_stage),
+                to_stage=int(queued.to_stage),
+            ).model_dump()
+            uow.v2_repairs.update_proposal_prf_fields(
+                proposal_id,
+                continuation_command_id=command_id,
+                next_gate_status=str(queued.status),
+                status_reason=str(queued.reason or "")[:1000],
+            )
+            if queued.status == "completed":
+                uow.v2_events.save(job_id=job_id, stage=current_stage, event_type="migration_completed", status="completed", message="Migration completed after repair continuation recovery.", payload={"proposal_id": proposal_id, "command_id": command_id})
+            elif queued.status == "blocked":
+                uow.v2_events.save(job_id=job_id, stage=current_stage, event_type="migration_continuation_blocked", status="blocked", message=f"Migration continuation blocked: {queued.reason}", payload={"proposal_id": proposal_id, "reason": queued.reason})
+            uow.v2_events.save(
+                job_id=job_id,
+                stage=current_stage,
+                event_type="repair_continuation_requested",
+                status=str(queued.status),
+                message="Repair continuation result persisted.",
+                payload={"idempotency_key": idempotency_key, "proposal_id": proposal_id, "response": response},
+            )
+        if runner_command_id:
+            app.state.v2_orchestrator_runner.start(job_id=job_id, command_id=runner_command_id)
+        return response or {}
 
     @app.post("/v1/v2/jobs/{job_id}/stages/progress")
     def progress_to_next_stage(
