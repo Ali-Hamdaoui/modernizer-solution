@@ -4,6 +4,7 @@ import json
 import sqlite3
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelResult
+from migration_factory.control_tower.application.v2_assistant_service import V2AssistantService
 from migration_factory.control_tower.domain.checksums import utc_now_text
 from migration_factory.control_tower.infrastructure.sqlite.migrations import apply_pending_migrations
 from migration_factory.control_tower.infrastructure.sqlite.unit_of_work import SqliteUnitOfWork
@@ -30,7 +32,7 @@ def _mutation_headers() -> dict[str, str]:
 class _FakeModelClient:
     def __init__(self, result: V2AssistantModelResult) -> None:
         self.result = result
-        self.calls: list[dict[str, str]] = []
+        self.calls: list[dict[str, object]] = []
 
     def answer(
         self,
@@ -39,8 +41,26 @@ class _FakeModelClient:
         fallback: str,
         conversation_history: list[dict[str, str]] | None = None,
     ) -> V2AssistantModelResult:
-        self.calls.append({"prompt": prompt, "fallback": fallback})
-        return self.result
+        self.calls.append({
+            "prompt": prompt,
+            "fallback": fallback,
+            "conversation_history": list(conversation_history or ()),
+        })
+        if not self.result.success:
+            return self.result
+        grounding = json.loads(prompt)
+        return replace(
+            self.result,
+            content=json.dumps({
+                "answer": self.result.content,
+                "focus": grounding["request_focus"],
+                "observed_claims": [self.result.content],
+                "technical_explanation": None,
+                "evidence_refs": [grounding["answer_contract"]["allowed_evidence_refs"][0]],
+                "uncertainty": None,
+                "requested_style_satisfied": True,
+            }),
+        )
 
 
 def _client(tmp_path: Path, model_client: _FakeModelClient) -> tuple[TestClient, sqlite3.Connection]:
@@ -234,6 +254,48 @@ def test_answer_uses_api_key_header_for_v1_endpoint(monkeypatch) -> None:
     assert body["store"] is False
     assert "messages" not in body
     assert "max_completion_tokens" not in body
+
+
+def test_answer_once_does_not_retry_protocol_or_fallback_deployment(monkeypatch) -> None:
+    from migration_factory.control_tower.application.v2_assistant_model_client import V2AssistantModelClient
+
+    recorder = _SequenceUrlopenRecorder(
+        [
+            {
+                "status": 400,
+                "body": {"error": {"message": "unsupported request shape"}},
+            },
+            {
+                "status": 200,
+                "body": {"output_text": "A second attempt must never happen"},
+            },
+        ]
+    )
+    monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/openai/v1")
+    monkeypatch.setenv("AZURE_OPENAI_API_KEY", "test-api-key")
+    monkeypatch.setenv("AZURE_OPENAI_ASSISTANT_DEPLOYMENT", "primary-assistant")
+    monkeypatch.setenv("AZURE_OPENAI_FALLBACK_DEPLOYMENT", "secondary-assistant")
+    monkeypatch.setattr(urllib.request, "urlopen", recorder)
+
+    result = V2AssistantModelClient().answer_once(
+        prompt="status?",
+        fallback="deterministic status",
+        conversation_history=[
+            {"role": "user", "content": "Is it stuck?"},
+            {"role": "assistant", "content": "An old answer."},
+        ],
+    )
+
+    assert result.success is False
+    assert result.source == "deterministic"
+    assert result.content.startswith("deterministic status")
+    assert len(recorder.calls) == 1
+    _, _, body = _extract_request(recorder.calls[0][0])
+    assert body["model"] == "primary-assistant"
+    user_items = [item for item in body["input"] if item.get("role") == "user"]
+    assert user_items == [{"type": "message", "role": "user", "content": "status?"}]
+    assert "Is it stuck?" not in json.dumps(body)
+    assert "An old answer." not in json.dumps(body)
 
 
 def test_answer_retries_legacy_endpoint_after_generic_v1_http_400(monkeypatch) -> None:
@@ -482,7 +544,7 @@ def test_assistant_fallback_is_labeled_and_read_only(tmp_path: Path) -> None:
     body = response.json()
     assert body["model"]["status"] == "fallback"
     assert body["model"]["source"] == "deterministic"
-    assert "fallback" in body["assistant_message"]["content"].lower()
+    assert "model" not in body["assistant_message"]["content"].lower()
     assert body["model"]["failure_reason"] == "missing_deployment"
     assert body["guardrails"]["cannot_execute"] is True
     assert body["guardrails"]["cannot_approve"] is True
@@ -547,8 +609,8 @@ def test_assistant_prompt_includes_failure_summary(tmp_path: Path) -> None:
     assert "dependency_error" in prompt_text
 
 
-def test_assistant_prompt_includes_approval_state(tmp_path: Path) -> None:
-    """SA6: AI prompt must include pending/approved approval cards."""
+def test_assistant_prompt_includes_approval_state_without_internal_card_id(tmp_path: Path) -> None:
+    """Approval grounding includes current evidence, not internal record IDs."""
     fake = _FakeModelClient(
         V2AssistantModelResult(
             content="Approval pending.",
@@ -590,7 +652,8 @@ def test_assistant_prompt_includes_approval_state(tmp_path: Path) -> None:
     assert fake.calls
     prompt_text = fake.calls[0]["prompt"]
     assert "pending_approvals" in prompt_text
-    assert "card-1" in prompt_text
+    assert "Approve Stage 1 migration plan" in prompt_text
+    assert "card-1" not in prompt_text
 
 
 def test_assistant_prompt_excludes_secrets(tmp_path: Path) -> None:
@@ -685,6 +748,149 @@ def test_assistant_cannot_approve_through_prompt_injection(tmp_path: Path) -> No
     # The assistant content must not say "approved" as an action
     content = body["assistant_message"]["content"].lower()
     assert "approved" not in content or "cannot approve" in content
+
+
+def test_assistant_prompt_distinguishes_running_from_blocked(
+    tmp_path: Path,
+) -> None:
+    fake = _FakeModelClient(
+        V2AssistantModelResult(
+            content=(
+                "Stage 1 analysis is running; "
+                "nothing is blocked."
+            ),
+            source="azure_openai",
+            model_status="live_ok",
+            provider="azure_openai",
+            role="assistant",
+            success=True,
+            redacted_summary="ok",
+            failure_reason="",
+        )
+    )
+    client, _conn = _client(tmp_path, fake)
+
+    response = client.post(
+        "/v1/v2/jobs/job-model/assistant/ask",
+        json={
+            "question": (
+                "What is the current status "
+                "and what is blocked?"
+            )
+        },
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+
+    prompt = json.loads(fake.calls[0]["prompt"])
+
+    assert (
+        prompt["state_semantics"]["overall_state"]
+        == "running"
+    )
+    assert prompt["state_semantics"]["is_running"] is True
+    assert prompt["state_semantics"]["is_blocked"] is False
+    assert (
+        prompt["state_semantics"][
+            "missing_artifacts_mean_blocked"
+        ]
+        is False
+    )
+    assert (
+        prompt["answer_contract"]["direct_answer_first"]
+        is True
+    )
+    assert (
+        prompt["answer_contract"]["fixed_status_template"]
+        is False
+    )
+
+
+def test_previous_assistant_blocked_claim_cannot_override_running_state(
+    tmp_path: Path,
+) -> None:
+    fake = _FakeModelClient(
+        V2AssistantModelResult(
+            content="The transform is running and no current blocker is recorded.",
+            source="azure_openai",
+            model_status="live_ok",
+            provider="azure_openai",
+            role="assistant",
+            success=True,
+            redacted_summary="ok",
+            failure_reason="",
+        )
+    )
+    client, conn = _client(tmp_path, fake)
+
+    with SqliteUnitOfWork(conn) as uow:
+        service = V2AssistantService(assistant_repo=uow.v2_assistant)
+        service.add_message(
+            job_id="job-model",
+            role="assistant",
+            content="The migration is blocked and still needs approval.",
+        )
+        uow.v2_events.save(
+            job_id="job-model",
+            stage=1,
+            event_type="approval_required",
+            status="blocked",
+            message="Approval used to be required.",
+            payload={},
+        )
+        uow.v2_events.save(
+            job_id="job-model",
+            stage=1,
+            event_type="approval_completed",
+            status="completed",
+            message="Approval was recorded.",
+            payload={},
+        )
+        uow.v2_events.save(
+            job_id="job-model",
+            stage=1,
+            event_type="sandbox_transform_started",
+            status="running",
+            message="Sandbox transform started.",
+            payload={},
+        )
+
+    response = client.post(
+        "/v1/v2/jobs/job-model/assistant/ask",
+        json={"question": "But I already approved it. What is happening now?"},
+        headers=_mutation_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+    prompt = json.loads(fake.calls[0]["prompt"])
+    assert prompt["state_semantics"]["overall_state"] == "running"
+    assert prompt["state_semantics"]["is_blocked"] is False
+    assert fake.calls[0]["conversation_history"] == []
+    assert prompt["conversation_reference"]["authority"] == "non_authoritative"
+    assert prompt["conversation_reference"]["purpose"] == "reference_resolution_only"
+    assert prompt["conversation_reference"]["recent_turns"][-1]["content"] == (
+        "The migration is blocked and still needs approval."
+    )
+
+
+def test_assistant_system_prompt_rejects_false_blocked_claims(
+) -> None:
+    from migration_factory.control_tower.application.v2_assistant_model_client import (
+        _assistant_system_prompt,
+    )
+
+    system_prompt = _assistant_system_prompt()
+
+    assert (
+        "Say blocked only when is_blocked=true"
+        in system_prompt
+    )
+    assert (
+        "waiting for artifacts is not blocked"
+        in system_prompt
+    )
+    assert "Do not force a fixed" in system_prompt
 
 
 def test_assistant_prompt_model_status_field(tmp_path: Path) -> None:

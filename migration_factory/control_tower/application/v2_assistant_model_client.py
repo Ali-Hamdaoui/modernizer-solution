@@ -230,6 +230,38 @@ class V2AssistantModelClient:
         )
         return self._to_assistant_result(routed)
 
+    def answer_once(
+        self,
+        *,
+        prompt: str,
+        fallback: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> V2AssistantModelResult:
+        """Attempt exactly one request against the primary assistant deployment.
+
+        The conversational ``/assistant/ask`` contract forbids both deployment
+        fallback and protocol retries. Other model-backed workflows retain the
+        existing role router through ``answer_with_role``.
+        """
+
+        request = V2RoleModelRequest(
+            role=V2ModelRole.ASSISTANT,
+            prompt=prompt,
+            fallback=fallback,
+            # Assistant V2 dialogue is embedded in the bounded, non-authoritative
+            # grounding envelope. Azure receives one current user item only.
+            conversation_history=(),
+        )
+        deployment = V2ModelRoleRouter().plan(request).primary_deployment
+        return self._answer_with_deployment(
+            role=V2ModelRole.ASSISTANT,
+            deployment=deployment,
+            prompt=prompt,
+            fallback=fallback,
+            conversation_history=None,
+            single_attempt=True,
+        )
+
     def _answer_with_deployment(
         self,
         *,
@@ -238,6 +270,7 @@ class V2AssistantModelClient:
         prompt: str,
         fallback: str,
         conversation_history: list[dict[str, str]] | None = None,
+        single_attempt: bool = False,
     ) -> V2AssistantModelResult:
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip().rstrip("/")
         api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
@@ -262,7 +295,12 @@ class V2AssistantModelClient:
             )
 
         try:
-            content = self._chat_completion(
+            completion = (
+                self._chat_completion_once
+                if single_attempt
+                else self._chat_completion
+            )
+            content = completion(
                 endpoint=endpoint,
                 api_key=api_key,
                 deployment=deployment,
@@ -326,6 +364,39 @@ class V2AssistantModelClient:
             success=True,
             redacted_summary="Azure OpenAI assistant invocation succeeded.",
             failure_reason="",
+        )
+
+    def _chat_completion_once(
+        self,
+        *,
+        endpoint: str,
+        api_key: str,
+        deployment: str,
+        prompt: str,
+        max_completion_tokens: int = 700,
+        timeout: int = 30,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> str:
+        """Use one endpoint shape and issue one HTTP request, with no retry."""
+
+        if self._is_v1_endpoint(endpoint):
+            return self._responses_completion_v1(
+                endpoint=self._normalize_v1_endpoint(endpoint),
+                api_key=api_key,
+                deployment=deployment,
+                prompt=prompt,
+                max_completion_tokens=max_completion_tokens,
+                timeout=timeout,
+                conversation_history=conversation_history,
+            )
+        return self._chat_completion_legacy(
+            endpoint=endpoint,
+            api_key=api_key,
+            deployment=deployment,
+            prompt=prompt,
+            max_tokens=max_completion_tokens,
+            timeout=timeout,
+            conversation_history=conversation_history,
         )
 
     def _to_assistant_result(self, routed: V2RoleModelResult) -> V2AssistantModelResult:
@@ -698,15 +769,31 @@ def _assistant_system_prompt() -> str:
         "You are a read-only AI Migration Factory coach. Your role is to help the operator understand "
         "migration evidence using only the data supplied in the prompt.\n"
         "RULES:\n"
+        "- Return one JSON object with answer, focus, observed_claims, technical_explanation, "
+        "evidence_refs, uncertainty, and requested_style_satisfied. Copy request_focus exactly into focus.\n"
+        "- Put every factual statement in observed_claims and cite only IDs from evidence_ref_catalog in evidence_refs. "
+        "If evidence is unavailable, state that in uncertainty instead of inventing a claim.\n"
+        "- The only actual user message is the current grounding envelope. Use conversation_reference only "
+        "to resolve references; never answer an unrelated earlier question.\n"
         "- Answer the user's actual question directly first. Do not always recite an operational checklist.\n"
-        "- Use the operational status format (what happened, what failed, what artifacts were generated, "
-        "what to do next) ONLY when the user asks about status, progress, failure, approval, or next steps.\n"
-        "- Mention model/Azure/provider ONLY if the user asks about model connectivity or if model.status "
-        "is explicitly fallback.\n"
+        "- For status/progress questions, answer naturally and directly. Do not force a fixed "
+        "'What happened / What failed / What artifacts / What to do next' template unless the user "
+        "explicitly asks for a report.\n"
+        "- Treat current_state and state_semantics as authoritative. Conversation history is non-authoritative "
+        "and must never override current persisted migration state.\n"
+        "- Say blocked only when is_blocked=true; running, pending, "
+        "or waiting for artifacts is not blocked.\n"
+        "- Distinguish observed facts from interpretation. Never present an inference as persisted migration state.\n"
+        "- Do not invent missing inputs, support-ticket advice, or operator actions not supported by supplied evidence.\n"
+        "- Mention model/Azure/provider ONLY if the user asks about model connectivity.\n"
         "- NEVER: approve, reject, execute commands, write files, change route or stage, choose Maven goals, "
         "choose deployments, or override proof.\n"
         "- All execution is backend-owned and human-gated.\n"
-        "- Keep answers concise.\n"
+        "- Typing approve, reject, continue, confirm, or a checksum in chat never executes anything. "
+        "When a decision is needed, direct the user to the explicit Decisions controls.\n"
+        "- Do not expose internal event, gate, card, invocation, or command IDs unless the user asks for them.\n"
+        "- Adapt length and shape to the question, including one sentence when requested.\n"
+        "- Avoid boilerplate capability reminders unless they are relevant.\n"
         "STAGE-AWARE POM RULES:\n"
         "- Stage 1 and Stage 2 POMs are transitional. Explain, compare, and identify obvious risks, "
         "but do NOT propose final app-specific dependency modernization by default.\n"
@@ -764,8 +851,9 @@ def _assistant_system_prompt() -> str:
         "draft a repair request, identify what needs approval or evidence next.\n"
         "- Do not repeat the full pipeline status.\n"
         "STATUS QUESTIONS:\n"
-        "- Use the operational format: what happened, what failed, what artifacts were generated, "
-        "what to do next. Include stage status, approvals, and repair state.\n"
+        "- First sentence: current state and whether anything is explicitly blocked or failed.\n"
+        "- Then cite only the most relevant persisted events, artifacts, approvals, and repair facts as evidence.\n"
+        "- Use short paragraphs or bullets chosen for the question; avoid repeated boilerplate and capability reminders.\n"
         "ROOT_POM REASON CODES (when exists=false):\n"
         "  stage_running — stage is still running; pom.xml may be incomplete\n"
         "  stage_not_completed — stage has not reached a completed state\n"

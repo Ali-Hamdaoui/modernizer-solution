@@ -331,6 +331,51 @@ class TestAssistantArtifactQuestions:
         assert "phase2_log" in content
         assert "failure_classification" in content
 
+    def test_plan_paraphrase_gets_persisted_preview_without_phrase_routing(
+        self, tmp_path: Path
+    ) -> None:
+        from migration_factory.control_tower.adapters.fastapi.app import (
+            _resolve_assistant_artifact_previews,
+        )
+
+        client, conn, setup_id = _client_with_setup(
+            tmp_path,
+            output_dir=str(tmp_path / "output"),
+        )
+        del client
+        plan = tmp_path / "output" / "plans" / "target-dependencies.json"
+        plan.parent.mkdir(parents=True, exist_ok=True)
+        plan.write_text(
+            '{"recommendation":"upgrade the bounded library set"}',
+            encoding="utf-8",
+        )
+        _seed_artifact_event(
+            conn,
+            job_id="job-artifact",
+            stage=1,
+            artifact_kind="target_dependency_plan",
+            relative_path="plans/target-dependencies.json",
+        )
+        with SqliteUnitOfWork(conn) as uow:
+            events = tuple(uow.v2_events.list_by_job("job-artifact"))
+            commands = tuple(uow.v2_commands.list_by_job("job-artifact"))
+            setup = uow.v2_setups.get(setup_id)
+
+        previews = _resolve_assistant_artifact_previews(
+            question="What does the migration plan recommend?",
+            events=events,
+            commands=commands,
+            setup=setup,
+            assistant_intent="artifact_content",
+        )
+
+        target = next(
+            item
+            for item in previews
+            if item.get("artifact_kind") == "target_dependency_plan"
+        )
+        assert "bounded library set" in target["preview"]
+
 
 class TestRootPomFileAlias:
     def test_full_pom_request_resolves_root_pom_alias(self, tmp_path: Path) -> None:

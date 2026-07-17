@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -159,6 +160,42 @@ def _seed_stage_command(
                 result_json=json.dumps({"sandbox_path": str(sandbox_path)}),
             )
         )
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "Apply this Stage 3 POM change: update gson to 2.11.0",
+        "Rollback the last Stage 3 POM change",
+    ],
+)
+def test_assistant_ask_pom_mutation_wording_never_reaches_editor(
+    tmp_path: Path,
+    question: str,
+) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    pom = output / "pom.xml"
+    original = "<project><version>1.0.0</version></project>"
+    pom.write_text(original, encoding="utf-8")
+    client, _conn, _setup_id = _client_with_setup(
+        tmp_path,
+        output_dir=str(output),
+    )
+
+    with patch(
+        "migration_factory.control_tower.adapters.fastapi.app._build_pom_dependency_editor"
+    ) as editor_builder:
+        response = client.post(
+            "/v1/v2/jobs/job-proposal/assistant/ask",
+            json={"question": question},
+            headers=_mutation_headers(),
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["guardrails"]["cannot_write_files"] is True
+    editor_builder.assert_not_called()
+    assert pom.read_text(encoding="utf-8") == original
 
 
 # ── Helper: create a realistic Spring Boot 2.7.x pom.xml ────────────
@@ -341,20 +378,13 @@ class TestPomProposalAnswer:
 
         assert response.status_code == 200, response.text
         content = response.json()["assistant_message"]["content"]
+        prompt = json.loads(client.app.state.v2_assistant_model_client.calls[-1]["prompt"])
 
-        # Must NOT dump full POM
         assert "<modelVersion>" not in content
-        # Must contain proposal sections
-        assert "I cannot apply this directly" in content or "I cannot apply" in content
-        assert "Proposed Change" in content or "Proposed change" in content
-        assert "Risk" in content
-        assert "Evidence" in content
-        assert "Approval" in content
-        assert "Not Applied" in content or "Not applied" in content
-        # Must explicitly state nothing was applied
-        assert "No file was written" in content or "no file was written" in content
-        # Must NOT be full stage status
-        assert "Stage Status:" not in content
+        assert prompt["question"].startswith("Propose a safe POM change")
+        assert prompt["answer_contract"]["chat_is_strictly_read_only"] is True
+        assert prompt["artifact_previews"]
+        assert prompt["artifact_previews"][0]["kind"] == "root_pom"
 
     def test_pom_change_proposal_includes_exact_edits(
         self, tmp_path: Path
@@ -374,17 +404,11 @@ class TestPomProposalAnswer:
         )
 
         assert response.status_code == 200, response.text
-        content = response.json()["assistant_message"]["content"]
-
-        # Must mention java.version 11 → 17
-        assert "java.version" in content
-        assert "11" in content and "17" in content
-        # Must mention Boot version
-        assert "spring-boot.version" in content or "spring boot" in content.lower()
-        # Must mention javax → jakarta
-        assert "javax" in content.lower() or "jakarta" in content.lower()
-        # Must mention dependencyManagement or BOM alignment
-        assert any(t in content.lower() for t in ["dependencymanagement", "bom", "dependency management"])
+        prompt = json.loads(client.app.state.v2_assistant_model_client.calls[-1]["prompt"])
+        preview = prompt["artifact_previews"][0]["preview"]
+        assert "java.version" in preview
+        assert "spring-boot.version" in preview
+        assert prompt["question"] == "draft a pom proposal for stage 1"
 
     def test_pom_change_proposal_includes_risk_assessment(
         self, tmp_path: Path
@@ -404,9 +428,9 @@ class TestPomProposalAnswer:
         )
 
         assert response.status_code == 200, response.text
-        content = response.json()["assistant_message"]["content"]
-        # Risk section should mention level
-        assert any(level in content for level in ["Low", "Medium", "High"])
+        prompt = json.loads(client.app.state.v2_assistant_model_client.calls[-1]["prompt"])
+        assert prompt["question"] == "propose pom changes"
+        assert prompt["answer_contract"]["current_state_is_authoritative"] is True
 
     def test_pom_change_proposal_includes_artifact_evidence(
         self, tmp_path: Path
@@ -426,9 +450,10 @@ class TestPomProposalAnswer:
         )
 
         assert response.status_code == 200, response.text
-        content = response.json()["assistant_message"]["content"]
-        # Must mention root_pom
-        assert "root_pom" in content
+        prompt = json.loads(client.app.state.v2_assistant_model_client.calls[-1]["prompt"])
+        assert "root_pom" in prompt["artifact_kinds"] or any(
+            item["kind"] == "root_pom" for item in prompt["artifact_previews"]
+        )
 
     def test_apply_pom_change_refuses_direct_write(
         self, tmp_path: Path
@@ -449,8 +474,8 @@ class TestPomProposalAnswer:
 
         assert response.status_code == 200, response.text
         content = response.json()["assistant_message"]["content"].lower()
-        # Must refuse
         assert "cannot" in content
+        assert "dedicated ui or api control" in content
         # Must not claim can write/apply/execute/approve
         forbidden = ["i can execute", "i can approve", "i can write", "i can apply"]
         for phrase in forbidden:
@@ -471,11 +496,10 @@ class TestPomProposalAnswer:
         )
 
         assert response.status_code == 200, response.text
-        content = response.json()["assistant_message"]["content"]
-        # Should say root_pom not available
-        assert "not available" in content
-        # Should give generic checklist
-        assert "dependencyManagement" in content or "dependency management" in content.lower() or "dependencies" in content.lower()
+        prompt = json.loads(client.app.state.v2_assistant_model_client.calls[-1]["prompt"])
+        assert prompt["artifact_previews"]
+        assert prompt["artifact_previews"][0]["exists"] is False
+        assert prompt["artifact_previews"][0]["reason"]
 
     def test_show_me_the_pom_is_still_explanation(
         self, tmp_path: Path
@@ -495,11 +519,41 @@ class TestPomProposalAnswer:
         )
 
         assert response.status_code == 200, response.text
-        content = response.json()["assistant_message"]["content"]
-        # Should use structured summary (new behavior), not raw XML dump
-        assert "artifactId: migration-test" in content or "migration-test" in content
-        # Should NOT be a proposal (no "Proposed change" etc.)
-        assert "Proposed Change" not in content
+        prompt = json.loads(client.app.state.v2_assistant_model_client.calls[-1]["prompt"])
+        assert "migration-test" in prompt["artifact_previews"][0]["preview"]
+        assert prompt["assistant_intent_hint"] == "pom_or_dependency_explanation"
+
+    def test_build_descriptor_paraphrase_gets_root_pom_grounding(
+        self, tmp_path: Path
+    ) -> None:
+        client, conn, _setup_id = _client_with_setup(tmp_path)
+        sandbox = tmp_path / "stage1-sandbox"
+        sandbox.mkdir()
+        (sandbox / "pom.xml").write_text(_SPRING_BOOT_2_7_POM, encoding="utf-8")
+        _seed_stage_command(
+            conn,
+            job_id="job-proposal",
+            stage=1,
+            command_id="cmd-s1",
+            sandbox_path=sandbox,
+        )
+        _seed_stage_event(
+            conn,
+            job_id="job-proposal",
+            stage=1,
+            event_type="stage_completed",
+        )
+
+        response = client.post(
+            "/v1/v2/jobs/job-proposal/assistant/ask",
+            json={"question": "Which libraries are declared in the build descriptor?"},
+            headers=_mutation_headers(),
+        )
+
+        assert response.status_code == 200, response.text
+        prompt = json.loads(client.app.state.v2_assistant_model_client.calls[-1]["prompt"])
+        assert prompt["artifact_previews"][0]["kind"] == "root_pom"
+        assert "migration-test" in prompt["artifact_previews"][0]["preview"]
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -620,10 +674,10 @@ class TestXmlPresentation:
         content = response.json()["assistant_message"]["content"]
         assert "rewrite_dry_run.patch" not in content
 
-    def test_pom_explanation_structured_summary_no_raw_xml_dump(
+    def test_pom_explanation_fallback_is_bounded_and_read_only(
         self, tmp_path: Path
     ) -> None:
-        """Default POM explanation uses structured summary, not raw XML dump."""
+        """Deterministic POM fallback returns only a bounded read-only preview."""
         client, conn, _setup_id = _client_with_setup(tmp_path)
         sandbox = tmp_path / "stage1-sandbox"
         sandbox.mkdir()
@@ -639,11 +693,9 @@ class TestXmlPresentation:
 
         assert response.status_code == 200, response.text
         content = response.json()["assistant_message"]["content"]
-        # Must have structured summary
-        assert "**Project:**" in content or "migration-test" in content
-        assert "**Key Properties:**" in content or "**Properties:**" in content or "**Dependencies:**" in content
-        # Must NOT have raw <modelVersion> dump (default mode)
-        assert "<modelVersion>" not in content
+        assert "read-only review" in content
+        assert "migration-test" in content
+        assert len(content) <= 16_000
 
 
 # ═════════════════════════════════════════════════════════════════════

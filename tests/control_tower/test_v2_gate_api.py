@@ -1278,7 +1278,7 @@ def test_open_gate_endpoint_advances_past_resolved_stage_to_later_stage(tmp_path
     assert open_gate["stage_index"] == 3
 
 
-def test_stage3_java21_route_assistant_confirm_starts_transform(tmp_path: Path) -> None:
+def test_stage3_java21_route_assistant_confirm_does_not_start_transform(tmp_path: Path) -> None:
     client, conn = _api_client(tmp_path)
     setup_id = _ready_setup(conn)
     job_id = _create_job(client, setup_id)
@@ -1361,33 +1361,17 @@ def test_stage3_java21_route_assistant_confirm_starts_transform(tmp_path: Path) 
     )
     assert confirm.status_code == 200, confirm.text
     body = confirm.json()
-    assert body.get("executed") is True
-    execution_result = body.get("execution_result", {})
-    assert execution_result.get("success") is True
-    assert execution_result.get("resume_status") in {"queued", "started"}
-    assert len(runner.started) == 1
-
-    _wait_for_event(conn, job_id, "resume_started")
-    _wait_for_event(conn, job_id, "sandbox_transform_started")
-
-    accepted = SqliteUnitOfWork(conn).artifact_revisions.find_accepted(job_id, 3, "approval_review")
-    assert accepted is not None
-    refs = json.loads(accepted.artifact_refs_json)
-    assert isinstance(refs, list)
-    profile_refs = [
-        ref for ref in refs
-        if isinstance(ref, dict) and isinstance(ref.get("profile_metadata"), dict)
-    ]
-    assert profile_refs, "accepted approval_review revision should persist profile_metadata"
-    profile_metadata = profile_refs[0]["profile_metadata"]
-    assert profile_metadata["source_profile"] == "springboot-3.5-java17"
-    assert profile_metadata["target_profile"] == "springboot-3.5-java21"
-    assert profile_metadata["runtime_profile"] == "springboot-3.5-java17-to-java21"
-    assert profile_metadata["included_stages"] == [3]
-    assert profile_metadata["skipped_stages"] == [2]
-    assert profile_metadata["excluded_stages"] == [4]
-    assert profile_metadata["stage_index"] == 3
-    assert profile_metadata["run_id"] == "run-ask"
+    assert body.get("executed") is False
+    assert "execution_result" not in body
+    assert runner.started == []
+    with SqliteUnitOfWork(conn, transaction_mode="read") as uow:
+        stored_gate = uow.phase_gates.get(gate_id)
+        stored_card = uow.v2_approvals.get_card(card_id)
+        events = uow.v2_events.list_by_job(job_id)
+    assert stored_gate is not None and stored_gate.gate_status == "open"
+    assert stored_card is not None and stored_card.status == "pending"
+    assert not [event for event in events if event.type == "resume_started"]
+    assert not [event for event in events if event.type == "sandbox_transform_started"]
 
 
 def test_stage3_java21_route_approval_resume_starts_transform(tmp_path: Path) -> None:
