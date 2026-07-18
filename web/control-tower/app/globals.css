@@ -51,8 +51,8 @@ h2 {
 }
 
 .shell {
+  width: 100%;
   margin: 0 auto;
-  max-width: 1180px;
   padding: 32px 20px;
 }
 
