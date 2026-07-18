@@ -1,4 +1,4 @@
-﻿"""Minimal FastAPI adapter for the M2 diagnostic queue path."""
+"""Minimal FastAPI adapter for the M2 diagnostic queue path."""
 
 from __future__ import annotations
 
@@ -154,6 +154,10 @@ from migration_factory.control_tower.application.v2_assistant_service import (
 from migration_factory.control_tower.application.v2_assistant_model_client import (
     V2AssistantModelClient,
     V2AssistantModelResult,
+)
+from migration_factory.control_tower.application.v2_assistant_conversation import (
+    V2AssistantContextResolver,
+    V2AssistantConversationService,
 )
 from migration_factory.control_tower.application.v2_model_role_router import V2ModelRole
 from migration_factory.control_tower.application.v2_model_schemas import (
@@ -10947,112 +10951,61 @@ def _handle_v2_assistant_read_only_ask(
     correlation_id: str | None,
     unit_of_work_factory: Any,
 ) -> dict[str, Any]:
-    from migration_factory.control_tower.application.v2_assistant_service import (
-        AssistantMessage,
-        V2AssistantService,
-    )
-
+    """Run the migration-grounded Assistant V2 read-only vertical slice."""
     try:
-        with _read_unit_of_work(unit_of_work_factory) as uow:
-            job = _require_v2_job(uow, job_id)
-            events = uow.v2_events.list_by_job(job_id)
-            approvals = uow.v2_approvals.list_cards_by_job(job_id)
-            commands = uow.v2_commands.list_by_job(job_id)
-            pipeline = _v2_pipeline_projection(job_id, events)
-            service = V2AssistantService(assistant_repo=uow.v2_assistant)
-            assistant_intent = _classify_v2_assistant_intent(question.strip().lower())
-            setup = uow.v2_setups.get(job.setup_id) if job.setup_id else None
-            artifact_previews_list = _resolve_assistant_artifact_previews(
-                question=question,
-                events=events,
-                commands=commands,
-                setup=setup,
-                assistant_intent=assistant_intent,
-            )
-            artifact_previews = tuple(artifact_previews_list)
-            fallback_answer = _build_v2_assistant_answer(
-                question=question,
-                events=events,
-                approvals=approvals,
-                commands=commands,
-                artifact_previews=artifact_previews if artifact_previews else None,
-                assistant_intent=assistant_intent,
-            )
-            if assistant_intent in {"apply_dependency_change", "rollback_pom_change"}:
-                model_result = V2AssistantModelResult(
-                    content=fallback_answer,
-                    source="backend_controlled",
-                    model_status="not_used",
-                    provider="backend",
-                    role="assistant",
-                    success=True,
-                    redacted_summary="Backend-controlled assistant action completed.",
-                    failure_reason="",
-                )
-            else:
-                assistant_client = app.state.v2_assistant_model_client
-                assistant_prompt = _build_v2_assistant_prompt(
-                    question=question,
-                    job=job,
-                    pipeline=pipeline,
-                    events=events,
-                    approvals=approvals,
-                    artifact_previews=artifact_previews if artifact_previews else None,
-                    assistant_intent=assistant_intent,
-                    conversation_history=(),
-                )
-                if hasattr(assistant_client, "answer_with_role"):
-                    model_result = assistant_client.answer_with_role(
-                        role=V2ModelRole.ASSISTANT,
-                        prompt=assistant_prompt,
-                        fallback=fallback_answer,
-                        conversation_history=(),
-                    )
-                else:
-                    model_result = assistant_client.answer(
-                        prompt=assistant_prompt,
-                        fallback=fallback_answer,
-                        conversation_history=(),
-                    )
-
-            now = utc_now_text()
-            user_msg = AssistantMessage(
-                message_id=uuid4().hex,
-                job_id=job_id,
-                role="user",
-                content=question,
-                correlation_id=correlation_id,
-                created_at=now,
-            )
-            assistant_msg = AssistantMessage(
-                message_id=uuid4().hex,
-                job_id=job_id,
-                role="assistant",
-                content=model_result.content,
-                correlation_id=user_msg.message_id,
-                created_at=now,
-            )
-            response = {
-                "job_id": job_id,
-                "user_message": service.message_to_dict(user_msg),
-                "assistant_message": service.message_to_dict(assistant_msg),
-                "model": {
-                    "status": model_result.model_status,
-                    "source": model_result.source,
-                    "provider": model_result.provider,
-                    "role": model_result.role,
-                    "failure_reason": model_result.failure_reason,
-                },
-                "guardrails": {
-                    "read_only": True,
-                    "cannot_execute": True,
-                    "cannot_approve": True,
-                    "cannot_write_files": True,
-                    "cannot_change_route_or_stage": True,
-                    "cannot_override_proof": True,
-                },
-            }
-            return response
+        resolver = V2AssistantContextResolver(
+            unit_of_work_factory=unit_of_work_factory,
+            job_loader=_require_v2_job,
+            pipeline_projector=_v2_pipeline_projection,
+            intent_classifier=_classify_v2_assistant_intent,
+            artifact_preview_resolver=_resolve_assistant_artifact_previews,
+            conversation_history_builder=_build_bounded_conversation_history,
+            model_context={
+                "status": "available" if _model_client_available() else "fallback",
+                "source": "azure_openai" if _model_client_available() else "deterministic",
+            },
+        )
+        conversation = V2AssistantConversationService(
+            unit_of_work_factory=unit_of_work_factory,
+            context_resolver=resolver,
+            model_client=app.state.v2_assistant_model_client,
+            response_composer=_ASSISTANT_RESPONSE_COMPOSER,
+        )
+        result = conversation.ask(
+            job_id=job_id,
+            question=question,
+            correlation_id=correlation_id,
+        )
+        serializer = V2AssistantService()
+        open_gate = result.current_state.get("open_gate")
+        available_actions = (
+            list(open_gate.get("available_actions", []))
+            if isinstance(open_gate, dict)
+            else []
+        )
+        return {
+            "job_id": job_id,
+            "user_message": serializer.message_to_dict(result.user_message),
+            "assistant_message": serializer.message_to_dict(result.assistant_message),
+            "gate_aware": open_gate is not None,
+            "executed": False,
+            "available_actions": available_actions,
+            "model": {
+                "status": result.model_result.model_status,
+                "source": result.model_result.source,
+                "provider": result.model_result.provider,
+                "role": result.model_result.role,
+                "failure_reason": result.model_result.failure_reason,
+            },
+            "guardrails": {
+                "read_only": True,
+                "cannot_execute": True,
+                "cannot_approve": True,
+                "cannot_write_files": True,
+                "cannot_change_route_or_stage": True,
+                "cannot_override_proof": True,
+            },
+        }
     except sqlite3.OperationalError as exc:
         if _is_sqlite_locked_error(exc):
             return {
@@ -11483,21 +11436,25 @@ def _fallback_to_existing_assistant(
 
 def _build_bounded_conversation_history(
     messages: tuple[Any, ...],
-    max_messages: int = 8,
+    max_messages: int = 6,
 ) -> list[dict[str, str]]:
-    """Build a bounded, redacted conversation history from prior messages.
-
-    Returns up to max_messages recent role/content pairs.
-    Redacts content, excludes raw paths, secrets, and approval tokens.
-    """
+    """Build bounded dialogue for non-authoritative reference resolution only."""
     from migration_factory.control_tower.application.redaction import redact_model_summary
 
     if not messages:
         return []
-    recent = messages[-max_messages:] if len(messages) > max_messages else messages
+    dialogue_messages = [
+        message
+        for message in messages
+        if str(getattr(message, "role", "") or "").lower() in {"user", "assistant"}
+    ]
+    recent = (
+        dialogue_messages[-max_messages:]
+        if len(dialogue_messages) > max_messages
+        else dialogue_messages
+    )
     history: list[dict[str, str]] = []
     for msg in recent:
-        role = str(getattr(msg, "role", "user") or "user")
         content = str(getattr(msg, "content", "") or "")
         if not content.strip():
             continue
@@ -11505,7 +11462,10 @@ def _build_bounded_conversation_history(
         safe = safe[:512]  # Bound each message
         safe = re.sub(r'/[^\s"]+/[^\s"]*', "[path-redacted]", safe)
         safe = re.sub(r'\b[0-9a-f]{32,}\b', "[token-redacted]", safe)
-        history.append({"role": role, "content": safe})
+        history.append({
+            "role": str(getattr(msg, "role", "") or "").lower(),
+            "content": safe,
+        })
     return history
 
 
@@ -11651,42 +11611,36 @@ def _resolve_assistant_artifact_previews(
     setup: Any | None = None,
     assistant_intent: str = "",
 ) -> list[dict[str, Any]]:
-    """Resolve bounded artifact previews for assistant artifact-content questions.
+    """Resolve a question-independent bounded catalog of current safe evidence.
 
-    Only resolves safe artifact kinds from persisted events.
+    English intent/keyword matching may influence ordering, but never decides
+    whether persisted current evidence reaches the model. This lets the model
+    generalize across natural paraphrases without expanding a phrase router.
+    Only safe backend-resolved paths and kinds are read.
     Returns list of preview dicts, bounded to 3 artifacts at 2 KB each.
     Never reads from user-supplied paths.
     """
-    # Always resolve root_pom for pom-related intents even if question doesn't mention "pom"
-    pom_related_intents = {"pom_change_proposal", "pom_dependency_change_request", "stage3_dependency_review", "pom_or_dependency_explanation"}
-    resolve_root_pom = _question_requests_root_pom_alias(question) or assistant_intent in pom_related_intents
-
-    if not _question_looks_like_artifact_content(question) and not resolve_root_pom:
-        return []
-
     previews: list[dict[str, Any]] = []
     max_previews = 3
     max_chars_per_preview = 2048
 
-    if resolve_root_pom:
-        requested_stage = (
-            _get_requested_stage(question, assistant_intent)
-            or _stage_index_from_question(question)
-            or _default_stage_when_stage3_complete(events)
-            or 1
-        )
-        root_pom_preview = _resolve_root_pom_file_alias_preview(
-            job_id="",
-            stage_index=requested_stage,
-            events=events,
-            commands=commands,
-            max_bytes=max_chars_per_preview * 2,
-        )
-        root_pom_preview.pop("_path", None)
-        previews.append(root_pom_preview)
-        # If only root_pom was requested (not a broader artifact content question), return it
-        if not _question_looks_like_artifact_content(question):
-            return previews
+    # The stable/current root POM is canonical migration grounding for every
+    # question. Intent is only a hint for selecting a requested stage.
+    requested_stage = (
+        _get_requested_stage(question, assistant_intent)
+        or _stage_index_from_question(question)
+        or _default_stage_when_stage3_complete(events)
+        or _active_stage_index(events)
+    )
+    root_pom_preview = _resolve_root_pom_file_alias_preview(
+        job_id="",
+        stage_index=requested_stage,
+        events=events,
+        commands=commands,
+        max_bytes=max_chars_per_preview * 2,
+    )
+    root_pom_preview.pop("_path", None)
+    previews.append(root_pom_preview)
 
     # Collect artifact kinds mentioned in events
     available_kinds: dict[str, int] = {}
@@ -11737,6 +11691,7 @@ def _resolve_assistant_artifact_previews(
             commands=commands,
             setup=setup,
             max_chars=max_chars_per_preview,
+            stage_index=requested_stage,
         )
         if preview:
             previews.append(preview)
@@ -11751,6 +11706,7 @@ def _resolve_single_artifact_preview(
     commands: tuple[Any, ...],
     setup: Any | None = None,
     max_chars: int = 2048,
+    stage_index: int | None = None,
 ) -> dict[str, Any] | None:
     """Resolve a single artifact preview from backend events only.
 
@@ -11761,6 +11717,7 @@ def _resolve_single_artifact_preview(
     from migration_factory.control_tower.application.redaction import redact_model_summary
 
     artifact_path = None
+    artifact_stage = None
     best_sequence = -1
     for event in events:
         if event.type != "artifact_written":
@@ -11772,9 +11729,12 @@ def _resolve_single_artifact_preview(
         kind = str(payload.get("artifact_kind", ""))
         if kind != artifact_kind:
             continue
+        if stage_index is not None and getattr(event, "stage", None) != stage_index:
+            continue
         path_val = payload.get("relative_path") or payload.get("path")
         if path_val and getattr(event, "sequence", 0) > best_sequence:
             artifact_path = str(path_val)
+            artifact_stage = getattr(event, "stage", None)
             best_sequence = getattr(event, "sequence", 0)
 
     if not artifact_path:
@@ -11807,6 +11767,7 @@ def _resolve_single_artifact_preview(
     return {
         "artifact_kind": artifact_kind,
         "source_type": "artifact",
+        "stage_index": artifact_stage,
         "exists": True,
         "preview": preview,
         "truncated": truncated,
@@ -14641,6 +14602,84 @@ def _build_v2_assistant_prompt(
             kind = str(payload.get("artifact_kind", ""))
             if kind and kind not in artifact_kinds:
                 artifact_kinds.append(kind)
+    # Derive explicit status semantics so the model cannot confuse "running"
+    # or "waiting for artifacts" with a governed blocked state.
+    pipeline_rows = list(pipeline.get("rows", []))
+    row_statuses = [
+        str(row.get("status", "") or "").strip().lower()
+        for row in pipeline_rows
+        if isinstance(row, dict)
+    ]
+    blocked_rows = [
+        str(
+            row.get("key", "")
+            or row.get("label", "")
+            or "pipeline_row"
+        )
+        for row in pipeline_rows
+        if isinstance(row, dict)
+        and str(
+            row.get("status", "") or ""
+        ).strip().lower() == "blocked"
+    ]
+    explicit_blocked_events = [
+        str(
+            getattr(event, "message", "")
+            or getattr(event, "type", "")
+            or "blocked_event"
+        )[:240]
+        for event in events
+        if str(
+            getattr(event, "status", "") or ""
+        ).strip().lower() == "blocked"
+    ][-5:]
+
+    job_status = str(
+        getattr(job, "status", "") or ""
+    ).strip().lower()
+
+    is_failed = (
+        bool(grouped_failures)
+        or job_status == "failed"
+        or "failed" in row_statuses
+    )
+    awaiting_approval = bool(pending_approvals)
+    is_blocked = bool(
+        blocked_rows
+        or explicit_blocked_events
+        or job_status == "blocked"
+    )
+    is_running = (
+        job_status == "running"
+        or "running" in row_statuses
+        or any(
+            str(
+                getattr(event, "status", "") or ""
+            ).strip().lower() == "running"
+            for event in events
+        )
+    )
+    all_rows_completed = (
+        bool(row_statuses)
+        and all(
+            row_status == "completed"
+            for row_status in row_statuses
+        )
+    )
+
+    if is_failed:
+        overall_state = "failed"
+    elif awaiting_approval:
+        overall_state = "awaiting_approval"
+    elif is_blocked:
+        overall_state = "blocked"
+    elif is_running:
+        overall_state = "running"
+    elif all_rows_completed or job_status == "completed":
+        overall_state = "completed"
+    else:
+        overall_state = job_status or "pending"
+
     # Build model/fallback status
     model_status = "available" if _model_client_available() else "fallback"
     model_source = "azure_openai" if _model_client_available() else "deterministic"
@@ -14656,6 +14695,24 @@ def _build_v2_assistant_prompt(
         },
         "pipeline_rows": pipeline.get("rows", []),
         "stage_statuses": stage_statuses,
+        "state_semantics": {
+            "overall_state": overall_state,
+            "job_status": job_status,
+            "is_running": is_running,
+            "is_blocked": is_blocked,
+            "is_failed": is_failed,
+            "awaiting_approval": awaiting_approval,
+            "blocked_reasons": (
+                blocked_rows + explicit_blocked_events
+            )[:8],
+            "missing_artifacts_mean_blocked": False,
+        },
+        "answer_contract": {
+            "direct_answer_first": True,
+            "fixed_status_template": False,
+            "separate_observed_facts_from_interpretation": True,
+            "unsupported_operational_advice_forbidden": True,
+        },
         "latest_events": latest_events,
         "pending_approvals": pending_approvals,
         "approved_approvals": approved_cards,
@@ -16971,5 +17028,3 @@ def _registered_root_status(unit_of_work_factory: UnitOfWorkFactory) -> dict[str
         }
     except Exception:
         return {"ready": False, "status": "error", "checked_root_count": 0}
-
-

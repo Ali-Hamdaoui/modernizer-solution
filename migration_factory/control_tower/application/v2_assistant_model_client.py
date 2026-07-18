@@ -257,6 +257,30 @@ class V2AssistantModelClient:
         )
         return self._to_assistant_result(routed)
 
+    def answer_once(
+        self,
+        *,
+        prompt: str,
+        fallback: str,
+        conversation_history: list[dict[str, str]] | None = None,
+    ) -> V2AssistantModelResult:
+        """Run one assistant request without deployment/protocol fallback."""
+        request = V2RoleModelRequest(
+            role=V2ModelRole.ASSISTANT,
+            prompt=prompt,
+            fallback=fallback,
+            conversation_history=(),
+        )
+        deployment = V2ModelRoleRouter().plan(request).primary_deployment
+        return self._answer_with_deployment(
+            role=V2ModelRole.ASSISTANT,
+            deployment=deployment,
+            prompt=prompt,
+            fallback=fallback,
+            conversation_history=None,
+            single_attempt=True,
+        )
+
     @staticmethod
     def _resolve_transport(
         role: V2ModelRole,
@@ -276,6 +300,7 @@ class V2AssistantModelClient:
         conversation_history: list[dict[str, str]] | None = None,
         output_schema_name: str | None = None,
         require_schema: bool = False,
+        single_attempt: bool = False,
     ) -> V2AssistantModelResult:
         endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip().rstrip("/")
         api_key = os.environ.get("AZURE_OPENAI_API_KEY", "").strip()
@@ -319,8 +344,8 @@ class V2AssistantModelClient:
         reasoning_effort = budget.reasoning_effort
         transport = self._resolve_transport(role=role, responsibility=responsibility)
         last_error: tuple[str, str] | None = None
-        for response_format_used, response_format in response_format_candidates:
-            for retry_number in range(4):
+        for response_format_used, response_format in response_format_candidates[:1] if single_attempt else response_format_candidates:
+            for retry_number in range(1 if single_attempt else 4):
               try:
                 content = self._chat_completion(
                     endpoint=endpoint,
@@ -379,11 +404,11 @@ class V2AssistantModelClient:
                     azure_error_code=_header(exc, "x-ms-error-code"),
                 )
                 last_error = (_http_failure_reason(code), summary)
-                if code == 429 and retry_number < 3:
+                if not single_attempt and code == 429 and retry_number < 3:
                     delay = _retry_delay_seconds(exc, retry_number)
                     time.sleep(delay)
                     continue
-                if response_format_used == "json_schema" and any(label == "json_object" for label, _ in response_format_candidates):
+                if not single_attempt and response_format_used == "json_schema" and any(label == "json_object" for label, _ in response_format_candidates):
                     continue
                 return _fallback_result(
                     fallback,
@@ -983,15 +1008,20 @@ def _assistant_system_prompt() -> str:
         "You are a read-only AI Migration Factory coach. Your role is to help the operator understand "
         "migration evidence using only the data supplied in the prompt.\n"
         "RULES:\n"
+        "- Return one JSON object with answer, focus, observed_claims, technical_explanation, "
+        "evidence_refs, uncertainty, and requested_style_satisfied. Copy request_focus exactly into focus.\n"
+        "- Put factual claims in observed_claims and cite only IDs from evidence_ref_catalog in evidence_refs.\n"
+        "- Treat current_state and state_semantics as authoritative; conversation history is non-authoritative.\n"
         "- Answer the user's actual question directly first. Do not always recite an operational checklist.\n"
-        "- Use the operational status format (what happened, what failed, what artifacts were generated, "
-        "what to do next) ONLY when the user asks about status, progress, failure, approval, or next steps.\n"
-        "- Mention model/Azure/provider ONLY if the user asks about model connectivity or if model.status "
-        "is explicitly fallback.\n"
+        "- For status/progress questions, answer naturally; do not force a fixed report template.\n"
+        "- Say blocked only when is_blocked=true; running, pending, or waiting for artifacts is not blocked.\n"
+        "- Mention model/Azure/provider only when the user asks about model connectivity.\n"
         "- NEVER: approve, reject, execute commands, write files, change route or stage, choose Maven goals, "
         "choose deployments, or override proof.\n"
         "- All execution is backend-owned and human-gated.\n"
-        "- Keep answers concise.\n"
+        "- Typing approve, reject, continue, confirm, or a checksum in chat never executes anything.\n"
+        "- Do not expose internal event, gate, card, invocation, or command IDs unless asked.\n"
+        "- Adapt length and shape to the question, including one sentence when requested.\n"
         "REVISION REQUESTS:\n"
         "- For a requested repair change, return REQUEST_REVISION with tool=request_repair_revision.\n"
         "- Preserve the exact user message in arguments.user_instruction.\n"

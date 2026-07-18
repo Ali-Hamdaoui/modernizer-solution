@@ -443,8 +443,9 @@ class TestWhatHappened:
 
         assert response.status_code == 200, response.text
         content = response.json()["assistant_message"]["content"]
-        # Should include operational status elements
-        assert "Stage Status:" in content or "No evidence events" in content or "No stage events" in content
+        assert "currently running" in content
+        assert "no newer operational event" in content
+        assert "Stage Status:" not in content
 
     def test_what_is_happening_now_returns_operational_status(self, tmp_path: Path) -> None:
         client, conn, _setup_id = _client_with_setup(tmp_path)
@@ -458,8 +459,9 @@ class TestWhatHappened:
 
         assert response.status_code == 200, response.text
         content = response.json()["assistant_message"]["content"]
-        assert "Stage Status:" in content
-        assert "Next operator action:" in content
+        assert "Stage 1 stage transition is happening right now" in content
+        assert "Stage 1 completion" in content
+        assert "Next operator action:" not in content
 
 
 class TestFallbackSafety:
@@ -524,9 +526,15 @@ class TestConversationHistory:
         )
 
         assert response.status_code == 200, response.text
-        # Response should not fail due to oversized conversation history
-        content = response.json()["assistant_message"]["content"]
-        assert "stage-one" in content or "not available" in content or "Stage 1 is available" in content
+        final_call = client.app.state.v2_assistant_model_client.calls[-1]
+        assert final_call["conversation_history"] == []
+        prompt = json.loads(final_call["prompt"])
+        reference = prompt["conversation_reference"]
+        assert reference["authority"] == "non_authoritative"
+        assert reference["purpose"] == "reference_resolution_only"
+        assert len(reference["recent_turns"]) == 6
+        assert {turn["role"] for turn in reference["recent_turns"]} == {"user", "assistant"}
+        assert reference["recent_turns"][-2]["content"] == "message number 9"
 
 
 class TestNoSecretsLeak:
