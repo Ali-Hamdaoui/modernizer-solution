@@ -1,7 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
-import { applyStage4TargetVersionChanges, getV2RootPomPreview } from "../../../lib/controlTowerApi";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { applyStage4TargetVersionChanges, getLatestTargetVersionUpdate, getV2RootPomPreview } from "../../../lib/controlTowerApi";
 import type { Stage4TargetVersionApplyResponse } from "../../../lib/contracts";
 
 type ComparisonStatus = "matches" | "different" | "missing_in_pom" | "no_explicit_pom_version" | "blocked";
@@ -26,6 +26,7 @@ type Props = {
   jobId: string;
   comparisonAvailable: boolean;
   rootPomStageIndex?: number;
+  refreshKey?: number;
 };
 
 type PomVersion = {
@@ -43,7 +44,7 @@ type ZipEntry = {
 const TARGET_VERSION_FILE_ACCEPT =
   ".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
-export default function Stage4TargetVersionComparison({ jobId, comparisonAvailable, rootPomStageIndex = 1 }: Props) {
+export default function Stage4TargetVersionComparison({ jobId, comparisonAvailable, rootPomStageIndex = 1, refreshKey = 0 }: Props) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [fileName, setFileName] = useState("");
   const [rows, setRows] = useState<TargetVersionComparisonRow[]>([]);
@@ -51,10 +52,25 @@ export default function Stage4TargetVersionComparison({ jobId, comparisonAvailab
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
   const [applyResult, setApplyResult] = useState<Stage4TargetVersionApplyResponse | null>(null);
+  const [pomChecksum, setPomChecksum] = useState<string | null>(null);
+  const [latestUpdate, setLatestUpdate] = useState<Record<string, unknown> | null>(null);
+  const [latestValidation, setLatestValidation] = useState<Record<string, unknown> | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getLatestTargetVersionUpdate(jobId).then((response) => {
+      if (!cancelled) {
+        setLatestUpdate(response.update);
+        setLatestValidation(response.validation);
+      }
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [jobId, refreshKey]);
 
   async function loadComparison(targetRows: TargetVersionRow[]) {
     const pomPreview = await getV2RootPomPreview(jobId, rootPomStageIndex);
     const pomText = pomPreview.content ?? pomPreview.preview;
+    setPomChecksum(pomPreview.pom_checksum ?? null);
     if (!pomPreview.exists || !pomText.trim()) {
       throw new Error(`Stage ${rootPomStageIndex} root pom.xml is not available yet.`);
     }
@@ -102,6 +118,7 @@ export default function Stage4TargetVersionComparison({ jobId, comparisonAvailab
     try {
       const result = await applyStage4TargetVersionChanges(jobId, rootPomStageIndex, {
         idempotency_key: createIdempotencyKey(),
+        expected_pom_checksum: pomChecksum ?? "",
         changes: candidates.map((row) => ({
           group_id: row.groupId,
           artifact_id: row.artifactId,
@@ -109,6 +126,8 @@ export default function Stage4TargetVersionComparison({ jobId, comparisonAvailab
         })),
       });
       setApplyResult(result);
+      setLatestUpdate({ change_id: result.change_id, status: result.status, applied_count: result.applied_count });
+      setLatestValidation(result.validation_id ? { validation_id: result.validation_id, status: "validation_queued" } : null);
       if (result.applied_count > 0) {
         await loadComparison(rows);
       }
@@ -121,7 +140,12 @@ export default function Stage4TargetVersionComparison({ jobId, comparisonAvailab
 
   const summary = useMemo(() => summarizeComparison(rows), [rows]);
   const applyableCount = rows.filter((row) => row.canApply && row.status === "different").length;
-  const csvInputDisabled = loading || applying || !comparisonAvailable;
+  const workflowActive = ["validation_queued", "running", "repair_review_required"].includes(String(latestUpdate?.status ?? ""));
+  const csvInputDisabled = loading || applying || workflowActive || !comparisonAvailable;
+  const validationStatus = String(latestValidation?.status ?? latestUpdate?.status ?? "");
+  const buildStatus = String(latestValidation?.build_status ?? "");
+  const testStatus = String(latestValidation?.test_status ?? "");
+  const repairStatus = String(latestUpdate?.repair_status ?? "");
 
   return (
     <section className="panel cockpit-panel target-version-panel">
@@ -148,7 +172,7 @@ export default function Stage4TargetVersionComparison({ jobId, comparisonAvailab
         >
           Choisir fichier
         </button>
-        <button type="button" disabled={applying || applyableCount === 0} onClick={() => void handleApplyChanges()}>
+        <button type="button" disabled={applying || workflowActive || !pomChecksum || applyableCount === 0} onClick={() => void handleApplyChanges()}>
           {applying ? "Changing..." : "Change"}
         </button>
       </div>
@@ -156,6 +180,28 @@ export default function Stage4TargetVersionComparison({ jobId, comparisonAvailab
       {fileName && <p className="meta">File: <code>{fileName}</code></p>}
       {loading && <p className="meta">Reading file and latest stage POM...</p>}
       {error && <p className="target-version-error" role="alert">{error}</p>}
+      {latestUpdate && (
+        <div className="target-version-progress" role="status" aria-live="polite">
+          <div className="progress-heading"><strong>Target-version update</strong><span className={`status-badge ${validationStatus === "validated" ? "completed" : validationStatus === "failed" ? "blocked" : "running"}`}>{validationStatus || "applied"}</span></div>
+          <div className="progress-grid">
+            <ProgressRow label="POM changes applied" state="completed" />
+            <ProgressRow label="Validation queued" state={validationStatus === "validation_queued" ? "active" : "completed"} />
+            <ProgressRow label={`Build ${buildStatus ? buildStatus.replaceAll("_", " ").toLowerCase() : "pending"}`} state={buildStatus ? (buildStatus.includes("FAILED") ? "failed" : "completed") : "pending"} />
+            <ProgressRow label={`Tests ${testStatus ? testStatus.replaceAll("_", " ").toLowerCase() : "pending"}`} state={testStatus ? (testStatus.includes("FAIL") ? "failed" : "completed") : "pending"} />
+            {(validationStatus === "repair_review_required" || validationStatus.includes("repair")) && <ProgressRow label="AMF-252 repair review required" state="active" />}
+            {repairStatus === "generation_started" && <ProgressRow label="AI repair generation started" state="active" />}
+            {repairStatus === "proposer_completed" && <ProgressRow label="Proposer completed" state="completed" />}
+            {repairStatus === "reviewer_completed" && <ProgressRow label="Reviewer completed" state="completed" />}
+            {repairStatus === "user_review_required" && <ProgressRow label="User review required" state="active" />}
+            {repairStatus === "repair_applying" && <ProgressRow label="Repair applying" state="active" />}
+            {repairStatus === "repair_validation_running" && <ProgressRow label="Repair validation running" state="active" />}
+            {repairStatus === "validated_after_repair" && <ProgressRow label="Validated after repair" state="completed" />}
+            {validationStatus === "validated" && <ProgressRow label="Validated target-version update" state="completed" />}
+            {validationStatus === "repair_exhausted" && <ProgressRow label="Repair attempts exhausted" state="failed" />}
+          </div>
+          <p className="meta">Counts: {Number(latestUpdate.applied_count ?? 0)} applied · {Number(latestUpdate.skipped_count ?? 0)} skipped · {Number(latestUpdate.blocked_count ?? 0)} blocked</p>
+        </div>
+      )}
       {rows.length > 0 && (
         <>
           <div className="target-version-summary">
@@ -221,6 +267,15 @@ export default function Stage4TargetVersionComparison({ jobId, comparisonAvailab
         .target-version-missing_in_pom td { background: #fff4f4; }
         .target-version-no_explicit_pom_version td, .target-version-blocked td { background: #faf7ff; }
         .target-version-apply-result { border: 1px solid #b7d7c1; border-radius: 6px; background: #f1fbf4; margin-top: 0.75rem; padding: 0.75rem; }
+        .target-version-progress { border: 1px solid #d7e3de; border-left: 4px solid #1f6f43; border-radius: 8px; background: #fbfdfc; margin: 0.85rem 0; padding: 0.85rem; }
+        .progress-heading { align-items: center; display: flex; justify-content: space-between; gap: 0.75rem; }
+        .progress-grid { display: grid; gap: 0.35rem; margin: 0.7rem 0; }
+        .progress-row { align-items: center; display: flex; gap: 0.5rem; font-size: 0.86rem; }
+        .progress-icon { width: 1rem; text-align: center; }
+        .progress-row.active .progress-icon { animation: target-version-pulse 1.2s ease-in-out infinite; color: #a05a00; }
+        .progress-row.failed { color: #9f1d1d; }
+        @keyframes target-version-pulse { 50% { opacity: 0.35; } }
+        @media (prefers-reduced-motion: reduce) { .progress-row.active .progress-icon { animation: none; } }
       `}</style>
     </section>
   );
@@ -632,4 +687,9 @@ function createIdempotencyKey(): string {
     return crypto.randomUUID();
   }
   return `csv-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function ProgressRow({ label, state }: { label: string; state: "completed" | "active" | "pending" | "failed" }) {
+  const icon = state === "completed" ? "✓" : state === "failed" ? "✕" : state === "active" ? "●" : "○";
+  return <div className={`progress-row ${state}`}><span className="progress-icon" aria-hidden="true">{icon}</span><span>{label}</span></div>;
 }

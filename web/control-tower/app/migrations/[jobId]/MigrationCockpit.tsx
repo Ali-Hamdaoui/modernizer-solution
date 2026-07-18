@@ -6,10 +6,7 @@ import {
   askV2Assistant,
   approveV2Card,
   cancelV2MigrationJob,
-  getV2ArtifactPreview,
-  getV2RootPomPreview,
   getV2AssistantMessages,
-  getV2FailureSummary,
   getV2JobEventSnapshot,
   getV2JobApprovals,
   getV2MigrationJob,
@@ -26,7 +23,6 @@ import {
   postV2GateAction,
   requireJobId,
   v2EventStreamUrl,
-  v2RootPomDownloadUrl,
   createIdempotencyKey,
 } from "../../../lib/controlTowerApi";
 import {
@@ -38,9 +34,7 @@ import {
 } from "../../../lib/approvalDebug";
 import type {
   V2ApprovalResponse,
-  V2ArtifactPreviewResponse,
   V2AssistantMessageResponse,
-  V2FailureSummaryResponse,
   V2FinalReportResponse,
   V2JobEvent,
   V2MigrationJobResponse,
@@ -99,7 +93,6 @@ export interface CockpitData {
   messages: V2AssistantMessageResponse[];
   events: V2JobEvent[];
   pipeline: V2PipelineResponse;
-  failureSummary: V2FailureSummaryResponse | null;
   assistantModel: { status: string; source: string; provider: string; role: string; failure_reason?: string } | null;
 }
 
@@ -119,7 +112,6 @@ type LiveRefreshResults = [
   PromiseSettledResult<{ job_id: string; stages: Stage[] }>,
   PromiseSettledResult<{ events: V2JobEvent[] }>,
   PromiseSettledResult<V2PipelineResponse>,
-  PromiseSettledResult<V2FailureSummaryResponse>,
 ];
 
 export function buildStageTimelineEntries(
@@ -163,7 +155,7 @@ export function mergeCockpitLiveRefreshResults(
   current: CockpitData,
   results: LiveRefreshResults,
 ): { data: CockpitData; failed: boolean } {
-  const [approvalsResult, stagesResult, eventsResult, pipelineResult, failureSummaryResult] = results;
+  const [approvalsResult, stagesResult, eventsResult, pipelineResult] = results;
   const failed = results.some((result) => result.status === "rejected");
   return {
     failed,
@@ -173,9 +165,6 @@ export function mergeCockpitLiveRefreshResults(
       stages: stagesResult.status === "fulfilled" ? stagesResult.value.stages : current.stages,
       events: eventsResult.status === "fulfilled" ? eventsResult.value.events : current.events,
       pipeline: pipelineResult.status === "fulfilled" ? pipelineResult.value : current.pipeline,
-      failureSummary: failureSummaryResult.status === "fulfilled"
-        ? failureSummaryResult.value
-        : current.failureSummary,
     },
   };
 }
@@ -1002,10 +991,10 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [approvalBusy, setApprovalBusy] = useState<string | null>(null);
   const [approvalModeBusy, setApprovalModeBusy] = useState(false);
   const [approvalModeError, setApprovalModeError] = useState<string | null>(null);
-  const [artifactPreview, setArtifactPreview] = useState<V2ArtifactPreviewResponse | null>(null);
-  const [artifactPreviewBusy, setArtifactPreviewBusy] = useState<string | null>(null);
   const [streamState, setStreamState] = useState<"connecting" | "connected" | "reconnecting">("connecting");
   const [liveRefreshWarning, setLiveRefreshWarning] = useState<string | null>(null);
+  const [repairRefreshKey, setRepairRefreshKey] = useState(0);
+  const [targetVersionRefreshKey, setTargetVersionRefreshKey] = useState(0);
   const [gateState, setGateState] = useState<GatePanelState>({ status: "loading" });
   const [report, setReport] = useState<V2FinalReportResponse | null>(null);
   const [reportBusy, setReportBusy] = useState(false);
@@ -1025,14 +1014,13 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     async function loadCockpit() {
       try {
         const safeJobId = requireJobId(normalizedJobId);
-        const [job, messagesResponse, approvalsResponse, stagesResponse, eventsResponse, pipelineResponse, failureSummary] = await Promise.all([
+        const [job, messagesResponse, approvalsResponse, stagesResponse, eventsResponse, pipelineResponse] = await Promise.all([
           getV2MigrationJob(safeJobId),
           getV2AssistantMessages(safeJobId),
           getV2JobApprovals(safeJobId),
           getV2MigrationJobStages(safeJobId),
           getV2JobEventSnapshot(safeJobId),
           getV2JobPipeline(safeJobId),
-          getV2FailureSummary(safeJobId).catch(() => null),
         ]);
 
         if (cancelled) return;
@@ -1044,7 +1032,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           messages: messagesResponse.messages,
           events: eventsResponse.events,
           pipeline: pipelineResponse,
-          failureSummary: failureSummary as V2FailureSummaryResponse | null,
           assistantModel: null,
         });
         setError(null);
@@ -1187,6 +1174,41 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       "pom_validation_failed",
       "pom_repair_plan_created",
       "pom_change_rolled_back",
+      // PR-C repair state events
+      "repair_proposal_ready",
+      "repair_proposer_completed",
+      "repair_proposer_unusable",
+      "repair_reviewer_completed",
+      "repair_reviewer_unusable",
+      "repair_cycle_started",
+      "repair_generation_failed",
+      "repair_final_diff_selected",
+      "next_repair_cycle_started",
+      "migration_continuation_queued",
+      "repair_outcome_persisted",
+      "repair_apply_started",
+      "repair_apply_failed",
+      "repair_validation_started",
+      "reviewed_repair_unavailable",
+      "repair_callback_error",
+      "repair_attempts_exhausted",
+      "repair_validation_failed",
+      "repair_validation_passed",
+      "target_version_change_applied",
+      "target_version_validation_queued",
+      "target_version_validation_started",
+      "target_version_build_started",
+      "target_version_build_passed",
+      "target_version_build_failed",
+      "target_version_tests_started",
+      "target_version_test_blocked",
+      "target_version_tests_passed",
+      "target_version_tests_failed",
+      "target_version_validation_passed",
+      "target_version_validation_failed",
+      "target_version_repair_required",
+      "target_version_repair_exhausted",
+      "target_version_update_validated",
     ]) {
       source.addEventListener(type, (event) => {
         appendEventFromSse((event as MessageEvent).data);
@@ -1240,6 +1262,12 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         void refreshGateState().catch(() => {
           // keep existing gate state on refresh failure
         });
+      }
+      if (AMF252_REPAIR_EVENTS.has(event.type)) {
+        setRepairRefreshKey((k) => k + 1);
+      }
+      if (TARGET_VERSION_EVENTS.has(event.type)) {
+        setTargetVersionRefreshKey((k) => k + 1);
       }
     } catch {
       setStreamState("reconnecting");
@@ -1342,14 +1370,13 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   async function refreshLiveState() {
     if (!normalizedJobId) return;
     const safeJobId = requireJobId(normalizedJobId);
-    const [approvalsResult, stagesResult, eventsResult, pipelineResult, failureSummaryResult] = await Promise.allSettled([
+    const [approvalsResult, stagesResult, eventsResult, pipelineResult] = await Promise.allSettled([
       getV2JobApprovals(safeJobId),
       getV2MigrationJobStages(safeJobId),
       getV2JobEventSnapshot(safeJobId),
       getV2JobPipeline(safeJobId),
-      getV2FailureSummary(safeJobId),
     ]) as LiveRefreshResults;
-    const failed = [approvalsResult, stagesResult, eventsResult, pipelineResult, failureSummaryResult]
+    const failed = [approvalsResult, stagesResult, eventsResult, pipelineResult]
       .some((result) => result.status === "rejected");
     setLiveRefreshWarning(failed ? "Live refresh temporarily failed. Retrying..." : null);
     setData((current) => {
@@ -1360,7 +1387,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         stagesResult,
         eventsResult,
         pipelineResult,
-        failureSummaryResult,
       ]);
       logApprovalDecisionsAfter(merged.data.approvals);
       return merged.data;
@@ -1427,52 +1453,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       setError(e instanceof Error ? e.message : "Rejection failed");
     } finally {
       setApprovalBusy(null);
-    }
-  }
-
-  async function previewArtifact(artifactKind: string) {
-    if (!normalizedJobId) return;
-    setArtifactPreviewBusy(artifactKind);
-    try {
-      const preview = await getV2ArtifactPreview(normalizedJobId, artifactKind);
-      setArtifactPreview(preview);
-    } catch (e) {
-      setArtifactPreview({
-        job_id: normalizedJobId,
-        artifact_kind: artifactKind,
-        exists: false,
-        preview: "",
-        truncated: false,
-        content_type: "text/plain",
-      });
-    } finally {
-      setArtifactPreviewBusy(null);
-    }
-  }
-
-  async function previewRootPom(stageIndex: number) {
-    if (!normalizedJobId) return;
-    const busyKey = `root_pom:${stageIndex}`;
-    setArtifactPreviewBusy(busyKey);
-    try {
-      const preview = await getV2RootPomPreview(normalizedJobId, stageIndex);
-      setArtifactPreview(preview);
-    } catch (e) {
-      setArtifactPreview({
-        job_id: normalizedJobId,
-        artifact_kind: "root_pom",
-        source_type: "file_alias",
-        file_alias: "root_pom",
-        stage_index: stageIndex,
-        exists: false,
-        preview: "",
-        truncated: false,
-        content_type: "application/xml",
-        download_url: null,
-        reason: "not_available",
-      });
-    } finally {
-      setArtifactPreviewBusy(null);
     }
   }
 
@@ -1654,250 +1634,9 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         onReject={(card) => void rejectCard(card)}
       />
 
-      {/* Failure Summary Panel */}
-      {data.failureSummary?.has_failures && (
-        <section className="panel failure-panel">
-          <h2>Failure & Repair</h2>
-          {data.failureSummary.failures.map((f, i) => (
-            <div key={i} className={`failure-card ${f.type === "result_contract_failed" ? "contract-failure-card" : ""}`}>
-              <div className="stage-header">
-                <strong>{f.type === "result_contract_failed" ? "Control Tower Contract Failure" : f.type}</strong>
-                <span className="meta">Stage {f.stage ?? "?"}</span>
-                <span className="status-badge failed">FAILED</span>
-              </div>
-              <p>{f.message}</p>
-              {f.result_kind && f.type !== "result_contract_failed" && (
-                <p className="meta">
-                  <strong>Root cause:</strong>{" "}
-                  {f.result_kind.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase())}
-                </p>
-              )}
-              {f.type === "result_contract_failed" && (
-                <>
-                  {f.exit_code != null && <p className="meta"><strong>Exit code:</strong> {f.exit_code}</p>}
-                  {f.final_json_found != null && <p className="meta"><strong>Final JSON found:</strong> {String(f.final_json_found)}</p>}
-                  {f.parse_strategy && <p className="meta"><strong>Parse strategy:</strong> {f.parse_strategy}</p>}
-                  {f.stdout_tail && (
-                    <details>
-                      <summary>stdout tail</summary>
-                      <pre className="raw-log-line">{f.stdout_tail}</pre>
-                    </details>
-                  )}
-                  {f.stderr_tail && (
-                    <details>
-                      <summary>stderr tail</summary>
-                      <pre className="raw-log-line">{f.stderr_tail}</pre>
-                    </details>
-                  )}
-                </>
-              )}
-              {f.matched_line && f.type !== "result_contract_failed" && (
-                <pre className="raw-log-line">{f.matched_line}</pre>
-              )}
-              {f.command.length > 0 && f.type !== "result_contract_failed" && (
-                <p className="meta">Command: <code>{f.command.join(" ")}</code></p>
-              )}
-              {f.build_tool && f.type !== "result_contract_failed" && <p className="meta">Tool: {f.build_tool}</p>}
-              {f.module && f.type !== "result_contract_failed" && <p className="meta">Module: {f.module}</p>}
-              {f.main_class && f.type !== "result_contract_failed" && <p className="meta">Main: {f.main_class}</p>}
-              {f.unit_id && f.type !== "result_contract_failed" && <p className="meta">Unit: {f.unit_id}</p>}
-              {f.java_home && f.type !== "result_contract_failed" && <p className="meta">JAVA_HOME: {f.java_home}</p>}
-              {(f.detected_version || f.required_minimum) && f.type !== "result_contract_failed" && (
-                <p className="meta">
-                  Java: {f.detected_version || "?"} → required {f.required_minimum || "?"}
-                </p>
-              )}
-              {f.build_status && f.type !== "result_contract_failed" && <p className="meta">Build: {f.build_status}</p>}
-              {f.final_status && f.type !== "result_contract_failed" && <p className="meta">Final: {f.final_status}</p>}
-              {f.final_proof_level && f.type !== "result_contract_failed" && <p className="meta">Proof level: {f.final_proof_level}</p>}
-              {f.repair_loop_status && f.type !== "result_contract_failed" && <p className="meta">Repair: {f.repair_loop_status}</p>}
-              {f.test_status && f.type !== "result_contract_failed" && <p className="meta">Test: {f.test_status}</p>}
-              {f.stage != null && (
-                <div className="file-alias-actions">
-                  <button
-                    type="button"
-                    disabled={artifactPreviewBusy === `root_pom:${f.stage}`}
-                    onClick={() => void previewRootPom(f.stage as number)}
-                  >
-                    View full POM
-                  </button>
-                  <a href={normalizedJobId ? v2RootPomDownloadUrl(normalizedJobId, f.stage) : "#"}>
-                    Download full POM
-                  </a>
-                  {artifactPreviewBusy === `root_pom:${f.stage}` ? <span className="meta"> loading...</span> : null}
-                </div>
-              )}
-              {f.next_operator_action && (
-                <div className="operator-action">
-                  <strong>Next action:</strong>
-                  <p className="meta">{f.next_operator_action}</p>
-                </div>
-              )}
-              {f.supervision_trace && (
-                <div className="supervision-trace">
-                  <h3>AI Supervision</h3>
-                  {f.supervision_trace.ai_diagnosis ? (
-                    <div className="trace-section">
-                      <strong>AI Diagnosis</strong>
-                      <p className="meta">Diagnosis: {f.supervision_trace.ai_diagnosis.diagnosis_id}</p>
-                      <p className="meta">Failure: {f.supervision_trace.ai_diagnosis.failure_type}</p>
-                      <p className="checksum">Context pack: {f.supervision_trace.ai_diagnosis.context_pack_checksum}</p>
-                      {f.supervision_trace.ai_diagnosis.repair_proposal_id && (
-                        <p className="meta">Proposal: {f.supervision_trace.ai_diagnosis.repair_proposal_id}</p>
-                      )}
-                      <p className="meta">Redaction: {f.supervision_trace.ai_diagnosis.redaction_status || "unknown"}</p>
-                    </div>
-                  ) : (
-                    <p className="meta">No backend AI diagnosis record.</p>
-                  )}
-
-                  {f.supervision_trace.evidence_used.length > 0 && (
-                    <div className="trace-section">
-                      <strong>Evidence Used by AI</strong>
-                      <ul className="meta">
-                        {f.supervision_trace.evidence_used.map((ref) => <li key={ref}>{ref}</li>)}
-                      </ul>
-                    </div>
-                  )}
-
-                  {f.supervision_trace.pom_analysis && (
-                    <div className="trace-section">
-                      <strong>POM Analysis</strong>
-                      <p className="meta">Summary: {f.supervision_trace.pom_analysis.pom_summary_ref}</p>
-                      {f.supervision_trace.pom_analysis.spring_boot_version && (
-                        <p className="meta">Spring Boot: {f.supervision_trace.pom_analysis.spring_boot_version}</p>
-                      )}
-                      {f.supervision_trace.pom_analysis.java_version && (
-                        <p className="meta">Java: {f.supervision_trace.pom_analysis.java_version}</p>
-                      )}
-                      {f.supervision_trace.pom_analysis.candidate_rules.length > 0 && (
-                        <p className="meta">Rules: {f.supervision_trace.pom_analysis.candidate_rules.join(", ")}</p>
-                      )}
-                    </div>
-                  )}
-
-                  {f.supervision_trace.repair_proposal && (
-                    <div className="trace-section">
-                      <strong>Repair Proposal</strong>
-                      <p className="meta">Proposal: {f.supervision_trace.repair_proposal.proposal_id}</p>
-                      {f.supervision_trace.repair_proposal.source_proposal_id && (
-                        <p className="meta">Revision of: {f.supervision_trace.repair_proposal.source_proposal_id}</p>
-                      )}
-                      {f.supervision_trace.repair_proposal.allowed_scope && (
-                        <p className="meta">Scope: {f.supervision_trace.repair_proposal.allowed_scope}</p>
-                      )}
-                      {f.supervision_trace.repair_proposal.proposal_checksum && (
-                        <p className="checksum">Proposal checksum: {f.supervision_trace.repair_proposal.proposal_checksum}</p>
-                      )}
-                    </div>
-                  )}
-
-                  {f.supervision_trace.reviewer_verdict && (
-                    <div className="trace-section">
-                      <strong>Reviewer Verdict</strong>
-                      <p className="meta">Decision: {f.supervision_trace.reviewer_verdict.decision}</p>
-                      <p className="meta">{f.supervision_trace.reviewer_verdict.reasoning}</p>
-                      <p className="checksum">Reviewed checksum: {f.supervision_trace.reviewer_verdict.proposal_checksum}</p>
-                    </div>
-                  )}
-
-                  {f.supervision_trace.validation_result && (
-                    <div className="trace-section">
-                      <strong>Validation Result</strong>
-                      {f.supervision_trace.validation_result.patch_gate_status && (
-                        <p className="meta">Patch gate: {f.supervision_trace.validation_result.patch_gate_status}</p>
-                      )}
-                      {f.supervision_trace.validation_result.deterministic_rule_id && (
-                        <p className="meta">Rule: {f.supervision_trace.validation_result.deterministic_rule_id}</p>
-                      )}
-                      {f.supervision_trace.validation_result.build_status && (
-                        <p className="meta">Build: {f.supervision_trace.validation_result.build_status}</p>
-                      )}
-                      {f.supervision_trace.validation_result.test_status && (
-                        <p className="meta">Test: {f.supervision_trace.validation_result.test_status}</p>
-                      )}
-                      {f.supervision_trace.validation_result.h2_status && (
-                        <p className="meta">H2: {f.supervision_trace.validation_result.h2_status}</p>
-                      )}
-                      {f.supervision_trace.validation_result.rollback_status && (
-                        <p className="meta">Rollback: {f.supervision_trace.validation_result.rollback_status}</p>
-                      )}
-                      {f.supervision_trace.validation_result.ledger_ref && (
-                        <p className="checksum">Ledger: {f.supervision_trace.validation_result.ledger_ref}</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-          {data.failureSummary.repair_loop_active && (
-            <div className="repair-card">
-              <strong>Repair Active</strong>
-              {data.failureSummary.repair_events.map((r, i) => (
-                <p key={i} className="meta">{r.type}: {r.message}</p>
-              ))}
-            </div>
-          )}
-          {data.failureSummary.artifact_kinds.length > 0 && (
-            <div className="artifact-kinds">
-              <strong>Generated artifact kinds:</strong>
-              <ul className="meta">
-                {data.failureSummary.artifact_kinds.map((k, i) => (
-                  <li key={i}>
-                    <button
-                      type="button"
-                      className="artifact-kind-link"
-                      disabled={artifactPreviewBusy === k}
-                      onClick={() => void previewArtifact(k)}
-                    >
-                      {artifactKindLabel(k)}
-                    </button>
-                    {artifactPreviewBusy === k ? " loading..." : ""}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {artifactPreview && (
-            <div className="artifact-preview">
-              <strong>
-                {artifactPreview.source_type === "file_alias"
-                  ? `Full POM: Stage ${artifactPreview.stage_index ?? "?"}`
-                  : `Artifact Preview: ${artifactKindLabel(artifactPreview.artifact_kind)}`}
-              </strong>
-              {artifactPreview.exists ? (
-                <>
-                  <p className="meta">
-                    {artifactPreview.truncated ? "Preview truncated (32 KB limit)." : "Full preview."}
-                    {artifactPreview.source_ref?.command_id ? ` Source command: ${artifactPreview.source_ref.command_id}` : ""}
-                    {artifactPreview.source_ref?.event_id ? ` Source event: ${artifactPreview.source_ref.event_id}` : ""}
-                  </p>
-                  <pre className="artifact-preview-content">{artifactPreview.content ?? artifactPreview.preview}</pre>
-                  {artifactPreview.download_url && normalizedJobId && (
-                    <p>
-                      <a href={v2RootPomDownloadUrl(normalizedJobId, artifactPreview.stage_index ?? 1)}>
-                        Download full POM
-                      </a>
-                    </p>
-                  )}
-                </>
-              ) : (
-                <p className="meta">
-                  {artifactPreview.source_type === "file_alias"
-                    ? `Full POM is not available yet${artifactPreview.reason ? `: ${artifactPreview.reason.replace(/_/g, " ")}` : "."}`
-                    : "Artifact not available or not yet persisted."}
-                </p>
-              )}
-              <button type="button" onClick={() => setArtifactPreview(null)}>Close</button>
-            </div>
-          )}
-        </section>
-      )}
-
       {/* PR-C — Repair Proposal Panel */}
       {normalizedJobId && (
-        <RepairProposalPanel jobId={normalizedJobId} />
+        <RepairProposalPanel jobId={normalizedJobId} repairRefreshKey={repairRefreshKey} onContinuationRefresh={refreshLiveState} />
       )}
 
       {/* Assistant Panel */}
@@ -1956,6 +1695,7 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
             jobId={normalizedJobId || jobId || ""}
             comparisonAvailable={targetVersionComparisonStageIndex != null}
             rootPomStageIndex={targetVersionComparisonStageIndex ?? 1}
+            refreshKey={targetVersionRefreshKey}
           />
         </section>
       )}
@@ -2027,25 +1767,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         .assistant-composer button:disabled { color: #777; border-color: #bbb; }
         .assistant-error { border: 1px solid #c98300; background: #fff8ea; color: #7a4a00; padding: 0.65rem 0.75rem; border-radius: 4px; margin: 0.5rem 0 0.75rem; }
         .message-content { margin: 0.25rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
-        .failure-panel { border-color: #a40000; background: #fffafa; }
-        .failure-card { border: 1px solid #ffcccc; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
-        .failure-card .meta { margin: 0.2rem 0; }
-        .contract-failure-card { border: 1px solid #cc8800; background: #fffaf0; }
-        .contract-failure-card .meta { margin: 0.2rem 0; }
-        .supervision-trace { border-top: 1px solid #f1c0c0; margin-top: 0.75rem; padding-top: 0.75rem; }
-        .supervision-trace h3 { margin: 0 0 0.5rem 0; font-size: 1rem; }
-        .trace-section { border-left: 3px solid #6b7a90; padding-left: 0.6rem; margin-top: 0.6rem; }
-        .trace-section ul { margin: 0.25rem 0 0 1rem; padding: 0; }
-        .repair-card { border: 1px solid #ffcc66; background: #fffdf0; padding: 0.75rem; margin: 0.5rem 0; border-radius: 4px; }
-        .file-alias-actions { display: flex; align-items: center; gap: 0.6rem; margin: 0.5rem 0; }
-        .file-alias-actions button { padding: 0.35rem 0.6rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
-        .file-alias-actions button:disabled { color: #777; border-color: #bbb; }
-        .artifact-kinds { border: 1px solid #ddd; padding: 0.5rem; margin: 0.5rem 0; }
-        .artifact-kind-link { background: none; border: none; color: #0066cc; cursor: pointer; text-decoration: underline; font-size: 0.85rem; padding: 0; }
-        .artifact-kind-link:hover { color: #004499; }
-        .artifact-kind-link:disabled { color: #888; cursor: wait; text-decoration: none; }
-        .artifact-preview { border: 1px solid #0066cc; background: #f0f6ff; padding: 1rem; margin: 0.75rem 0; border-radius: 4px; }
-        .artifact-preview-content { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 400px; overflow-y: auto; background: #fff; padding: 0.5rem; border: 1px solid #ddd; font-size: 0.8rem; }
         .report-artifact-row { display: flex; gap: 0.5rem; align-items: center; padding: 0.35rem 0; border-bottom: 1px solid #eee; }
         .report-artifact-row a { color: #0066cc; text-decoration: underline; font-size: 0.85rem; }
         @media (max-width: 900px) {
@@ -2059,12 +1780,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       `}</style>
     </div>
   );
-}
-
-function artifactKindLabel(kind: string): string {
-  if (kind === "rewrite_dry_run.patch") return "rewrite dry run diff/proposed changes";
-  if (kind.endsWith(".patch")) return `${kind} diff/proposed changes`;
-  return kind;
 }
 
 /** Recompute stage status for every stage using ALL events so far
@@ -2145,6 +1860,7 @@ export function formatStageStatusLabel(status: string): string {
 export function reduceStageStatus(events: V2JobEvent[], stageIndex?: number): string {
   let current = "pending";
   for (const event of events) {
+    if (event.type.startsWith("target_version_")) continue;
     if (event.type === "next_stage_queued" && stageIndex != null) {
       const payload = event.payload ?? {};
       const fromStage = Number(payload.from_stage ?? 0);
@@ -2214,4 +1930,81 @@ const IMPORTANT_SSE_TYPES = new Set([
   "pom_validation_failed",
   "pom_repair_plan_created",
   "pom_change_rolled_back",
+  // PR-C repair state events
+  "repair_proposal_ready",
+      "repair_cycle_started",
+      "repair_proposer_completed",
+      "repair_proposer_unusable",
+      "repair_reviewer_completed",
+      "repair_reviewer_unusable",
+  "repair_generation_failed",
+  "repair_final_diff_selected",
+  "next_repair_cycle_started",
+  "migration_continuation_queued",
+  "repair_outcome_persisted",
+  "repair_apply_started",
+  "repair_apply_failed",
+  "repair_validation_started",
+  "reviewed_repair_unavailable",
+  "repair_callback_error",
+  "repair_attempts_exhausted",
+  "repair_validation_failed",
+  "repair_validation_passed",
+  "repair_completed",
+  "target_version_change_applied",
+  "target_version_validation_queued",
+  "target_version_validation_started",
+  "target_version_build_started",
+  "target_version_build_passed",
+  "target_version_build_failed",
+  "target_version_tests_started",
+  "target_version_test_blocked",
+  "target_version_tests_passed",
+  "target_version_tests_failed",
+  "target_version_validation_passed",
+  "target_version_validation_failed",
+  "target_version_repair_required",
+  "target_version_repair_exhausted",
+  "target_version_update_validated",
+]);
+
+const AMF252_REPAIR_EVENTS = new Set([
+  "repair_proposal_ready",
+  "repair_cycle_started",
+  "repair_proposer_completed",
+  "repair_proposer_unusable",
+  "repair_reviewer_completed",
+  "repair_reviewer_unusable",
+  "repair_generation_failed",
+  "repair_final_diff_selected",
+  "next_repair_cycle_started",
+  "migration_continuation_queued",
+  "repair_outcome_persisted",
+  "repair_apply_started",
+  "repair_apply_failed",
+  "repair_validation_started",
+  "reviewed_repair_unavailable",
+  "repair_callback_error",
+  "repair_attempts_exhausted",
+  "repair_validation_failed",
+  "repair_validation_passed",
+  "repair_completed",
+]);
+
+const TARGET_VERSION_EVENTS = new Set([
+  "target_version_change_applied",
+  "target_version_validation_queued",
+  "target_version_validation_started",
+  "target_version_build_started",
+  "target_version_build_passed",
+  "target_version_build_failed",
+  "target_version_tests_started",
+  "target_version_test_blocked",
+  "target_version_tests_passed",
+  "target_version_tests_failed",
+  "target_version_validation_passed",
+  "target_version_validation_failed",
+  "target_version_repair_required",
+  "target_version_repair_exhausted",
+  "target_version_update_validated",
 ]);

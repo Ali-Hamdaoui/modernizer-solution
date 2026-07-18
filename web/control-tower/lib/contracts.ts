@@ -791,6 +791,7 @@ export type V2ArtifactPreviewResponse = {
   content_type: string;
   download_url?: string | null;
   source_ref?: Record<string, string> | null;
+  pom_checksum?: string | null;
   reason?: string | null;
 };
 
@@ -915,6 +916,7 @@ export type PomView = {
   redaction_applied: boolean;
   detected_baseline: PomBaseline | null;
   reason?: string | null;
+  pom_checksum?: string | null;
 };
 
 export type PomChangeRecordSummary = {
@@ -973,6 +975,16 @@ export type Stage4TargetVersionApplyResponse = {
   blocked_count: number;
   items: Stage4TargetVersionApplyItem[];
   blockers: string[];
+  change_id?: string | null;
+  validation_id?: string | null;
+  status?: string;
+  validation?: Record<string, unknown> | null;
+};
+
+export type TargetVersionUpdateStatusResponse = {
+  job_id: string;
+  update: Record<string, unknown> | null;
+  validation: Record<string, unknown> | null;
 };
 
 // ── F15 Gate types (jobs 101-117) ──────────────────────────────────────
@@ -1209,6 +1221,7 @@ export type SafeDiffPreview = {
   total_deletions: number;
   truncated: boolean;
   checksum_mismatch: boolean;
+  parse_status?: string;
   redactions: string[];
 };
 
@@ -1251,16 +1264,34 @@ export type ReviewedDiffProposal = {
   required_validation: string[];
   allowed_actions: string[];
   redactions: string[];
+  apply_status?: string | null;
+  rerun_status?: string | null;
+  validation_proof_status?: string | null;
+  final_diff_source?: "reviewer" | "proposer_fallback" | "proposer_fallback_reviewer_unavailable" | null;
+  generation_status?: string | null;
+  generation_reason?: string | null;
+};
+
+export type RepairState = {
+  attempted: boolean;
+  status: "not_attempted" | "running" | "unavailable" | "ready" | "attempts_exhausted" | "blocked" | "error";
+  reason_code?: string | null;
+  detail?: string | null;
+  event_type?: string | null;
+  created_at?: string | null;
+  allowed_actions: string[];
 };
 
 export type RepairProposalCurrentResponse = {
   proposal: ReviewedDiffProposal | null;
   job_id: string;
+  repair_state?: RepairState | null;
 };
 
 export type RepairProposalDetailResponse = {
   proposal: ReviewedDiffProposal | null;
   job_id: string;
+  repair_state?: RepairState | null;
 };
 
 export type RepairProposalDiffResponse = {
@@ -1290,12 +1321,27 @@ export type RepairAttemptSummary = {
   status_reason: string | null;
   created_at: string;
   completed_at: string | null;
+  validation_proof_status?: string | null;
+  final_diff_source?: "reviewer" | "proposer_fallback" | "proposer_fallback_reviewer_unavailable" | null;
 };
 
 export type RepairAttemptsResponse = {
   attempts: RepairAttemptSummary[];
   job_id: string;
 };
+
+export function formatFinalDiffSource(
+  source: ReviewedDiffProposal["final_diff_source"] | string | null | undefined,
+): string {
+  switch (source) {
+    case "reviewer": return "Reviewer";
+    case "proposer_fallback":
+    case "proposer_fallback_reviewer_unavailable": return "Proposer fallback";
+    case null:
+    case undefined: return "Source pending";
+    default: return "Unknown";
+  }
+}
 
 // ── PR-D — User Revision Request types ───────────────────────────────────
 
@@ -1321,10 +1367,13 @@ export type RepairProposalRevisionResponse = {
 export type RepairProposalApproveRequest = {
   proposal_id: string;
   diff_checksum: string;
-  reviewer_verdict_id: string;
-  gate_id: string;
-  expected_gate_checksum?: string;
-  idempotency_key?: string;
+  idempotency_key: string;
+};
+
+export type RepairProposalRejectRequest = {
+  proposal_id: string;
+  reason?: string;
+  idempotency_key: string;
 };
 
 export type RepairProposalApproveResponse = {
@@ -1338,6 +1387,22 @@ export type RepairProposalApproveResponse = {
   rollback_status: string;
   remaining_attempts: number;
   allowed_next_actions: string[];
+  apply_succeeded?: boolean;
+  validation_succeeded?: boolean;
+  continuation_status?: string;
+  continuation_failure_code?: string | null;
+  continuation_retryable?: boolean;
+};
+
+export type RepairProposalContinueResponse = {
+  job_id: string;
+  proposal_id: string;
+  status: string;
+  reason: string;
+  continuation_id: string;
+  command_id: string | null;
+  from_stage: number;
+  to_stage: number;
 };
 
 export const PROFILE_BY_ID: Record<MigrationProfileId, MigrationProfileOption> =
@@ -1453,3 +1518,57 @@ export type GateEvidencePack = {
   redaction_status: string;
   created_at: string;
 };
+
+// ── RA — Repair Assistant Chat types ─────────────────────────────────────
+
+export type RepairAssistantAction = "ANSWER_ONLY" | "REQUEST_REVISION" | "CLARIFICATION_REQUIRED" | "error" | "blocked" | "revision_failed";
+
+export type RepairAssistantMessageStatus = "answered" | "clarification_required" | "revision_generating" | "revision_created" | "revision_failed" | "blocked" | "error";
+
+export interface RepairAssistantMessage {
+  message_id: string;
+  job_id: string;
+  proposal_id: string;
+  role: "user" | "assistant";
+  message: string;
+  action?: RepairAssistantAction | null;
+  status?: RepairAssistantMessageStatus | null;
+  created_at: string;
+  failure_stage?: string | null;
+  failure_code?: string | null;
+  safe_failure_message?: string | null;
+  correlation_id?: string | null;
+}
+
+export interface RepairAssistantMessagesListResponse {
+  messages: RepairAssistantMessage[];
+}
+
+export interface RepairAssistantIntent {
+  user_instruction: string;
+  resolved_instruction: string;
+  constraints: string[];
+  target_files: string[];
+}
+
+export interface RepairAssistantSendRequest {
+  message: string;
+  idempotency_key: string;
+  base_diff_checksum: string;
+}
+
+export interface RepairAssistantSendResponse {
+  message_id: string;
+  assistant_message: string;
+  action: RepairAssistantAction;
+  revision_intent?: RepairAssistantIntent | null;
+  revision_started: boolean;
+  new_proposal_id?: string | null;
+  new_attempt_number?: number | null;
+  new_diff_checksum?: string | null;
+  status: RepairAssistantMessageStatus;
+  failure_stage?: string | null;
+  failure_code?: string | null;
+  safe_failure_message?: string | null;
+  correlation_id?: string | null;
+}

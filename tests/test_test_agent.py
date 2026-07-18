@@ -177,3 +177,28 @@ def test_test_agent_skipped_only_is_pass(tmp_path: Path) -> None:
 
     assert result.test_status == "TEST_PASSED"
     assert result.totals["passed"] == 0
+
+
+def test_test_agent_build_failed_with_surefire_reports_still_parses_reports(tmp_path: Path) -> None:
+    sandbox = tmp_path / "sandbox"
+    reports = sandbox / "target" / "surefire-reports"
+    reports.mkdir(parents=True)
+    (reports / "TEST-A.xml").write_text(
+        '<testsuite tests="4" failures="1" errors="0" skipped="0"></testsuite>',
+        encoding="utf-8",
+    )
+
+    result = run_test_agent(
+        sandbox_path=sandbox,
+        run_dir=tmp_path / "run",
+        run_id="run-001",
+        source_log_path=tmp_path / "phase2.log",
+        build_status="BUILD_FAILED_IN_SANDBOX",
+        build_exit_code=1,
+    )
+
+    assert result.test_status == "TEST_FAILED"
+    assert result.totals == {"tests": 4, "passed": 3, "failures": 1, "errors": 0, "skipped": 0}
+    payload = json.loads(result.report_path.read_text(encoding="utf-8"))
+    assert payload["report_paths"] == [str(reports / "TEST-A.xml")]
+    assert payload["reason"] == "SUREFIRE_REPORTS_CONTAIN_FAILURES"

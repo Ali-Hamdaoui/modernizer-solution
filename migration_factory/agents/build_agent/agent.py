@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 import logging
 from pathlib import Path
 import os
@@ -43,6 +44,8 @@ class BuildEnvironmentGateFailure:
     required_minimum: str | None = None
     profile: str | None = None
     target_unit: str | None = None
+    stdout: list[str] = field(default_factory=list)
+    stderr: list[str] = field(default_factory=list)
 
 
 def run_build_agent(
@@ -61,6 +64,7 @@ def run_build_agent(
     validation_command: str | list[str] | tuple[str, ...] | None = None,
     source_jdk_home_env: str | None = None,
     target_jdk_home_env: str | None = None,
+    execution_env: Mapping[str, str] | None = None,
 ) -> BuildRunResult:
     project_root = Path(project_path).expanduser().resolve()
     resolved_output_dir = _resolve_output_dir(output_dir)
@@ -108,11 +112,17 @@ def run_build_agent(
         validation_unit_id,
         source_jdk_home_env=source_jdk_home_env,
         target_jdk_home_env=target_jdk_home_env,
+        execution_env=execution_env,
     )
-    command_env = _build_command_env(java_home)
-    gate_failure = _target_environment_gate(project, validation_unit_id, explicit_command, env=command_env)
+    command_env = _build_command_env(java_home, execution_env=execution_env)
+    gate_failure = _target_environment_gate(project, validation_unit_id, explicit_command, env=command_env, java_home=java_home)
     if gate_failure is not None:
         classification = command_error_classification(gate_failure.message)
+        gate_diagnostics = command_diagnostics(
+            [_java_bin_executable(java_home), "-version"],
+            [_java_bin_executable(java_home), "-version"],
+            env=command_env,
+        ) if command_env is not None else {}
         contract = build_error_contract(
             project_path=project.path,
             cwd=project.path,
@@ -124,8 +134,8 @@ def run_build_agent(
             exit_code=None,
             module=module,
             main_class=main_class,
-            stdout=[],
-            stderr=[],
+            stdout=gate_failure.stdout,
+            stderr=gate_failure.stderr,
             unit_id=validation_unit_id,
             java_home=java_home,
             java_home_env=java_env_name,
@@ -133,6 +143,7 @@ def run_build_agent(
             required_minimum=gate_failure.required_minimum,
             profile=gate_failure.profile,
             target_unit=gate_failure.target_unit,
+            diagnostics=gate_diagnostics,
         )
         error_path = write_build_error(contract, resolved_output_dir)
         build_result = BuildRunResult(
@@ -356,6 +367,7 @@ def _java_runtime_for_unit(
     *,
     source_jdk_home_env: str | None,
     target_jdk_home_env: str | None,
+    execution_env: Mapping[str, str] | None = None,
 ) -> tuple[str | None, str | None]:
     env_name = None
     if validation_unit_id == "baseline":
@@ -364,17 +376,45 @@ def _java_runtime_for_unit(
         env_name = target_jdk_home_env
     if not env_name:
         return None, None
+    if execution_env is not None:
+        java_home = execution_env.get(env_name)
+        if isinstance(java_home, str) and java_home:
+            return env_name, java_home
     java_home = os.environ.get(env_name)
     return env_name, java_home if java_home else None
 
 
-def _build_command_env(java_home: str | None) -> dict[str, str] | None:
-    if not java_home:
+def _build_command_env(
+    java_home: str | None,
+    *,
+    execution_env: Mapping[str, str] | None = None,
+) -> dict[str, str] | None:
+    if execution_env is not None:
+        env = {str(key): str(value) for key, value in execution_env.items()}
+    elif java_home:
+        env = os.environ.copy()
+    else:
         return None
-    env = os.environ.copy()
+    if not java_home:
+        return env
+
     env["JAVA_HOME"] = java_home
-    env["PATH"] = str(Path(java_home) / "bin") + os.pathsep + env.get("PATH", "")
+    java_bin = str(Path(java_home) / "bin")
+    path_entries = [entry for entry in env.get("PATH", "").split(os.pathsep) if entry]
+    java_bin_key = os.path.normcase(os.path.normpath(java_bin))
+    path_entries = [
+        entry for entry in path_entries
+        if os.path.normcase(os.path.normpath(entry)) != java_bin_key
+    ]
+    env["PATH"] = os.pathsep.join([java_bin, *path_entries])
     return env
+
+
+def _java_bin_executable(java_home: str | None) -> str:
+    if java_home is None:
+        return "java"
+    java_exe = "java.exe" if os.name == "nt" else "java"
+    return str(Path(java_home) / "bin" / java_exe)
 
 
 def _target_environment_gate(
@@ -383,19 +423,28 @@ def _target_environment_gate(
     validation_command: list[str] | None = None,
     *,
     env: dict[str, str] | None = None,
+    java_home: str | None = None,
 ) -> BuildEnvironmentGateFailure | None:
     if not validation_unit_id:
         return None
     target_java = _target_java_for_unit(validation_unit_id)
     boot4 = "spring-boot-4-0" in validation_unit_id
     if target_java is not None and target_java >= 21:
-        java_result = _run_version_command(["java", "-version"], env=env)
+        java_exe = _java_bin_executable(java_home)
+        java_result = _run_version_command([java_exe, "-version"], env=env)
         java_major = _parse_java_major("\n".join([*java_result.stderr, *java_result.stdout]))
         if java_result.exit_code != 0 or java_major is None:
-            return BuildEnvironmentGateFailure(f"Java runtime version check failed for target Java {target_java}.")
+            return BuildEnvironmentGateFailure(
+                f"Java runtime version check failed for target Java {target_java}.",
+                stdout=java_result.stdout,
+                stderr=java_result.stderr,
+            )
         if java_major < target_java:
             return BuildEnvironmentGateFailure(
-                f"Java runtime {java_major} is incompatible with target Java {target_java}."
+                f"Java runtime {java_major} is incompatible with target Java {target_java}.",
+                detected_version=str(java_major),
+                stdout=java_result.stdout,
+                stderr=java_result.stderr,
             )
     if boot4 and project.build_tool == BuildTool.MAVEN:
         maven_command = _maven_version_executable(project, validation_command)

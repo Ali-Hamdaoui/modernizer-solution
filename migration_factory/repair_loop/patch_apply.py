@@ -38,7 +38,14 @@ def apply_patch_to_sandbox(
     repairs_dir = run_path / "repairs"
     repairs_dir.mkdir(parents=True, exist_ok=True)
     patch_path = repairs_dir / f"patch_attempt_{attempt}.diff"
-    patch_path.write_text(unified_diff.rstrip() + "\n", encoding="utf-8")
+    patch_bytes = unified_diff.encode("utf-8")
+    if not patch_bytes.endswith(b"\n"):
+        if patch_bytes.endswith(b"\r"):
+            patch_bytes += b"\n"
+        else:
+            newline = b"\r\n" if b"\r\n" in patch_bytes else b"\n"
+            patch_bytes += newline
+    patch_path.write_bytes(patch_bytes)
 
     snapshot_dir = repairs_dir / "snapshots" / f"attempt_{attempt}"
     snapshot_dir.mkdir(parents=True, exist_ok=True)

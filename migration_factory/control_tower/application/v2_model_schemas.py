@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -27,6 +28,7 @@ REQUIRED_SCHEMAS = (
     "ReviewedDiffProposal",
     "ActionRequest",
     "AssistantAnswer",
+    "RepairAssistantIntent",
     "GateActionRequest",
     "AssistantGateAnswer",
 )
@@ -34,7 +36,7 @@ REQUIRED_SCHEMAS = (
 TOKEN_BUDGETS = {
     "plan_proposal": {"input": 24000, "output": 6000},
     "plan_revision": {"input": 18000, "output": 5000},
-    "repair_proposal": {"input": 20000, "output": 6000},
+    "repair_proposal": {"input": 40000, "output": 20000},
     "reviewer_critique": {"input": 16000, "output": 4000},
     "assistant_answer": {"input": 8000, "output": 2000},
     "action_request": {"input": 6000, "output": 1500},
@@ -87,21 +89,44 @@ REPAIR_PRIMARY_OUTPUT_SCHEMA = {
         "fix_strategy",
         "changed_files",
         "proposed_diff",
+        "proposed_edits",
+        "deterministic_rule_id",
         "risk",
         "confidence",
         "rationale",
+        "no_fix_reason",
     ],
     "properties": {
         "root_cause": {"type": "string"},
         "fix_strategy": {"type": "string"},
         "changed_files": {"type": "array", "items": {"type": "string"}},
-        "proposed_diff": {"type": "string"},
-        "deterministic_rule_id": {"type": "string"},
-        "risk": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
-        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "proposed_diff": {
+            "type": "string",
+            "description": (
+                "Legacy raw Git-style unified diff. Leave empty when proposed_edits is supplied; "
+                "the backend will generate the authoritative diff."
+            ),
+        },
+        "proposed_edits": {
+            "type": "array",
+            "description": "Preferred bounded source replacements; the backend generates Git syntax.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "expected_source_sha256", "exact_old_text", "exact_new_text"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "expected_source_sha256": {"type": "string"},
+                    "exact_old_text": {"type": "string"},
+                    "exact_new_text": {"type": "string"},
+                },
+            },
+        },
+        "deterministic_rule_id": {"type": ["string", "null"]},
+        "risk": {"type": ["string", "null"], "enum": ["LOW", "MEDIUM", "HIGH", None]},
+        "confidence": {"type": "number"},
         "rationale": {"type": "string"},
-        "no_fix_reason": {"type": "string"},
-        "machine_readable_metadata": {"type": "object"},
+        "no_fix_reason": {"type": ["string", "null"]},
     },
 }
 
@@ -110,6 +135,10 @@ REPAIR_REVIEWER_OUTPUT_SCHEMA = {
     "additionalProperties": False,
     "required": [
         "decision",
+        "proposed_diff",
+        "proposed_edits",
+        "changed_files",
+        "review_notes",
         "notes",
         "risks",
         "confidence",
@@ -120,14 +149,31 @@ REPAIR_REVIEWER_OUTPUT_SCHEMA = {
     ],
     "properties": {
         "decision": {"type": "string", "enum": ["accept", "revise", "reject"]},
+        "proposed_diff": {"type": "string"},
+        "proposed_edits": {
+            "type": "array",
+            "description": "Preferred bounded source replacements; the backend generates Git syntax.",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "expected_source_sha256", "exact_old_text", "exact_new_text"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "expected_source_sha256": {"type": "string"},
+                    "exact_old_text": {"type": "string"},
+                    "exact_new_text": {"type": "string"},
+                },
+            },
+        },
+        "changed_files": {"type": "array", "items": {"type": "string"}},
+        "review_notes": {"type": "array", "items": {"type": "string"}},
         "notes": {"type": "array", "items": {"type": "string"}},
         "risks": {"type": "array", "items": {"type": "string"}},
-        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+        "confidence": {"type": "number"},
         "policy_concerns": {"type": "array", "items": {"type": "string"}},
         "reviewed_context_checksum": {"type": "string"},
         "reviewed_primary_output_checksum": {"type": "string"},
         "reviewed_diff_checksum": {"type": "string"},
-        "review_dimensions": {"type": "object"},
     },
 }
 
@@ -225,6 +271,29 @@ ASSISTANT_ANSWER_SCHEMA = {
                 "reason": {"type": "string"},
             },
         },
+    },
+}
+
+REPAIR_ASSISTANT_INTENT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["action", "assistant_message", "tool", "arguments", "requires_clarification"],
+    "properties": {
+        "action": {"type": "string", "enum": ["ANSWER_ONLY", "REQUEST_REVISION", "CLARIFICATION_REQUIRED"]},
+        "assistant_message": {"type": "string"},
+        "tool": {"type": ["string", "null"]},
+        "arguments": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["user_instruction", "resolved_instruction", "constraints", "target_files"],
+            "properties": {
+                "user_instruction": {"type": "string"},
+                "resolved_instruction": {"type": "string"},
+                "constraints": {"type": "array", "items": {"type": "string"}},
+                "target_files": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+        "requires_clarification": {"type": "boolean"},
     },
 }
 
@@ -450,6 +519,7 @@ SCHEMA_REGISTRY = {
     "ReviewedDiffProposal": REVIEWED_DIFF_PROPOSAL_SCHEMA,
     "ActionRequest": ACTION_REQUEST_SCHEMA,
     "AssistantAnswer": ASSISTANT_ANSWER_SCHEMA,
+    "RepairAssistantIntent": REPAIR_ASSISTANT_INTENT_SCHEMA,
     "GateActionRequest": GATE_ACTION_REQUEST_SCHEMA,
     "AssistantGateAnswer": ASSISTANT_GATE_ANSWER_SCHEMA,
 }
@@ -476,6 +546,18 @@ def validate_against_schema(schema_name: str, data: Any) -> None:
     SchemaValidator.validate(schema_name, data)
 
 
+def normalize_model_output(schema_name: str, data: Any) -> Any:
+    """Normalize only aliases proven compatible with governed contracts."""
+    if schema_name == "RepairReviewerOutput" and isinstance(data, dict):
+        normalized = dict(data)
+        if "notes" not in normalized and "review_notes" in normalized:
+            normalized["notes"] = normalized["review_notes"]
+        elif "review_notes" not in normalized and "notes" in normalized:
+            normalized["review_notes"] = normalized["notes"]
+        return normalized
+    return data
+
+
 def validate_model_output(schema_name: str, data: Any) -> dict[str, Any]:
     """Validate model output at the service boundary.
 
@@ -494,8 +576,9 @@ def validate_model_output(schema_name: str, data: Any) -> dict[str, Any]:
         SchemaValidationError: If the model output violates the schema.
         ValueError: If schema_name is unknown.
     """
-    validate_against_schema(schema_name, data)
-    return data
+    normalized = normalize_model_output(schema_name, data)
+    validate_against_schema(schema_name, normalized)
+    return normalized
 
 
 class SchemaValidator:
@@ -573,6 +656,22 @@ class SchemaValidator:
             raise SchemaValidationError(
                 f"Expected number at {'.'.join(path)!r}, got {type(value).__name__}"
             )
+        if "string" in schema_types and isinstance(value, str):
+            min_length = schema.get("minLength")
+            if min_length is not None and len(value) < int(min_length):
+                raise SchemaValidationError(
+                    f"String at {'.'.join(path)!r} is shorter than minLength {min_length}"
+                )
+            max_length = schema.get("maxLength")
+            if max_length is not None and len(value) > int(max_length):
+                raise SchemaValidationError(
+                    f"String at {'.'.join(path)!r} is longer than maxLength {max_length}"
+                )
+            pattern = schema.get("pattern")
+            if pattern and re.search(str(pattern), value) is None:
+                raise SchemaValidationError(
+                    f"String at {'.'.join(path)!r} does not match pattern {pattern!r}"
+                )
 
         # Check required fields
         if "object" in schema_types and isinstance(value, dict):

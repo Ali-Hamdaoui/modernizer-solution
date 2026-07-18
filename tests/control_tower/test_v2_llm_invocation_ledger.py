@@ -56,6 +56,10 @@ MIGRATION_PATH = (
     "migration_factory/control_tower/infrastructure/sqlite/migrations"
     "/0050_v2_llm_invocations.sql"
 )
+RUNTIME_METADATA_MIGRATION_PATH = (
+    "migration_factory/control_tower/infrastructure/sqlite/migrations"
+    "/0060_v2_llm_invocation_runtime_metadata.sql"
+)
 
 
 def _apply_migration_only(tmp_path: Path, *, check_same_thread: bool = True) -> sqlite3.Connection:
@@ -64,6 +68,8 @@ def _apply_migration_only(tmp_path: Path, *, check_same_thread: bool = True) -> 
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     with open(MIGRATION_PATH) as f:
+        conn.executescript(f.read())
+    with open(RUNTIME_METADATA_MIGRATION_PATH) as f:
         conn.executescript(f.read())
     return conn
 

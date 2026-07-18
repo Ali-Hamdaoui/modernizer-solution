@@ -5,14 +5,13 @@ import type { ReviewedDiffProposal, SafeDiffPreview as SafeDiffPreviewType } fro
 import { SafeDiffPreview } from "./SafeDiffPreview";
 import { ReviewerVerdictCard } from "./ReviewerVerdictCard";
 
-type TabId = "diff" | "static-analysis" | "files-changed" | "reviewer-opinion" | "chat";
+type TabId = "diff" | "files-changed" | "reviewer-opinion" | "validation";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "diff", label: "Diff" },
-  { id: "static-analysis", label: "Static Analysis" },
   { id: "files-changed", label: "Files Changed" },
-  { id: "reviewer-opinion", label: "Reviewer Opinion" },
-  { id: "chat", label: "Chat" },
+  { id: "reviewer-opinion", label: "Reviewer Notes" },
+  { id: "validation", label: "Validation" },
 ];
 
 export function ReviewedDiffTabs({
@@ -60,31 +59,6 @@ export function ReviewedDiffTabs({
             )}
           </div>
         )}
-        {activeTab === "static-analysis" && (
-          <div data-testid="tabpanel-static-analysis">
-            <p className="meta">Static analysis summary:</p>
-            <div className="table-list">
-              {proposal.risk && (
-                <div className="table-row">
-                  <span className="meta">Risk</span>
-                  <strong>{proposal.risk}</strong>
-                </div>
-              )}
-              {proposal.required_validation.length > 0 && (
-                <div className="table-row">
-                  <span className="meta">Required validation</span>
-                  <strong>{proposal.required_validation.join(", ") || "None"}</strong>
-                </div>
-              )}
-              {proposal.redactions.length > 0 && (
-                <div className="table-row">
-                  <span className="meta">Redactions</span>
-                  <strong className="warning-text">{proposal.redactions.join(", ")}</strong>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
         {activeTab === "files-changed" && (
           <div data-testid="tabpanel-files-changed">
             {proposal.files_changed.length === 0 ? (
@@ -107,14 +81,24 @@ export function ReviewedDiffTabs({
             <ReviewerVerdictCard verdict={proposal.reviewer_verdict} />
           </div>
         )}
-        {activeTab === "chat" && (
-          <div data-testid="tabpanel-chat">
-            <p className="meta">
-              Chat is read-only in the current view. Use the assistant panel to ask questions about this proposal.
-            </p>
-            <p className="meta">
-              Use the "Request revision" button in the actions bar to request changes.
-            </p>
+        {activeTab === "validation" && (
+          <div data-testid="tabpanel-validation">
+            {proposal.status === "approved_applied" ? (
+              <p className="meta">Validation passed. Patch was applied to sandbox.</p>
+            ) : proposal.apply_status ? (
+              <div className="table-list">
+                <div className="table-row">
+                  <span className="meta">Apply status</span>
+                  <strong>{proposal.apply_status || "N/A"}</strong>
+                </div>
+                <div className="table-row">
+                  <span className="meta">Rerun status</span>
+                  <strong>{proposal.rerun_status || "N/A"}</strong>
+                </div>
+              </div>
+            ) : (
+              <p className="meta">No validation data available yet. Approve the diff to run validation.</p>
+            )}
           </div>
         )}
       </div>
