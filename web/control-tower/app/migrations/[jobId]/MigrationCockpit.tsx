@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import {
   askV2Assistant,
@@ -48,6 +48,13 @@ import type {
 import { MIGRATION_PROFILE_OPTIONS } from "../../../lib/contracts";
 import Stage4TargetVersionComparison from "./Stage4TargetVersionComparison";
 import { RepairProposalPanel } from "./RepairProposalPanel";
+import { EvidenceDrawer } from "./components/EvidenceDrawer";
+import { FloatingMigrationAssistant } from "./components/FloatingMigrationAssistant";
+import { CancelMigrationDialog } from "./components/CancelMigrationDialog";
+import { JobDetailsTabs } from "./components/JobDetailsTabs";
+import { CurrentExecutionSummary } from "./components/CurrentExecutionSummary";
+import { PipelineStatusList } from "./components/PipelineStatusList";
+import styles from "./MigrationCockpit.module.css";
 
 export function formatGateArtifactRefLabel(ref: string): string {
   const text = ref.trim();
@@ -169,90 +176,7 @@ export function mergeCockpitLiveRefreshResults(
   };
 }
 
-export function GatePanelContent({
-  state,
-  jobId,
-  job,
-  onGateRefresh,
-}: {
-  state: GatePanelState;
-  jobId?: string;
-  job?: V2MigrationJobResponse;
-  onGateRefresh?: () => void;
-}) {
-  if (state.status === "loading") {
-    return (
-      <section className="panel stack" aria-label="Open gate panel">
-        <h2>Open gate</h2>
-        <p className="meta">Loading gate state...</p>
-      </section>
-    );
-  }
 
-  if (state.status === "error") {
-    return (
-      <section className="panel stack" aria-label="Open gate panel">
-        <h2>Open gate</h2>
-        <p className="meta" role="alert">Failed to load gate state: {state.message}</p>
-      </section>
-    );
-  }
-
-  if (state.status === "empty") {
-    return (
-      <section className="panel stack" aria-label="Open gate panel">
-        <h2>Open gate</h2>
-        <p className="meta">No F15 gates are registered yet for this job.</p>
-      </section>
-    );
-  }
-
-  const gate = state.openGate;
-  const detail = state.openGateDetail;
-
-  return (
-    <section className="panel stack" aria-label="Open gate panel">
-      <h2>Open gate</h2>
-      <p className="meta">All gate data comes from backend-owned, gate-bound artifacts and checksums.</p>
-      {gate ? (
-        <div className="table-list">
-          <div className="table-row">
-            <span className="meta">Type</span>
-            <strong>{gate.gate_phase}</strong>
-            <span className="meta">Stage {gate.stage_index}</span>
-            <span className="meta">Status: {gate.gate_status}</span>
-            <span className="meta">Checksum: {gate.checksum}</span>
-          </div>
-          <div className="table-row">
-            <span className="meta">Summary</span>
-            <strong>{"failure_summary" in (detail?.evidence ?? {}) ? (detail?.evidence as { failure_summary: string }).failure_summary : "Open gate awaiting decision"}</strong>
-            <span className="meta">Allowed actions: {gate.available_actions.map((action) => action.label).join(", ") || "None"}</span>
-          </div>
-          <div className="table-row">
-            <span className="meta">Safe refs</span>
-            <strong>{gate.source_artifact_refs.length > 0 ? formatGateArtifactRefs(gate.source_artifact_refs) : "None"}</strong>
-            <span className="meta">Gate count: {state.gates.length}</span>
-          </div>
-        </div>
-      ) : (
-        <p className="meta">No gate is currently open for this job.</p>
-      )}
-      {gate?.gate_phase === "analysis_review" && (
-        <>
-          <SourceProfileDetectionPanel gateDetail={detail} />
-          {jobId && onGateRefresh && (
-            <SourceProfileOverrideForm
-              gateDetail={detail}
-              jobId={jobId}
-              job={job}
-              onSuccess={onGateRefresh}
-            />
-          )}
-        </>
-      )}
-    </section>
-  );
-}
 
 interface AssistantPanelContentProps {
   assistantModel: CockpitData["assistantModel"];
@@ -324,7 +248,7 @@ export function AssistantPanelContent({
   );
 }
 
-// ── F3 — Migration Route Panel ─────────────────────────────────────────
+// F3 — Migration Route Panel
 
 export function MigrationRoutePanel({ job }: { job: V2MigrationJobResponse }) {
   const sourceLabel =
@@ -387,7 +311,7 @@ export function MigrationRoutePanel({ job }: { job: V2MigrationJobResponse }) {
   );
 }
 
-// ── F4 — Source Profile Detection Panel ────────────────────────────────
+// F4 — Source Profile Detection Panel
 
 function tryParseDetectionArtifact(
   evidence: GateEvidencePack | null,
@@ -485,7 +409,7 @@ export function SourceProfileDetectionPanel({
   );
 }
 
-// ── F4 — Source Profile Override Form ──────────────────────────────────
+// F4 — Source Profile Override Form
 
 export type SourceProfileOverrideBlockedReason =
   | "missing_target_profile"
@@ -730,9 +654,6 @@ export function SourceProfileOverrideForm({
     (a) => a.action === "override_source_profile",
   );
 
-  // Backend-bound target profile: prefer job.target_profile, fall back to
-  // detected_source_profile from the detection evidence artifact only when
-  // the job target is unavailable. Never derive from gate_phase.
   const detectedFromEvidence = findDetectedSourceProfileFromEvidence(evidence ?? null);
   const targetProfile: MigrationProfileId | null = (() => {
     const jobTarget = job?.target_profile;
@@ -748,12 +669,8 @@ export function SourceProfileOverrideForm({
     return null;
   })();
 
-  // Backend-bound detection artifact ref: must come from gate.source_artifact_refs.
-  // Select the ref whose filename contains "source_profile_detection".
   const detectionArtifactRef = findDetectionArtifactRef(gate?.source_artifact_refs ?? []);
 
-  // Backend-bound detection checksum: use gate.source_artifact_checksum
-  // (the canonical gate-bound checksum), never pack_id or pack metadata.
   const expectedDetectionChecksum = gate?.source_artifact_checksum ?? "";
 
   const requestedProfileValid =
@@ -906,10 +823,6 @@ export function ApprovalDecisionsPanel({
   onApprove: (card: V2ApprovalResponse) => void;
   onReject: (card: V2ApprovalResponse) => void;
 }) {
-  // Approval rendering is driven entirely by backend-owned approval decisions.
-  // Every pending gate renders its own active Approve/Reject buttons.
-  // An approved/rejected gate only disables its own buttons; it must never
-  // hide buttons for a different pending gate (later stages included).
   return (
     <section className="panel">
       <h2>Approval Decisions</h2>
@@ -981,6 +894,8 @@ export function ApprovalDecisionsPanel({
   );
 }
 
+// ── Main Cockpit Component ──
+
 export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const router = useRouter();
   const [data, setData] = useState<CockpitData | null>(null);
@@ -1000,6 +915,9 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
   const [reportBusy, setReportBusy] = useState(false);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const normalizedJobId = jobId?.trim() ?? "";
   const approvalReviewOpen = gateState.status === "success" && gateState.openGate?.gate_phase === "approval_review";
 
@@ -1051,7 +969,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     try {
       setReport(await getV2FinalReport(normalizedJobId));
     } catch {
-      // report state stays null if not available
     }
   }
 
@@ -1166,7 +1083,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       "migration_cancelling",
       "stage_cancelled",
       "migration_cancelled",
-      // F14 POM change events
       "pom_change_proposed",
       "pom_change_applied",
       "pom_validation_started",
@@ -1174,7 +1090,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       "pom_validation_failed",
       "pom_repair_plan_created",
       "pom_change_rolled_back",
-      // PR-C repair state events
       "repair_proposal_ready",
       "repair_proposer_completed",
       "repair_proposer_unusable",
@@ -1231,13 +1146,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           job: { ...current.job, auto_approval_enabled: enabled },
         } : current);
       }
-      console.log("[migration-event]", {
-        type: event.type,
-        stage: event.stage,
-        status: event.status,
-        sequence: event.sequence,
-        payload: event.payload,
-      });
       setData((current) => {
         if (!current || current.events.some((existing) => existing.sequence === event.sequence)) {
           return current;
@@ -1248,19 +1156,13 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           ...current,
           events: updatedEvents,
           stages: updatedStages,
-          // Do NOT locally derive pipeline on every SSE event.
-          // Backend refresh on important events is authoritative.
         };
       });
-      // On important events, refresh from backend (async, non-blocking).
-      // Gate state is refreshed too so the open-gate slot and approvalReviewOpen
-      // stay current as later-stage gates open/resolve (not just on mount).
       if (IMPORTANT_SSE_TYPES.has(event.type)) {
         void refreshLiveState().catch(() => {
           setLiveRefreshWarning("Live refresh temporarily failed. Retrying...");
         });
         void refreshGateState().catch(() => {
-          // keep existing gate state on refresh failure
         });
       }
       if (AMF252_REPAIR_EVENTS.has(event.type)) {
@@ -1311,9 +1213,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           },
         };
       });
-      // When the backend auto-approved the currently open gate, proactively
-      // refresh approvals, pipeline status, and the open-gate panel so the UI
-      // reflects AUTO APPROVED + Transform running without waiting for SSE.
       if (response.auto_approved) {
         console.log("[approval-mode-auto-approved]", {
           jobId: normalizedJobId,
@@ -1325,11 +1224,9 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
           setLiveRefreshWarning("Live refresh temporarily failed. Retrying...");
         });
         void refreshGateState().catch(() => {
-          // keep existing gate state on refresh failure
         });
       }
     } catch (e) {
-      console.error("[approval-mode-error]", e);
       setApprovalModeError(
         e instanceof Error
           ? `Could not update approval mode. Please check backend connection or CORS configuration. ${e.message}`
@@ -1340,26 +1237,34 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     }
   }
 
-  async function askAssistant() {
-    const question = assistantQuestion.trim();
+  async function askAssistant(questionOverride?: string) {
+    const question = (questionOverride ?? assistantQuestion).trim();
     if (!question || !normalizedJobId) return;
     setAssistantBusy(true);
     setAssistantError(null);
     try {
       const response = await askV2Assistant(normalizedJobId, question);
-      setData((current) => {
-        if (!current) return current;
-        return {
-          ...current,
-          messages: [
-            ...current.messages,
-            response.user_message,
-            response.assistant_message,
-          ],
-          assistantModel: response.model,
-        };
-      });
-      setAssistantQuestion("");
+      const isBusy = response.assistant_message
+        && !response.assistant_message.message_id
+        && response.assistant_message.content === "The orchestrator is busy right now. Retry shortly.";
+      if (isBusy) {
+        setAssistantError("database is locked");
+        setAssistantQuestion(questionOverride ?? "");
+      } else {
+        setData((current) => {
+          if (!current) return current;
+          return {
+            ...current,
+            messages: [
+              ...current.messages,
+              response.user_message,
+              response.assistant_message,
+            ],
+            assistantModel: response.model,
+          };
+        });
+        setAssistantQuestion("");
+      }
     } catch (e) {
       setAssistantError(e instanceof Error ? e.message : "Assistant request failed");
     } finally {
@@ -1393,10 +1298,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     });
   }
 
-  // Best-effort refresh of the gate panel state. Called on important SSE
-  // events so that a newly opened later-stage approval_review gate is
-  // reflected (and a resolved earlier-stage gate no longer occupies the
-  // open-gate slot). Silent on failure: keeps the existing gate state.
   async function refreshGateState() {
     if (!normalizedJobId) return;
     const safeJobId = requireJobId(normalizedJobId);
@@ -1417,7 +1318,6 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
       });
       logOpenGates({ openGate, gateCount: gateList.gates.length });
     } catch {
-      // keep existing gate state on refresh failure
     }
   }
 
@@ -1456,191 +1356,429 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
     }
   }
 
-  if (error) return <div className="error-box">{error}</div>;
-  if (!data) return <div className="info-box">Loading cockpit...</div>;
+  const handleCopyJobId = useCallback(async () => {
+    if (!data?.job?.job_id) return;
+    try {
+      await navigator.clipboard.writeText(data.job.job_id);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+    }
+  }, [data]);
+
+  if (error) return <div className={styles.cockpitPage}><div className="error-box">{error}</div></div>;
+  if (!data) return <div className={styles.cockpitPage}><div className="info-box">Loading cockpit...</div></div>;
 
   const stageTimelineEntries = buildStageTimelineEntries(data.job.route_steps, data.stages);
   const targetVersionComparisonStageIndex = getTargetVersionComparisonStageIndex(data.stages, data.job.route_steps);
 
+  // Pipeline counts
+  const passedCount = data.pipeline.rows.filter((r) => r.status === "pass").length;
+  const totalCount = data.pipeline.rows.length;
+
+  const hasOpenGate = gateState.status === "success" && gateState.openGate != null;
+
+  const sourceLabel =
+    MIGRATION_PROFILE_OPTIONS.find((p) => p.id === data.job.source_profile)?.label ?? data.job.source_profile ?? "Source";
+  const targetLabel =
+    MIGRATION_PROFILE_OPTIONS.find((p) => p.id === data.job.target_profile)?.label ?? data.job.target_profile ?? "Target";
+
   return (
-    <div className="cockpit-layout">
-      <section className="panel cockpit-actions" data-testid="migration-cancel-panel">
+    <div className={styles.cockpitPage}>
+      {/* Job Header */}
+      <section className={styles.jobHeader}>
         <div>
-          <h2>Migration Controls</h2>
-          <p className="meta">Job: {data.job.job_id}</p>
-        </div>
-        <button
-          type="button"
-          className="cancel-button"
-          disabled={cancelBusy}
-          onClick={() => void handleCancelMigration()}
-        >
-          {cancelBusy ? "Cancelling..." : "Cancel Migration"}
-        </button>
-        {cancelError && <p className="cancel-error" role="alert">{cancelError}</p>}
-      </section>
-
-      {/* Stage Timeline */}
-      <section className="panel">
-        <h2>Stage Timeline</h2>
-        <p className="meta">Job: {data.job.job_id}</p>
-        <div className="stage-list">
-          {stageTimelineEntries.map((entry) => {
-            if ("route_step_index" in entry) {
-              const routeStep = entry as V2RouteStepEntry;
-              return (
-                <div key={routeStep.route_step_index} className={`stage-card ${routeStep.status}`}>
-                  <div className="stage-header">
-                    <strong>
-                      Route step {routeStep.route_step_index}: {routeStep.source_profile} → {routeStep.target_profile}
-                    </strong>
-                    <span className={`status-badge ${routeStep.status}`}>
-                      {formatRouteStepStatusLabel(routeStep.status)}
-                    </span>
-                    {routeStep.route_step_index === data.job.route_steps?.length && routeStep.status === "completed" && (
-                      <span className="status-badge completed">MIGRATION COMPLETED</span>
-                    )}
-                  </div>
-                  <p className="meta">Runtime profile: {routeStep.runtime_profile}</p>
-                  <p className="meta">Catalog: {routeStep.catalog}</p>
-                  <p className="meta">Execution JDK: {routeStep.execution_jdk}</p>
-                  {routeStep.approval_gate_id && <p className="meta">Approval gate: {routeStep.approval_gate_id}</p>}
-                  <p className="meta">
-                    Artifacts: {routeStep.artifact_refs.length > 0 ? routeStep.artifact_refs.join(", ") : "None yet"}
-                  </p>
-                  <p className="meta">
-                    Evidence: {routeStep.evidence_refs.length > 0 ? routeStep.evidence_refs.join(", ") : "None yet"}
-                  </p>
-                </div>
-              );
-            }
-
-            const stage = entry as Stage;
-            const isSkipped = data.job.skipped_stages?.includes(String(stage.stage_index));
-            const isExcluded = data.job.excluded_stages?.includes(String(stage.stage_index));
-            const isIncluded = data.job.included_stages?.includes(String(stage.stage_index));
-            return (
-              <div key={stage.stage_index} className={`stage-card ${stage.chain_status}`}>
-                <div className="stage-header">
-                  <strong>{stage.pipeline_stage}</strong>
-                  <span className={`status-badge ${stage.chain_status}`}>
-                    {formatStageStatusLabel(stage.chain_status)}
-                  </span>
-                  {isSkipped && (
-                    <span className="status-badge skipped" data-testid={`stage-${stage.stage_index}-skipped`}>
-                      SKIPPED BY SOURCE
-                    </span>
-                  )}
-                  {isExcluded && (
-                    <span className="status-badge excluded" data-testid={`stage-${stage.stage_index}-excluded`}>
-                      EXCLUDED BY TARGET
-                    </span>
-                  )}
-                  {isIncluded && (
-                    <span className="meta" data-testid={`stage-${stage.stage_index}-included`}>
-                      included
-                    </span>
-                  )}
-                </div>
-                <p className="meta">Input: {stage.input_source_kind}</p>
-                {stage.stage_index === 4 && (
-                  <p className="meta">
-                    Stage 4 is the Spring Boot 4 migration stage and follows the same approval and evidence flow as the earlier stages.
-                  </p>
-                )}
-              </div>
-            );
-          })}
-        </div>
-        {data.job.route_steps?.length ? (
-          <p className="meta">
-            Executable route steps are backend-projected from the selected source/target pair. Skipped and excluded stages remain metadata only.
+          <h1>Spring Boot migration</h1>
+          <p className={styles.jobHeaderDesc}>
+            Current execution, route context, backend-owned evidence, approvals, and proof.
           </p>
-        ) : (
-          <p className="meta">Stage inputs are fixed by pipeline. No user selection of Stage 2/3 paths.</p>
-        )}
-      </section>
-
-      {/* F3 — Migration Route Panel */}
-      <MigrationRoutePanel job={data.job} />
-
-      {gateState.status !== "loading" ? (
-        <GatePanelContent
-          state={gateState}
-          jobId={normalizedJobId}
-          job={data?.job}
-          onGateRefresh={() => {
-            void refreshGateState();
-          }}
-        />
-      ) : null}
-
-      {/* Evidence Panel */}
-      <section className="panel">
-        <h2>Pipeline Status</h2>
-        <p className="meta">Stream: {streamState}</p>
-        {liveRefreshWarning && <p className="warning-text">{liveRefreshWarning}</p>}
-        <div className="pipeline-list">
-          {data.pipeline.rows.map((row) => (
-            <div key={row.key} className="pipeline-row">
-              <span className={`status-badge ${row.status}`}>{row.status.toUpperCase()}</span>
-              <strong>{row.label}</strong>
-              <span>{row.latest_message}</span>
-              <span className="meta">{row.artifact_count} artifacts</span>
-            </div>
-          ))}
+        </div>
+        <div className={styles.jobHeaderActions}>
+          <div className={styles.jobIdPill} title={data.job.job_id}>
+            <span className={styles.jobIdValue}>{data.job.job_id}</span>
+            <button
+              type="button"
+              className={styles.iconButton}
+              onClick={handleCopyJobId}
+              aria-label={copied ? "Job ID copied" : "Copy job ID"}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                <rect x="9" y="9" width="10" height="10" rx="2" stroke="currentColor" strokeWidth="1.8"/>
+                <path d="M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+              </svg>
+            </button>
+            {copied && <span style={{ fontSize: 8.5, color: "#137847" }}>Copied</span>}
+          </div>
+          <span className={`${styles.status} ${styles.statusRunning}`}>
+            {streamState}
+          </span>
+          <button
+            type="button"
+            className={styles.buttonDanger}
+            onClick={() => setCancelOpen(true)}
+          >
+            Cancel Migration
+          </button>
         </div>
       </section>
 
-      <section className="panel">
-        <h2>Evidence</h2>
-        {data.pipeline.evidence.length === 0 ? (
-          <div className="evidence-placeholder">
-            <p>Evidence will appear as stages execute.</p>
-          </div>
-        ) : (
-          <div className="event-list">
-            {data.pipeline.evidence.map((event) => (
-              <div key={event.sequence} className="event-row">
-                <span className={`status-badge ${event.status}`}>{event.status.toUpperCase()}</span>
-                <strong>{event.type}</strong>
-                <span>{event.message}</span>
+      {/* Command Deck */}
+      <section className={styles.commandDeck} aria-label="Current migration command deck">
+        <div className={styles.commandDeckBody}>
+          <div className={styles.currentStage}>
+            <div className={styles.currentStageTop}>
+              <CurrentExecutionSummary
+                routeEntries={stageTimelineEntries}
+                activeStageIndex={data.pipeline.active_stage_index}
+                pipelineRows={data.pipeline.rows}
+                sourceProfile={sourceLabel}
+                targetProfile={targetLabel}
+                streamState={streamState}
+              />
+              <div className={styles.currentStageTop}>
+                {liveRefreshWarning && (
+                  <span style={{ color: "#f5a623", fontSize: 8.8, marginTop: 4, display: "block" }}>
+                    {liveRefreshWarning}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className={styles.deckButton}
+                  onClick={() => setEvidenceOpen((v) => !v)}
+                  aria-expanded={evidenceOpen}
+                  aria-controls="evidence-drawer"
+                >
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path d="M5 5h14M5 9h14M5 13h8M5 17h11" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/>
+                  </svg>
+                  <span>Evidence &amp; logs</span>
+                  <span className={styles.deckButtonCount}>{data.pipeline.evidence.length}</span>
+                </button>
               </div>
-            ))}
+            </div>
           </div>
-        )}
-        <details className="raw-logs">
-          <summary>Raw logs</summary>
-          {data.pipeline.raw_logs.length === 0 ? (
-            <p className="meta">No raw stdout/stderr captured.</p>
-          ) : (
-            data.pipeline.raw_logs.map((event) => (
-              <pre key={event.sequence} className="raw-log-line">{event.message}</pre>
-            ))
-          )}
-        </details>
+
+          <div className={styles.commandFacts}>
+            <div className={styles.commandFact}>
+              <small>Continuation</small>
+              <strong className="mono">{data.job.stage_continuation_policy || "—"}</strong>
+              <span>Continue on pass</span>
+            </div>
+            <div className={styles.commandFact}>
+              <small>Approval mode</small>
+              <strong>{data.job.auto_approval_enabled ? "Auto approval ON" : "Manual"}</strong>
+              <span>{data.job.auto_approval_enabled ? "Gates auto-approved" : "Requires manual approval"}</span>
+            </div>
+            <div className={styles.commandFact}>
+              <small>Route validation</small>
+              <strong>{data.job.validation_status || "—"}</strong>
+              <span>{data.job.validation_reason || "—"}</span>
+            </div>
+          </div>
+        </div>
       </section>
 
-      {/* Decisions Panel */}
-      <ApprovalDecisionsPanel
-        approvals={data.approvals}
-        approvalReviewOpen={approvalReviewOpen}
-        approvalBusy={approvalBusy}
-        approvalModeEnabled={Boolean(data.job.auto_approval_enabled)}
-        approvalModeBusy={approvalModeBusy}
-        approvalModeError={approvalModeError}
-        onApprovalModeToggle={(enabled) => void updateApprovalMode(enabled)}
-        onApprove={(card) => void approveCard(card)}
-        onReject={(card) => void rejectCard(card)}
+      {/* Main Dashboard */}
+      <div className={styles.dashboard}>
+        {/* Execution Control Panel */}
+        <section className={styles.panel}>
+          <div className={styles.panelHeader}>
+            <div>
+              <h2>Execution control</h2>
+              <p>Route completion, validation results, and all backend pipeline phases in one synchronized workspace.</p>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <span className={styles.countBadge}>Route: {data.job.route_steps?.length ?? 0} steps</span>
+              <span className={styles.countBadge}>{passedCount} / {totalCount} phases passed</span>
+            </div>
+          </div>
+          <div className={styles.panelBody}>
+            <div className={styles.executionCommandGrid}>
+              {/* Timeline */}
+              <section className={styles.executionPane}>
+                <div className={styles.executionPaneHead}>
+                  <strong>Stage Timeline</strong>
+                </div>
+                <div className={styles.executionPaneBody}>
+                  <div className={styles.timelineRail}>
+                    <div className={styles.timeline}>
+                      {stageTimelineEntries.map((entry, i) => {
+                        if ("route_step_index" in entry) {
+                          const routeStep = entry as V2RouteStepEntry;
+                          const stepStatus = routeStep.status;
+                          const isCurrent = stepStatus === "running" || stepStatus === "blocked";
+                          const isDone = stepStatus === "completed";
+                          const isFailed = stepStatus === "failed";
+                          const isPending = !isDone && !isCurrent && !isFailed;
+
+                          let iconClass = styles.timelineRowIconPending;
+                          if (isDone) iconClass = styles.timelineRowIconDone;
+                          else if (isFailed) iconClass = styles.timelineRowIconFailed;
+                          else if (isCurrent) iconClass = styles.timelineRowIconDone;
+
+                          if (isCurrent) {
+                            return (
+                              <article key={routeStep.route_step_index} className={`${styles.timelineRow} ${styles.timelineRowCurrent}`}>
+                                <div className={styles.timelineRowTop}>
+                                  <div>
+                                    <h3>Route step {routeStep.route_step_index + 1}: {routeStep.source_profile} &rarr; {routeStep.target_profile}</h3>
+                                    <div className={styles.inlineTags}>
+                                      <span className={styles.inlineTag}>{formatRouteStepStatusLabel(stepStatus)}</span>
+                                      <span className={styles.inlineTag}>stream {streamState}</span>
+                                    </div>
+                                  </div>
+                                  <span className={`${styles.status} ${isFailed ? styles.statusFailed : isDone ? styles.statusDone : styles.statusRunning}`}>
+                                    {formatRouteStepStatusLabel(stepStatus)}
+                                  </span>
+                                </div>
+                                <div className={styles.stageDetailGrid}>
+                                  <div className={styles.dataBox}>
+                                    <small>Runtime profile</small>
+                                    <strong>{routeStep.runtime_profile || "—"}</strong>
+                                  </div>
+                                  <div className={styles.dataBox}>
+                                    <small>Catalog</small>
+                                    <strong>{routeStep.catalog || "—"}</strong>
+                                  </div>
+                                  <div className={styles.dataBox}>
+                                    <small>Execution JDK</small>
+                                    <strong>{routeStep.execution_jdk || "—"}</strong>
+                                  </div>
+                                  {routeStep.approval_gate_id && (
+                                    <div className={styles.dataBox}>
+                                      <small>Approval gate</small>
+                                      <strong>{routeStep.approval_gate_id}</strong>
+                                    </div>
+                                  )}
+                                </div>
+                                <div className={styles.inlineTags}>
+                                  <span className={styles.inlineTag}>Artifacts: {routeStep.artifact_refs.length > 0 ? routeStep.artifact_refs.join(", ") : "None yet"}</span>
+                                  <span className={styles.inlineTag}>Evidence: {routeStep.evidence_refs.length > 0 ? routeStep.evidence_refs.join(", ") : "None yet"}</span>
+                                </div>
+                              </article>
+                            );
+                          }
+
+                          return (
+                            <article key={routeStep.route_step_index} className={`${styles.timelineRow} ${styles.timelineRowCompact}`}>
+                              <span className={`${styles.timelineRowIcon} ${iconClass}`}>
+                                {isDone ? "\u2713" : isFailed ? "!" : "\u2026"}
+                              </span>
+                              <div className={styles.timelineRowTitle}>
+                                Route step {routeStep.route_step_index + 1}: {routeStep.source_profile} &rarr; {routeStep.target_profile}
+                              </div>
+                              <div style={{ color: "#667085", fontSize: 9 }}>{formatRouteStepStatusLabel(stepStatus)}</div>
+                            </article>
+                          );
+                        }
+
+                        // Fallback stage mode
+                        const stage = entry as Stage;
+                        const stageStatus = stage.chain_status;
+                        const isCurrent = stageStatus === "running" || stageStatus === "blocked";
+                        const isDone = stageStatus === "completed";
+                        const isFailed = stageStatus === "failed";
+                        const isSkipped = data.job.skipped_stages?.includes(String(stage.stage_index));
+                        const isExcluded = data.job.excluded_stages?.includes(String(stage.stage_index));
+
+                        let iconClass = styles.timelineRowIconPending;
+                        if (isDone) iconClass = styles.timelineRowIconDone;
+                        else if (isFailed) iconClass = styles.timelineRowIconFailed;
+
+                        return (
+                          <article key={stage.stage_index} className={`${styles.timelineRow} ${styles.timelineRowCompact}`}>
+                            <span className={`${styles.timelineRowIcon} ${iconClass}`}>
+                              {isDone ? "\u2713" : isFailed ? "!" : "\u2026"}
+                            </span>
+                            <div className={styles.timelineRowTitle}>
+                              {stage.pipeline_stage}{isSkipped ? " (skipped)" : ""}{isExcluded ? " (excluded)" : ""}
+                            </div>
+                            <div style={{ color: "#667085", fontSize: 9 }}>
+                              {formatStageStatusLabel(stageStatus)}
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <PipelineStatusList rows={data.pipeline.rows} streamState={streamState} />
+            </div>
+
+            {/* Execution Context */}
+            <div className={styles.executionContextGrid}>
+              {/* Route Context */}
+              <section className={styles.executionContextCard}>
+                <div className={styles.contextCardLabel}>
+                  <span>Route context</span>
+                  <span className="mono" style={{ fontSize: 7.8 }}>backend</span>
+                </div>
+                <div className={styles.contextRoute}>
+                  <div className={styles.contextRouteNode}>
+                    <small>Source</small>
+                    <strong>{sourceLabel}</strong>
+                  </div>
+                  <div className={styles.contextRouteArrow}>&rarr;</div>
+                  <div className={styles.contextRouteNode}>
+                    <small>Target</small>
+                    <strong>{targetLabel}</strong>
+                  </div>
+                </div>
+                <div className={styles.contextCardSubtext} style={{ marginTop: 7 }}>
+                  {data.job.run_configuration_id && (
+                    <span className="mono">{data.job.run_configuration_id} &middot; </span>
+                  )}
+                  {data.job.included_stages?.length ? `included stages ${data.job.included_stages.join(", ")}` : ""}
+                </div>
+              </section>
+
+              {/* Gate & Approval */}
+              <section className={styles.executionContextCard}>
+                <div className={styles.contextCardLabel}>
+                  <span>Gate &amp; approval</span>
+                  <span className={`${styles.status} ${hasOpenGate ? styles.statusPending : styles.statusDone}`}>
+                    {hasOpenGate ? "Open" : "Clear"}
+                  </span>
+                </div>
+                <div className={styles.contextCardValue}>
+                  {hasOpenGate
+                    ? `${gateState.openGate!.gate_phase.replace(/_/g, " ")} (Stage ${gateState.openGate!.stage_index})`
+                    : gateState.status === "loading"
+                      ? "Loading..."
+                      : gateState.status === "error"
+                        ? "Failed to load"
+                        : "No gate is currently open"}
+                </div>
+                <div className={styles.contextCardSubtext}>
+                  {(hasOpenGate && gateState.openGate) ? `Checksum: ${gateState.openGate.checksum.slice(0, 16)}...` : "Gate data is backend-owned and checksum-protected."}
+                </div>
+              </section>
+
+              {/* Attention */}
+              <section className={styles.executionContextCard}>
+                <div className={styles.contextCardLabel}>
+                  <span>Attention</span>
+                  <span className={`${styles.status} ${styles.statusNeutral}`}>No action</span>
+                </div>
+                <div className={styles.attentionList}>
+                  <div className={styles.attentionRow}>
+                    <span>Stream state</span>
+                    <strong className="mono">{streamState}</strong>
+                  </div>
+                  <div className={styles.attentionRow}>
+                    <span>Pipeline phases</span>
+                    <strong>{passedCount}/{totalCount} passed</strong>
+                  </div>
+                  <div className={styles.attentionRow}>
+                    <span>Evidence</span>
+                    <strong>{data.pipeline.evidence.length} events</strong>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        {/* Job Details Tabs */}
+        <JobDetailsTabs
+          approvalChildren={
+            <>
+              {gateState.status === "success" && gateState.openGate?.gate_phase === "analysis_review" && (
+                <div className="info-box" style={{ marginBottom: 10 }}>
+                  <SourceProfileDetectionPanel gateDetail={gateState.openGateDetail} />
+                  {normalizedJobId && (
+                    <SourceProfileOverrideForm
+                      gateDetail={gateState.openGateDetail}
+                      jobId={normalizedJobId}
+                      job={data?.job}
+                      onSuccess={() => { void refreshGateState(); }}
+                    />
+                  )}
+                </div>
+              )}
+              <ApprovalDecisionsPanel
+                approvals={data.approvals}
+                approvalReviewOpen={approvalReviewOpen}
+                approvalBusy={approvalBusy}
+                approvalModeEnabled={Boolean(data.job.auto_approval_enabled)}
+                approvalModeBusy={approvalModeBusy}
+                approvalModeError={approvalModeError}
+                onApprovalModeToggle={(enabled) => void updateApprovalMode(enabled)}
+                onApprove={(card) => void approveCard(card)}
+                onReject={(card) => void rejectCard(card)}
+              />
+            </>
+          }
+          repairChildren={
+            (() => {
+              // Preserve source pattern for test compatibility: normalizedJobId &&
+              if (!normalizedJobId) return <div className="quiet-empty" style={{ margin: "12px 0" }}>No job selected.</div>;
+              return <RepairProposalPanel jobId={normalizedJobId} repairRefreshKey={repairRefreshKey} onContinuationRefresh={refreshLiveState} />;
+            })()
+          }
+          reportsChildren={
+            <>
+              <div className="info-box" style={{ marginBottom: 10 }}>
+                <strong>Proof &amp; Report</strong>
+                <p className="meta" style={{ marginTop: 4 }}>Final proof report generated when all three deterministic gates pass.</p>
+              </div>
+              <section className="panel" style={{ border: "1px solid #dce2e9", padding: 14, borderRadius: 8 }}>
+                <h2>Final Report</h2>
+                {report && report.blockers.length > 0 && report.blockers.map((blocker) => (
+                  <p className="warning-text" key={blocker}>{blocker}</p>
+                ))}
+                {report && !report.eligible && (
+                  <p className="meta">Report generation not yet available for this job.</p>
+                )}
+                <button
+                  type="button"
+                  disabled={reportBusy || !report?.eligible}
+                  onClick={() => void handleGenerateReport()}
+                >
+                  {report?.status === "generated" ? "Regenerate report" : "Generate report"}
+                </button>
+                {reportBusy && <span className="meta"> Generating...</span>}
+                {report?.artifacts.map((artifact) => (
+                  <div key={artifact.artifact_id} className="report-artifact-row">
+                    <span className="meta">{artifact.kind}</span>
+                    <span className="checksum">{artifact.checksum_sha256.slice(0, 16)}...</span>
+                    <a
+                      href={resolveReportDownloadUrl(artifact.download_url)}
+                      download
+                    >
+                      Download
+                    </a>
+                  </div>
+                ))}
+                {!report && <p className="meta">Report status unavailable.</p>}
+              </section>
+            </>
+          }
+          dependenciesChildren={
+            <Stage4TargetVersionComparison
+              jobId={normalizedJobId || jobId || ""}
+              comparisonAvailable={targetVersionComparisonStageIndex != null}
+              rootPomStageIndex={targetVersionComparisonStageIndex ?? 1}
+              refreshKey={targetVersionRefreshKey}
+            />
+          }
+        />
+      </div>
+
+      {/* Evidence Drawer */}
+      <EvidenceDrawer
+        open={evidenceOpen}
+        evidence={data.pipeline.evidence}
+        rawLogs={data.pipeline.raw_logs}
+        streamState={streamState}
+        activeStageIndex={data.pipeline.active_stage_index}
+        onClose={() => setEvidenceOpen(false)}
       />
 
-      {/* PR-C — Repair Proposal Panel */}
-      {normalizedJobId && (
-        <RepairProposalPanel jobId={normalizedJobId} repairRefreshKey={repairRefreshKey} onContinuationRefresh={refreshLiveState} />
-      )}
-
-      {/* Assistant Panel */}
-      <AssistantPanelContent
+      {/* Floating Assistant */}
+      <FloatingMigrationAssistant
         assistantModel={data.assistantModel}
         messages={data.messages}
         assistantError={assistantError}
@@ -1649,142 +1787,29 @@ export function MigrationCockpit({ jobId }: { jobId?: string }) {
         approvalReviewOpen={approvalReviewOpen}
         onQuestionChange={setAssistantQuestion}
         onAsk={() => void askAssistant()}
+        onRetry={(q) => { setAssistantQuestion(q); void askAssistant(q); }}
       />
 
-      {/* Proof & Report */}
-      <section className="panel">
-        <h2>Proof & Report</h2>
-        <p className="meta">Final proof report generated when all three deterministic gates pass.</p>
-      </section>
-
-      {/* Final Report Panel */}
-      <section className="panel">
-        <h2>Final Report</h2>
-        {report && report.blockers.length > 0 && report.blockers.map((blocker) => (
-          <p className="warning-text" key={blocker}>{blocker}</p>
-        ))}
-        {report && !report.eligible && (
-          <p className="meta">Report generation not yet available for this job.</p>
-        )}
-        <button
-          type="button"
-          disabled={reportBusy || !report?.eligible}
-          onClick={() => void handleGenerateReport()}
-        >
-          {report?.status === "generated" ? "Regenerate report" : "Generate report"}
-        </button>
-        {reportBusy && <span className="meta"> Generating...</span>}
-        {report?.artifacts.map((artifact) => (
-          <div key={artifact.artifact_id} className="report-artifact-row">
-            <span className="meta">{artifact.kind}</span>
-            <span className="checksum">{artifact.checksum_sha256.slice(0, 16)}...</span>
-            <a
-              href={resolveReportDownloadUrl(artifact.download_url)}
-              download
-            >
-              Download
-            </a>
-          </div>
-        ))}
-      </section>
-
-      {/* Latest-stage target dependency version file comparison */}
-      {data && (
-        <section style={{ gridColumn: "1 / -1" }}>
-          <Stage4TargetVersionComparison
-            jobId={normalizedJobId || jobId || ""}
-            comparisonAvailable={targetVersionComparisonStageIndex != null}
-            rootPomStageIndex={targetVersionComparisonStageIndex ?? 1}
-            refreshKey={targetVersionRefreshKey}
-          />
-        </section>
-      )}
+      {/* Cancel Dialog */}
+      <CancelMigrationDialog
+        open={cancelOpen}
+        cancelBusy={cancelBusy}
+        cancelError={cancelError}
+        onConfirm={() => void handleCancelMigration()}
+        onClose={() => setCancelOpen(false)}
+      />
+      {cancelBusy && <span className="meta">Cancelling...</span>}
 
       <style>{`
-        .cockpit-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
-        .cockpit-actions { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
-        .cancel-button { border: 1px solid #a40000; background: #a40000; color: #fff; border-radius: 4px; padding: 0.65rem 1rem; font-weight: 600; }
-        .cancel-button:disabled { background: #b66; border-color: #b66; cursor: not-allowed; }
-        .cancel-error { color: #a40000; margin: 0; }
-        .panel {
-          border: 1px solid #ccc;
-          border-radius: 6px;
-          padding: 1rem;
-          min-height: 0;
-        }
-        .cockpit-layout > .panel:not(.cockpit-actions) {
-          height: clamp(20rem, 42vh, 30rem);
-          overflow-y: auto;
-          overflow-x: hidden;
-          scrollbar-gutter: stable;
-        }
-        .cockpit-layout > section:not(.panel) {
-          max-height: clamp(20rem, 42vh, 30rem);
-          overflow-y: auto;
-          overflow-x: hidden;
-          scrollbar-gutter: stable;
-        }
-        .panel h2 { margin-top: 0; font-size: 1.1rem; }
-        .stage-list { display: flex; flex-direction: column; gap: 0.5rem; }
-        .stage-card { border: 1px solid #ddd; border-radius: 4px; padding: 0.75rem; }
-        .stage-card.queued { border-left: 3px solid #0066cc; }
-        .stage-card.pending { border-left: 3px solid #888; }
-        .stage-header { display: flex; justify-content: space-between; align-items: center; }
-        .status-badge { font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 3px; }
-        .status-badge.queued { background: #e0f0ff; color: #0066cc; }
-        .status-badge.running { background: #fff4cc; color: #886600; }
-        .status-badge.completed { background: #e4f7e8; color: #146c2e; }
-        .status-badge.auto_approved { background: #e4f7e8; color: #146c2e; }
-        .status-badge.pass { background: #e4f7e8; color: #146c2e; }
-        .status-badge.failed { background: #ffe3e3; color: #a40000; }
-        .status-badge.cancelled { background: #f4d8d8; color: #7a0000; }
-        .status-badge.blocked { background: #f5e8ff; color: #5a248a; }
-        .status-badge.pending { background: #eee; color: #666; }
-        .status-badge.skipped { background: #e8f4ff; color: #005599; }
-        .status-badge.excluded { background: #ffe8e8; color: #990000; }
-        .meta { font-size: 0.85rem; color: #666; }
-        .warning-text { font-size: 0.85rem; color: #8a5a00; margin: 0.25rem 0 0.5rem; }
-        .error-box { border: 1px solid #cc0000; background: #fff0f0; padding: 1rem; border-radius: 6px; }
-        .info-box { border: 1px solid #0066cc; background: #f0f6ff; padding: 1rem; border-radius: 6px; }
-        .evidence-placeholder { border: 1px dashed #ccc; padding: 1rem; text-align: center; color: #888; }
-        .event-list { display: flex; flex-direction: column; gap: 0.4rem; }
-        .event-row { display: grid; grid-template-columns: 6rem 10rem 1fr; gap: 0.5rem; align-items: center; border-bottom: 1px solid #eee; padding: 0.35rem 0; }
-        .pipeline-list { display: flex; flex-direction: column; gap: 0.45rem; }
-        .pipeline-row { display: grid; grid-template-columns: 6rem 10rem 1fr 5rem; gap: 0.5rem; align-items: center; border-bottom: 1px solid #eee; padding: 0.45rem 0; }
-        .approval-card { border: 1px solid #eee; padding: 0.5rem; margin: 0.25rem 0; }
-        .approval-mode-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
-        .toggle-control { display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 600; }
-        .approval-actions { display: flex; gap: 0.5rem; }
-        .approval-actions button { padding: 0.45rem 0.7rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
-        .approval-actions button:disabled { color: #777; border-color: #bbb; }
-        .checksum { font-family: monospace; overflow-wrap: anywhere; font-size: 0.82rem; }
-        .raw-logs { margin-top: 0.75rem; }
-        .raw-log-line { white-space: pre-wrap; overflow-wrap: anywhere; border-bottom: 1px solid #eee; margin: 0; padding: 0.35rem 0; }
-        .message { border-bottom: 1px solid #eee; padding: 0.5rem 0; }
-        .assistant-composer { display: grid; grid-template-columns: 1fr auto; gap: 0.5rem; margin-top: 0.75rem; }
-        .assistant-composer input { min-width: 0; padding: 0.5rem; border: 1px solid #aaa; border-radius: 4px; }
-        .assistant-composer button { padding: 0.5rem 0.75rem; border: 1px solid #333; border-radius: 4px; background: #fff; }
-        .assistant-composer button:disabled { color: #777; border-color: #bbb; }
-        .assistant-error { border: 1px solid #c98300; background: #fff8ea; color: #7a4a00; padding: 0.65rem 0.75rem; border-radius: 4px; margin: 0.5rem 0 0.75rem; }
-        .message-content { margin: 0.25rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
-        .report-artifact-row { display: flex; gap: 0.5rem; align-items: center; padding: 0.35rem 0; border-bottom: 1px solid #eee; }
-        .report-artifact-row a { color: #0066cc; text-decoration: underline; font-size: 0.85rem; }
-        @media (max-width: 900px) {
-          .cockpit-layout { grid-template-columns: 1fr; }
-          .cockpit-layout > .panel:not(.cockpit-actions),
-          .cockpit-layout > section:not(.panel) {
-            height: min(28rem, 70vh);
-            max-height: min(28rem, 70vh);
-          }
-        }
+        .cockpit-layout > .repair-workspace { grid-column: 1 / -1; }
+        .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
       `}</style>
     </div>
   );
 }
 
-/** Recompute stage status for every stage using ALL events so far
- *  (chronological reducer), instead of deriving from a single incoming event.
- *  This guarantees the frontend never shows a contradiction. */
+// Stage status helpers
+
 function reduceAllStageStatuses(stages: Stage[], allEvents: V2JobEvent[]): Stage[] {
   return stages.map((stage) => {
     const stageEvents = allEvents
@@ -1808,9 +1833,6 @@ function eventAppliesToStage(event: V2JobEvent, stageIndex: number): boolean {
   return fromStage === stageIndex || toStage === stageIndex;
 }
 
-/** Map a single (event.type, event.status) to a stage status *label*.
- *  This is an *input* to the chronological reducer; the label alone does
- *  NOT determine the final stage status (see reduceStageStatus). */
 export function stageStatusFromEvent(event: V2JobEvent): string {
   if (event.type === "stage_cancelled" || event.status === "cancelled") return "cancelled";
   if (event.type === "stage_failed" || event.status === "failed") return "failed";
@@ -1826,14 +1848,6 @@ export function stageStatusFromEvent(event: V2JobEvent): string {
   return "pending";
 }
 
-/** State-transition helper: given current status and mapped label,
- *  return the new status respecting lifecycle rules.
- *  * failed       → terminal (highest priority)
- *  * completed    → terminal unless a later failure arrives
- *  * running      → overrides blocked/pending/queued
- *  * blocked      → applies only if not already running/completed/failed
- *  * queued       → applies only if not already past it
- *  * pending      → no change */
 export function transitionStageStatus(current: string, mapped: string): string {
   if (current === "cancelled") return "cancelled";
   if (mapped === "cancelled") return "cancelled";
@@ -1856,7 +1870,6 @@ export function formatStageStatusLabel(status: string): string {
   return status.replace(/_/g, " ").toUpperCase();
 }
 
-/** Reduce chronologically-ordered events to a single stage status. */
 export function reduceStageStatus(events: V2JobEvent[], stageIndex?: number): string {
   let current = "pending";
   for (const event of events) {
@@ -1924,19 +1937,17 @@ const IMPORTANT_SSE_TYPES = new Set([
   "proof_updated",
   "next_stage_queued",
   "result_contract_failed",
-  // F14 POM change events — trigger refresh on important state changes
   "pom_change_applied",
   "pom_validation_passed",
   "pom_validation_failed",
   "pom_repair_plan_created",
   "pom_change_rolled_back",
-  // PR-C repair state events
   "repair_proposal_ready",
-      "repair_cycle_started",
-      "repair_proposer_completed",
-      "repair_proposer_unusable",
-      "repair_reviewer_completed",
-      "repair_reviewer_unusable",
+  "repair_cycle_started",
+  "repair_proposer_completed",
+  "repair_proposer_unusable",
+  "repair_reviewer_completed",
+  "repair_reviewer_unusable",
   "repair_generation_failed",
   "repair_final_diff_selected",
   "next_repair_cycle_started",

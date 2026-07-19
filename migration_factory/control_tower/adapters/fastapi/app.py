@@ -3055,13 +3055,13 @@ def create_app(
             )
 
         # â”€â”€ Phase 2: No open gate â€” fall back to existing assistant â”€â”€
-        with unit_of_work_factory() as uow:
+        # Phase 2a: Read — load all data inside a read UoW (no BEGIN IMMEDIATE)
+        with _read_unit_of_work(unit_of_work_factory) as uow:
             job = _require_v2_job(uow, job_id)
             events = uow.v2_events.list_by_job(job_id)
             approvals = uow.v2_approvals.list_cards_by_job(job_id)
             commands = uow.v2_commands.list_by_job(job_id)
             pipeline = _v2_pipeline_projection(job_id, events)
-            service = V2AssistantService(assistant_repo=uow.v2_assistant)
             if not _assistant_question_requires_write(
                 question_lower=question_lower,
                 assistant_intent=assistant_intent,
@@ -3073,28 +3073,7 @@ def create_app(
                     correlation_id=payload.correlation_id,
                     unit_of_work_factory=unit_of_work_factory,
                 )
-            # Read prior persisted messages for conversation history
-            prior_messages = service.get_messages(job_id)
-            user_msg = service.add_message(
-                job_id=job_id,
-                role="user",
-                content=payload.question,
-                correlation_id=payload.correlation_id,
-            )
-            # Build bounded conversation history from prior messages (excludes current user message)
-            conversation_history = _build_bounded_conversation_history(
-                messages=prior_messages,
-            )
-            # Emit model_invocation_started event before model call
-            uow.v2_events.save(
-                job_id=job_id,
-                stage=None,
-                event_type="model_invocation_started",
-                status="running",
-                message="Assistant model invocation started.",
-                payload={"provider": "azure_openai", "role": "assistant"},
-            )
-            # Resolve artifact previews for artifact-content questions
+            prior_messages = uow.v2_assistant.list_messages(job_id)
             setup = uow.v2_setups.get(job.setup_id) if job.setup_id else None
             artifact_previews_list = _resolve_assistant_artifact_previews(
                 question=payload.question,
@@ -3104,52 +3083,73 @@ def create_app(
                 assistant_intent=assistant_intent,
             )
             artifact_previews = tuple(artifact_previews_list)
-            if assistant_intent in {"apply_dependency_change", "rollback_pom_change"} and uow.connection.in_transaction:
-                uow.connection.execute("COMMIT")
-            fallback_answer = _build_v2_assistant_answer(
+
+        # Phase 2b: Model execution — outside any UoW (no write lock held)
+        conversation_history = _build_bounded_conversation_history(
+            messages=prior_messages,
+        )
+        fallback_answer = _build_v2_assistant_answer(
+            question=payload.question,
+            events=events,
+            approvals=approvals,
+            commands=commands,
+            artifact_previews=artifact_previews if artifact_previews else None,
+            assistant_intent=assistant_intent,
+        )
+        if assistant_intent in {"apply_dependency_change", "rollback_pom_change"}:
+            model_result = V2AssistantModelResult(
+                content=fallback_answer,
+                source="backend_controlled",
+                model_status="not_used",
+                provider="backend",
+                role="assistant",
+                success=True,
+                redacted_summary="Backend-controlled assistant action completed.",
+                failure_reason="",
+            )
+        else:
+            assistant_prompt = _build_v2_assistant_prompt(
                 question=payload.question,
+                job=job,
+                pipeline=pipeline,
                 events=events,
                 approvals=approvals,
-                commands=commands,
                 artifact_previews=artifact_previews if artifact_previews else None,
                 assistant_intent=assistant_intent,
+                conversation_history=conversation_history,
             )
-            if assistant_intent in {"apply_dependency_change", "rollback_pom_change"}:
-                model_result = V2AssistantModelResult(
-                    content=fallback_answer,
-                    source="backend_controlled",
-                    model_status="not_used",
-                    provider="backend",
-                    role="assistant",
-                    success=True,
-                    redacted_summary="Backend-controlled assistant action completed.",
-                    failure_reason="",
-                )
-            else:
-                assistant_prompt = _build_v2_assistant_prompt(
-                    question=payload.question,
-                    job=job,
-                    pipeline=pipeline,
-                    events=events,
-                    approvals=approvals,
-                    artifact_previews=artifact_previews if artifact_previews else None,
-                    assistant_intent=assistant_intent,
+            assistant_client = app.state.v2_assistant_model_client
+            if hasattr(assistant_client, "answer_with_role"):
+                model_result = assistant_client.answer_with_role(
+                    role=V2ModelRole.ASSISTANT,
+                    prompt=assistant_prompt,
+                    fallback=fallback_answer,
                     conversation_history=conversation_history,
                 )
-                assistant_client = app.state.v2_assistant_model_client
-                if hasattr(assistant_client, "answer_with_role"):
-                    model_result = assistant_client.answer_with_role(
-                        role=V2ModelRole.ASSISTANT,
-                        prompt=assistant_prompt,
-                        fallback=fallback_answer,
-                        conversation_history=conversation_history,
-                    )
-                else:
-                    model_result = assistant_client.answer(
-                        prompt=assistant_prompt,
-                        fallback=fallback_answer,
-                        conversation_history=conversation_history,
-                    )
+            else:
+                model_result = assistant_client.answer(
+                    prompt=assistant_prompt,
+                    fallback=fallback_answer,
+                    conversation_history=conversation_history,
+                )
+
+        # Phase 2c: Short write — persist user message and events
+        with unit_of_work_factory() as uow:
+            service = V2AssistantService(assistant_repo=uow.v2_assistant)
+            user_msg = service.add_message(
+                job_id=job_id,
+                role="user",
+                content=payload.question,
+                correlation_id=payload.correlation_id,
+            )
+            uow.v2_events.save(
+                job_id=job_id,
+                stage=None,
+                event_type="model_invocation_started",
+                status="running",
+                message="Assistant model invocation started.",
+                payload={"provider": "azure_openai", "role": "assistant"},
+            )
             assistant_msg = service.add_message(
                 job_id=job_id,
                 role="assistant",

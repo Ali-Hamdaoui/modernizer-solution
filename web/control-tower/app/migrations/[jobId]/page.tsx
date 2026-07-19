@@ -12,16 +12,8 @@ export default async function MigrationCockpitPage({
   const { jobId } = await params;
 
   return (
-    <section className="stack">
-      <div>
-        <p className="eyebrow">V2 Migration Cockpit</p>
-        <h1>Migration {jobId}</h1>
-        <p className="meta">
-          Stage progress, decisions, assistant, evidence, and proof.
-          The backend owns all execution. This cockpit reflects state without
-          taking authority.
-        </p>
-      </div>
+    <section>
+      <div />
       <MigrationCockpit jobId={jobId} />
     </section>
   );
