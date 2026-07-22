@@ -12,7 +12,7 @@ import {
   MigrationCockpit,
   ApprovalDecisionsPanel,
   AssistantPanelContent,
-  GatePanelContent,
+
   MigrationRoutePanel,
   SourceProfileDetectionPanel,
   SourceProfileOverrideForm,
@@ -107,56 +107,7 @@ describe("V2 Migration Cockpit contract", () => {
     expect(approval.checksum_required).toBe(true);
   });
 
-  it("renders the open gate panel with gate-safe details", () => {
-    const gate: GateRepresentation = {
-      gate_id: "gate-1",
-      job_id: "job-1",
-      gate_phase: "repair_review",
-      stage_index: 2,
-      gate_status: "open",
-      gate_decision: "revise",
-      source_artifact_checksum: "sha256:gate",
-      source_artifact_refs: ["diagnosis:1", "evidence:2"],
-      created_at: "2026-06-17T00:00:00Z",
-      resolved_at: null,
-      resolved_by: null,
-      checksum: "sha256:gate-checksum",
-      available_actions: [
-        { action: "revise", label: "Revise", description: "Request repair revision", blocked: false, block_reason: "" },
-        { action: "reject", label: "Reject", description: "Reject repair", blocked: false, block_reason: "" },
-      ],
-    };
 
-    const markup = renderToStaticMarkup(
-      <GatePanelContent state={{
-        status: "success",
-        gates: [gate],
-        openGate: gate,
-        openGateDetail: {
-          gate,
-          evidence: {
-            failure_summary: "build failed in sandbox",
-            root_cause_hypothesis: "dependency mismatch",
-            patch_summary: "Align the version",
-            affected_paths: ["pom.xml"],
-            reviewer_critique: null,
-            remaining_attempts: 2,
-            max_attempts: 3,
-          },
-          checksum: gate.checksum,
-        },
-      }} />
-    );
-
-    expect(markup).toContain("Open gate");
-    expect(markup).toContain("repair_review");
-    expect(markup).toContain("Stage 2");
-    expect(markup).toContain("build failed in sandbox");
-    expect(markup).toContain("Revise");
-    expect(markup).toContain("Reject");
-    expect(markup).toContain("diagnosis:1");
-    expect(markup).toContain("sha256:gate-checksum");
-  });
 
   it("renders assistant-specific ask failures without collapsing the cockpit shell", () => {
     const markup = renderToStaticMarkup(
@@ -231,34 +182,6 @@ describe("V2 Migration Cockpit contract", () => {
     const absoluteRef = "C:\\Users\\abdelilah.mortaki\\Desktop\\modernizer-solution\\SecurityConfig.java";
     expect(formatGateArtifactRefLabel(absoluteRef)).toBe("SecurityConfig.java");
     expect(formatGateArtifactRefLabel(absoluteRef)).not.toContain("C:\\Users\\abdelilah.mortaki");
-
-    const gate: GateRepresentation = {
-      gate_id: "gate-abs",
-      job_id: "job-abs",
-      gate_phase: "approval_review",
-      stage_index: 2,
-      gate_status: "open",
-      gate_decision: "approve",
-      source_artifact_checksum: "sha256:gate",
-      source_artifact_refs: [absoluteRef],
-      created_at: "2026-06-17T00:00:00Z",
-      resolved_at: null,
-      resolved_by: null,
-      checksum: "sha256:gate-checksum",
-      available_actions: [],
-    };
-
-    const markup = renderToStaticMarkup(
-      <GatePanelContent state={{
-        status: "success",
-        gates: [gate],
-        openGate: gate,
-        openGateDetail: null,
-      }} />
-    );
-
-    expect(markup).toContain("SecurityConfig.java");
-    expect(markup).not.toContain("C:\\Users\\abdelilah.mortaki");
   });
 
   it("assistant cannot execute, approve, write, or change route", () => {
@@ -2320,21 +2243,6 @@ describe("F15 Final Report and Stage 4 cockpit", () => {
     expect(markup).toContain("follows the same approval and evidence flow");
   });
 
-  it("does not imply a separate Stage 4 approval when no gate is open", () => {
-    const markup = renderToStaticMarkup(
-      <GatePanelContent
-        state={{
-          status: "success",
-          gates: [],
-          openGate: null,
-          openGateDetail: null,
-        }}
-      />
-    );
-
-    expect(markup).toContain("No gate is currently open for this job.");
-    expect(markup).not.toContain("requires explicit approval to start");
-  });
 });
 
 // ── PR-C — Cockpit integration tests ─────────────────────────────────

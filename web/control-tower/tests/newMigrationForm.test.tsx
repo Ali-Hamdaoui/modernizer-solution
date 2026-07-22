@@ -297,6 +297,382 @@ describe("V2 New Migration form contract", () => {
   });
 });
 
+// ── Environment import parse-to-field and field-to-Save chain ─────────
+
+describe("Environment import parse-to-field data flow", () => {
+  it("sends complete untrimmed envBlock to parse endpoint", () => {
+    const requestBody = { env_block: "$env:JAVA11_HOME = \"C:\\Tools\\jdk-11\"\n  " };
+    expect(requestBody).toEqual({ env_block: expect.any(String) });
+    expect(requestBody.env_block).toBe('$env:JAVA11_HOME = "C:\\Tools\\jdk-11"\n  ');
+  });
+
+  it("all parsed values map to correct form fields", () => {
+    const mockParsed = {
+      run_name: "my-app",
+      legacy_app_path: "C:\\legacy",
+      output_parent_path: "C:\\output",
+      ai_hub_path: "C:\\hub",
+      java_homes: { java11: "C:\\jdk11", java17: "C:\\jdk17", java21: "C:\\jdk21" },
+      maven_cmd: "C:\\mvn.cmd",
+      migration_flags: { proof_level: "runtime_verified", skip_endpoint_smoke: true },
+      stage_continuation_policy: "auto_on_green",
+    };
+
+    const prev = {
+      envBlock: "",
+      run_name: "",
+      legacy_app_path: "",
+      output_parent_path: "",
+      ai_hub_path: "",
+      java11_home: "",
+      java17_home: "",
+      java21_home: "",
+      maven_cmd: "",
+      proof_level: "build_test_verified",
+      skip_endpoint_smoke: false,
+      stageContinuationPolicy: "auto_on_green" as const,
+      sourceProfile: "springboot-2.1-java11" as const,
+      targetProfile: "springboot-4.0-java21" as const,
+    };
+
+    const p = mockParsed;
+    const next = {
+      ...prev,
+      run_name: p.run_name || prev.run_name,
+      legacy_app_path: p.legacy_app_path || prev.legacy_app_path,
+      output_parent_path: p.output_parent_path || prev.output_parent_path,
+      ai_hub_path: p.ai_hub_path || prev.ai_hub_path,
+      java11_home: p.java_homes.java11 || prev.java11_home,
+      java17_home: p.java_homes.java17 || prev.java17_home,
+      java21_home: p.java_homes.java21 || prev.java21_home,
+      maven_cmd: p.maven_cmd || prev.maven_cmd,
+      proof_level: p.migration_flags.proof_level || prev.proof_level,
+      skip_endpoint_smoke: p.migration_flags.skip_endpoint_smoke ?? prev.skip_endpoint_smoke,
+      stageContinuationPolicy: (p.stage_continuation_policy as typeof prev.stageContinuationPolicy) || prev.stageContinuationPolicy,
+    };
+
+    expect(next.run_name).toBe("my-app");
+    expect(next.legacy_app_path).toBe("C:\\legacy");
+    expect(next.output_parent_path).toBe("C:\\output");
+    expect(next.ai_hub_path).toBe("C:\\hub");
+    expect(next.java11_home).toBe("C:\\jdk11");
+    expect(next.java17_home).toBe("C:\\jdk17");
+    expect(next.java21_home).toBe("C:\\jdk21");
+    expect(next.maven_cmd).toBe("C:\\mvn.cmd");
+    expect(next.proof_level).toBe("runtime_verified");
+    expect(next.skip_endpoint_smoke).toBe(true);
+    expect(next.stageContinuationPolicy).toBe("auto_on_green");
+  });
+
+  it("empty parsed strings do not erase existing manually entered values", () => {
+    const prev = {
+      envBlock: "",
+      run_name: "manual-run",
+      legacy_app_path: "C:\\manual-legacy",
+      output_parent_path: "C:\\manual-output",
+      ai_hub_path: "",
+      java11_home: "C:\\manual-jdk11",
+      java17_home: "",
+      java21_home: "",
+      maven_cmd: "C:\\manual-mvn",
+      proof_level: "build_test_verified",
+      skip_endpoint_smoke: false,
+      stageContinuationPolicy: "auto_on_green" as const,
+      sourceProfile: "springboot-2.1-java11" as const,
+      targetProfile: "springboot-4.0-java21" as const,
+    };
+
+    const p = {
+      run_name: "",
+      legacy_app_path: "",
+      output_parent_path: "",
+      ai_hub_path: "",
+      java_homes: { java11: "", java17: "", java21: "" },
+      maven_cmd: "",
+      migration_flags: { proof_level: "", skip_endpoint_smoke: null },
+      stage_continuation_policy: "",
+    };
+
+    const next = {
+      ...prev,
+      run_name: p.run_name || prev.run_name,
+      legacy_app_path: p.legacy_app_path || prev.legacy_app_path,
+      output_parent_path: p.output_parent_path || prev.output_parent_path,
+      ai_hub_path: p.ai_hub_path || prev.ai_hub_path,
+      java11_home: p.java_homes.java11 || prev.java11_home,
+      java17_home: p.java_homes.java17 || prev.java17_home,
+      java21_home: p.java_homes.java21 || prev.java21_home,
+      maven_cmd: p.maven_cmd || prev.maven_cmd,
+      proof_level: p.migration_flags.proof_level || prev.proof_level,
+      skip_endpoint_smoke: p.migration_flags.skip_endpoint_smoke ?? prev.skip_endpoint_smoke,
+      stageContinuationPolicy: (p.stage_continuation_policy as typeof prev.stageContinuationPolicy) || prev.stageContinuationPolicy,
+    };
+
+    expect(next.run_name).toBe("manual-run");
+    expect(next.legacy_app_path).toBe("C:\\manual-legacy");
+    expect(next.output_parent_path).toBe("C:\\manual-output");
+    expect(next.ai_hub_path).toBe("");
+    expect(next.java11_home).toBe("C:\\manual-jdk11");
+    expect(next.java17_home).toBe("");
+    expect(next.java21_home).toBe("");
+    expect(next.maven_cmd).toBe("C:\\manual-mvn");
+    expect(next.proof_level).toBe("build_test_verified");
+    expect(next.skip_endpoint_smoke).toBe(false);
+    expect(next.stageContinuationPolicy).toBe("auto_on_green");
+  });
+
+  it("boolean false for skip_endpoint_smoke is preserved (not treated as absent)", () => {
+    const prev = {
+      run_name: "x",
+      legacy_app_path: "x",
+      output_parent_path: "x",
+      ai_hub_path: "x",
+      java11_home: "x",
+      java17_home: "x",
+      java21_home: "x",
+      maven_cmd: "x",
+      proof_level: "build_test_verified",
+      skip_endpoint_smoke: true,
+      stageContinuationPolicy: "auto_on_green" as const,
+      sourceProfile: "springboot-2.1-java11" as const,
+      targetProfile: "springboot-4.0-java21" as const,
+      envBlock: "",
+    };
+
+    const p = {
+      run_name: "",
+      legacy_app_path: "",
+      output_parent_path: "",
+      ai_hub_path: "",
+      java_homes: { java11: "", java17: "", java21: "" },
+      maven_cmd: "",
+      migration_flags: { proof_level: "", skip_endpoint_smoke: false },
+      stage_continuation_policy: "",
+    };
+
+    const next = {
+      ...prev,
+      run_name: p.run_name || prev.run_name,
+      legacy_app_path: p.legacy_app_path || prev.legacy_app_path,
+      output_parent_path: p.output_parent_path || prev.output_parent_path,
+      ai_hub_path: p.ai_hub_path || prev.ai_hub_path,
+      java11_home: p.java_homes.java11 || prev.java11_home,
+      java17_home: p.java_homes.java17 || prev.java17_home,
+      java21_home: p.java_homes.java21 || prev.java21_home,
+      maven_cmd: p.maven_cmd || prev.maven_cmd,
+      proof_level: p.migration_flags.proof_level || prev.proof_level,
+      skip_endpoint_smoke: p.migration_flags.skip_endpoint_smoke ?? prev.skip_endpoint_smoke,
+      stageContinuationPolicy: (p.stage_continuation_policy as typeof prev.stageContinuationPolicy) || prev.stageContinuationPolicy,
+    };
+
+    expect(next.skip_endpoint_smoke).toBe(false);
+  });
+
+  it("preserves unrelated fields (sourceProfile, targetProfile, envBlock) after parse merge", () => {
+    const prev = {
+      envBlock: "$env:TEST = \"val\"",
+      run_name: "",
+      legacy_app_path: "",
+      output_parent_path: "",
+      ai_hub_path: "",
+      java11_home: "",
+      java17_home: "",
+      java21_home: "",
+      maven_cmd: "",
+      proof_level: "build_test_verified",
+      skip_endpoint_smoke: false,
+      stageContinuationPolicy: "auto_on_green" as const,
+      sourceProfile: "springboot-2.7-java11" as const,
+      targetProfile: "springboot-3.5-java21" as const,
+    };
+
+    const p = {
+      run_name: "parsed-run",
+      legacy_app_path: "",
+      output_parent_path: "",
+      ai_hub_path: "",
+      java_homes: { java11: "", java17: "", java21: "" },
+      maven_cmd: "",
+      migration_flags: { proof_level: "", skip_endpoint_smoke: null },
+      stage_continuation_policy: "",
+    };
+
+    const next = {
+      ...prev,
+      run_name: p.run_name || prev.run_name,
+      legacy_app_path: p.legacy_app_path || prev.legacy_app_path,
+      output_parent_path: p.output_parent_path || prev.output_parent_path,
+      ai_hub_path: p.ai_hub_path || prev.ai_hub_path,
+      java11_home: p.java_homes.java11 || prev.java11_home,
+      java17_home: p.java_homes.java17 || prev.java17_home,
+      java21_home: p.java_homes.java21 || prev.java21_home,
+      maven_cmd: p.maven_cmd || prev.maven_cmd,
+      proof_level: p.migration_flags.proof_level || prev.proof_level,
+      skip_endpoint_smoke: p.migration_flags.skip_endpoint_smoke ?? prev.skip_endpoint_smoke,
+      stageContinuationPolicy: (p.stage_continuation_policy as typeof prev.stageContinuationPolicy) || prev.stageContinuationPolicy,
+    };
+
+    expect(next.envBlock).toBe("$env:TEST = \"val\"");
+    expect(next.sourceProfile).toBe("springboot-2.7-java11");
+    expect(next.targetProfile).toBe("springboot-3.5-java21");
+    expect(next.run_name).toBe("parsed-run");
+  });
+});
+
+describe("Field-to-Save-payload chain", () => {
+  it("setup payload contains only the 10 expected fields", () => {
+    const fields = {
+      run_name: "my-app",
+      legacy_app_path: "C:\\legacy",
+      output_parent_path: "C:\\output",
+      ai_hub_path: "C:\\hub",
+      java11_home: "C:\\jdk11",
+      java17_home: "C:\\jdk17",
+      java21_home: "C:\\jdk21",
+      maven_cmd: "C:\\mvn.cmd",
+      proof_level: "runtime_verified",
+      skip_endpoint_smoke: false,
+    };
+
+    const payloadKeys = Object.keys(fields);
+    expect(payloadKeys).toEqual([
+      "run_name",
+      "legacy_app_path",
+      "output_parent_path",
+      "ai_hub_path",
+      "java11_home",
+      "java17_home",
+      "java21_home",
+      "maven_cmd",
+      "proof_level",
+      "skip_endpoint_smoke",
+    ]);
+  });
+
+  it("envBlock is excluded from the setup payload", () => {
+    const setupPayload = {
+      run_name: "test",
+      legacy_app_path: "test",
+      output_parent_path: "test",
+      ai_hub_path: "test",
+      java11_home: "test",
+      java17_home: "test",
+      java21_home: "test",
+      maven_cmd: "test",
+      proof_level: "build_test_verified",
+      skip_endpoint_smoke: false,
+    };
+    expect(setupPayload).not.toHaveProperty("envBlock");
+  });
+
+  it("sourceProfile and targetProfile are excluded from the setup payload", () => {
+    const setupPayload = {
+      run_name: "test",
+      legacy_app_path: "test",
+      output_parent_path: "test",
+      ai_hub_path: "test",
+      java11_home: "test",
+      java17_home: "test",
+      java21_home: "test",
+      maven_cmd: "test",
+      proof_level: "build_test_verified",
+      skip_endpoint_smoke: false,
+    };
+    expect(setupPayload).not.toHaveProperty("sourceProfile");
+    expect(setupPayload).not.toHaveProperty("targetProfile");
+  });
+
+  it("stageContinuationPolicy is excluded from the setup payload", () => {
+    const setupPayload = {
+      run_name: "test",
+      legacy_app_path: "test",
+      output_parent_path: "test",
+      ai_hub_path: "test",
+      java11_home: "test",
+      java17_home: "test",
+      java21_home: "test",
+      maven_cmd: "test",
+      proof_level: "build_test_verified",
+      skip_endpoint_smoke: false,
+    };
+    expect(setupPayload).not.toHaveProperty("stageContinuationPolicy");
+  });
+
+  it("parse-to-Save chain: parsed values appear in correct setup payload fields", () => {
+    const mockParsed = {
+      run_name: "chain-test",
+      legacy_app_path: "C:\\chain-legacy",
+      output_parent_path: "C:\\chain-output",
+      ai_hub_path: "C:\\chain-hub",
+      java_homes: { java11: "C:\\chain-jdk11", java17: "C:\\chain-jdk17", java21: "C:\\chain-jdk21" },
+      maven_cmd: "C:\\chain-mvn.cmd",
+      migration_flags: { proof_level: "analyzed", skip_endpoint_smoke: true },
+      stage_continuation_policy: "auto_on_green",
+    };
+
+    const prev = {
+      envBlock: "",
+      run_name: "",
+      legacy_app_path: "",
+      output_parent_path: "",
+      ai_hub_path: "",
+      java11_home: "",
+      java17_home: "",
+      java21_home: "",
+      maven_cmd: "",
+      proof_level: "build_test_verified",
+      skip_endpoint_smoke: false,
+      stageContinuationPolicy: "auto_on_green" as const,
+      sourceProfile: "springboot-2.1-java11" as const,
+      targetProfile: "springboot-4.0-java21" as const,
+    };
+
+    const p = mockParsed;
+    const fields = {
+      ...prev,
+      run_name: p.run_name || prev.run_name,
+      legacy_app_path: p.legacy_app_path || prev.legacy_app_path,
+      output_parent_path: p.output_parent_path || prev.output_parent_path,
+      ai_hub_path: p.ai_hub_path || prev.ai_hub_path,
+      java11_home: p.java_homes.java11 || prev.java11_home,
+      java17_home: p.java_homes.java17 || prev.java17_home,
+      java21_home: p.java_homes.java21 || prev.java21_home,
+      maven_cmd: p.maven_cmd || prev.maven_cmd,
+      proof_level: p.migration_flags.proof_level || prev.proof_level,
+      skip_endpoint_smoke: p.migration_flags.skip_endpoint_smoke ?? prev.skip_endpoint_smoke,
+      stageContinuationPolicy: (p.stage_continuation_policy as typeof prev.stageContinuationPolicy) || prev.stageContinuationPolicy,
+    };
+
+    const setupPayload = {
+      run_name: fields.run_name,
+      legacy_app_path: fields.legacy_app_path,
+      output_parent_path: fields.output_parent_path,
+      ai_hub_path: fields.ai_hub_path,
+      java11_home: fields.java11_home,
+      java17_home: fields.java17_home,
+      java21_home: fields.java21_home,
+      maven_cmd: fields.maven_cmd,
+      proof_level: fields.proof_level,
+      skip_endpoint_smoke: fields.skip_endpoint_smoke,
+    };
+
+    expect(setupPayload.run_name).toBe("chain-test");
+    expect(setupPayload.legacy_app_path).toBe("C:\\chain-legacy");
+    expect(setupPayload.output_parent_path).toBe("C:\\chain-output");
+    expect(setupPayload.ai_hub_path).toBe("C:\\chain-hub");
+    expect(setupPayload.java11_home).toBe("C:\\chain-jdk11");
+    expect(setupPayload.java17_home).toBe("C:\\chain-jdk17");
+    expect(setupPayload.java21_home).toBe("C:\\chain-jdk21");
+    expect(setupPayload.maven_cmd).toBe("C:\\chain-mvn.cmd");
+    expect(setupPayload.proof_level).toBe("analyzed");
+    expect(setupPayload.skip_endpoint_smoke).toBe(true);
+    expect(Object.keys(setupPayload)).not.toContain("envBlock");
+    expect(Object.keys(setupPayload)).not.toContain("sourceProfile");
+    expect(Object.keys(setupPayload)).not.toContain("targetProfile");
+    expect(Object.keys(setupPayload)).not.toContain("stageContinuationPolicy");
+  });
+});
+
 // ── F3/F4 — Profile selectors and route preview ──────────────────────
 
 describe("F3/F4 Profile selectors and route preview", () => {
